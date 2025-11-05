@@ -1,113 +1,113 @@
-# Jetson Brain Control Node for ESP32 Communication
+# Nodo de Control Jetson Brain para Comunicación ESP32
 
-High-speed UART control module for Jetson to ESP32 communication in autonomous vehicle systems.
+Módulo de control UART de alta velocidad para comunicación Jetson-ESP32 en sistemas de vehículos autónomos.
 
-## Overview
+## Resumen
 
-This module implements a binary protocol for real-time control communication between a Jetson (brain) and ESP32 (executor). The Jetson handles perception and decision-making, while the ESP32 executes motor control, steering, and other hardware operations using FreeRTOS.
+Este módulo implementa un protocolo binario para comunicación de control en tiempo real entre un Jetson (cerebro) y ESP32 (ejecutor). El Jetson maneja la percepción y la toma de decisiones, mientras que el ESP32 ejecuta el control de motores, dirección y otras operaciones de hardware usando FreeRTOS.
 
-## Protocol Specification
+## Especificación del Protocolo
 
-### Message Format
+### Formato de Mensaje
 
-Each message is **16 bytes** total:
+Cada mensaje tiene un total de **16 bytes**:
 
 ```
-Byte 0:     Start byte (0xAA)
+Byte 0:     Byte de inicio (0xAA)
 Byte 1:     Topic (1-4)
-Byte 2:     Command ID
-Bytes 3-6:  Value (int32_t, little-endian)
-Bytes 7-8:  Sequence (uint16_t, little-endian)
-Bytes 9-10: TTL (uint16_t, milliseconds, little-endian)
-Bytes 11-12: (reserved/unused)
+Byte 2:     ID de comando
+Bytes 3-6:  Valor (int32_t, little-endian)
+Bytes 7-8:  Secuencia (uint16_t, little-endian)
+Bytes 9-10: TTL (uint16_t, milisegundos, little-endian)
+Bytes 11-12: (reservado/no usado)
 Bytes 13-14: CRC16 (little-endian)
 ```
 
 ### Topics
 
-- `T_DRIVE = 1`: Drive/motor commands
-- `T_STEER = 2`: Steering commands
-- `T_LIGHTS = 3`: Light control
-- `T_SYS = 4`: System management
+- `T_DRIVE = 1`: Comandos de motor/conducción
+- `T_STEER = 2`: Comandos de dirección
+- `T_LIGHTS = 3`: Control de luces
+- `T_SYS = 4`: Gestión del sistema
 
-### Commands
+### Comandos
 
-#### Drive Commands (Topic 1)
-- `DRIVE_SET_SPEED = 1`: Set speed setpoint
-- `DRIVE_EBRAKE = 2`: Emergency brake
-- `DRIVE_STOP = 3`: Stop command
+#### Comandos de Conducción (Topic 1)
+- `DRIVE_SET_SPEED = 1`: Establecer punto de consigna de velocidad
+- `DRIVE_EBRAKE = 2`: Freno de emergencia
+- `DRIVE_STOP = 3`: Comando de parada
 
-#### Steering Commands (Topic 2)
-- `STEER_SET_ANGLE = 10`: Set steering angle
+#### Comandos de Dirección (Topic 2)
+- `STEER_SET_ANGLE = 10`: Establecer ángulo de dirección
 
-#### Lights Commands (Topic 3)
-- `LIGHTS_ON = 30`: Turn lights on
-- `LIGHTS_OFF = 31`: Turn lights off
+#### Comandos de Luces (Topic 3)
+- `LIGHTS_ON = 30`: Encender luces
+- `LIGHTS_OFF = 31`: Apagar luces
 
-#### System Commands (Topic 4)
-- `SYS_HEARTBEAT = 20`: Heartbeat message
-- `SYS_MODE = 21`: Set mode (0=AUTO, 1=MANUAL)
-- `SYS_ARM = 22`: Arm the system
-- `SYS_DISARM = 23`: Disarm the system
+#### Comandos del Sistema (Topic 4)
+- `SYS_HEARTBEAT = 20`: Mensaje de latido
+- `SYS_MODE = 21`: Establecer modo (0=AUTO, 1=MANUAL)
+- `SYS_ARM = 22`: Armar el sistema
+- `SYS_DISARM = 23`: Desarmar el sistema
 
-## Installation
+## Instalación
 
 ```bash
 pip install -r requirements.txt
 ```
 
-## Usage
+## Uso
 
-### Basic Usage
+### Uso Básico
 
 ```python
 from jetson_control import JetsonControlNode, SystemMode
 
-# Create control node
+# Crear nodo de control
 node = JetsonControlNode(
     port='/dev/ttyUSB0',
     baudrate=921600,
-    control_hz=100.0,      # 100 Hz control updates
-    heartbeat_hz=10.0      # 10 Hz heartbeat
+    control_hz=100.0,      # Actualizaciones de control a 100 Hz
+    heartbeat_hz=10.0      # Latido a 10 Hz
 )
 
-# Start communication
+# Iniciar comunicación
 node.start()
 
-# Set system mode and arm
+# Establecer modo del sistema y armar
 node.set_mode(SystemMode.AUTO)
 node.arm()
 
-# Update control setpoints (these are sent at 100 Hz automatically)
+# Actualizar puntos de consigna (se envían automáticamente a 100 Hz)
 node.set_control(speed=0.5, steer_angle=10.0)
 
-# Emergency brake (sent immediately)
+# Freno de emergencia (se envía inmediatamente)
 node.emergency_brake()
 
-# Clean shutdown
+# Cierre limpio
 node.stop_all()
 ```
 
-### Interactive CLI Testing
+### Pruebas con CLI Interactivo
 
-Use the interactive CLI for manual testing:
+Usa la CLI interactiva para pruebas manuales:
 
 ```bash
 python test_cli.py --port /dev/ttyUSB0 --baudrate 921600
 ```
 
-**Controls:**
-- `W/S`: Increase/Decrease speed
-- `A/D`: Increase/Decrease steering angle
-- `M`: Toggle AUTO/MANUAL mode
-- `R`: Arm system
-- `U`: Disarm system
-- `L`: Toggle lights
-- `E`: Emergency brake
-- `Q`: Quit
-- `H/?`: Show help
+**Controles:**
+- `W/S`: Aumentar/Disminuir velocidad
+- `A/D`: Aumentar/Disminuir ángulo de dirección
+- `M`: Alternar modo AUTO/MANUAL
+- `R`: Armar sistema
+- `U`: Desarmar sistema
+- `L`: Alternar luces
+- `E`: Freno de emergencia
+- `Q`: Salir
+- `H/?`: Mostrar ayuda
 
-### Integration with AI/Planner
+### Integración con IA/Planificador
 
 ```python
 import cv2
@@ -118,135 +118,134 @@ node.start()
 node.set_mode(SystemMode.AUTO)
 node.arm()
 
-# Main perception/planning loop
+# Bucle principal de percepción/planificación
 while True:
-    # Your perception code (e.g., YOLO, OpenCV)
+    # Tu código de percepción (ej. YOLO, OpenCV)
     frame = camera.read()
     detections = yolo_model(frame)
     
-    # Your planning code
+    # Tu código de planificación
     speed, angle = planner.compute_control(detections)
     
-    # Send control commands
+    # Enviar comandos de control
     node.set_control(speed=speed, steer_angle=angle)
     
-    # Check for emergency conditions
+    # Verificar condiciones de emergencia
     if emergency_detected:
         node.emergency_brake()
 ```
 
-## Architecture
+## Arquitectura
 
-### Threading Model
+### Modelo de Threading
 
-The control node uses multiple worker threads:
+El nodo de control usa múltiples hilos de trabajo:
 
-1. **Send Thread**: Processes message queue and sends over UART
-2. **Receive Thread**: Receives and validates incoming messages
-3. **Control Thread**: Sends control updates at 100 Hz
-4. **Heartbeat Thread**: Sends heartbeat at 10 Hz
+1. **Send Thread**: Procesa la cola de mensajes y envía por UART
+2. **Receive Thread**: Recibe y valida mensajes entrantes
+3. **Control Thread**: Envía actualizaciones de control a 100 Hz
+4. **Heartbeat Thread**: Envía latido a 10 Hz
 
-### Message Queue
+### Cola de Mensajes
 
-All messages are queued and sent asynchronously to prevent blocking. Emergency messages can be sent immediately via priority handling.
+Todos los mensajes se encolan y se envían de forma asíncrona para evitar bloqueos. Los mensajes de emergencia se pueden enviar inmediatamente mediante manejo de prioridad.
 
-### Statistics
+### Estadísticas
 
-The node tracks:
-- Sent/received message counts
-- CRC errors
-- Round-trip latency (if ACK messages are implemented)
-- Queue size
+El nodo rastrea:
+- Conteo de mensajes enviados/recibidos
+- Errores CRC
+- Latencia de ida y vuelta (si se implementan mensajes ACK)
+- Tamaño de la cola
 
-Access via `node.get_stats()`.
+Acceso mediante `node.get_stats()`.
 
-## Message Timing
+## Temporización de Mensajes
 
-- **Control Updates**: 100 Hz (every 10 ms)
-- **Heartbeat**: 10 Hz (every 100 ms)
-- **Emergency**: Immediate (priority)
-- **TTL Values**:
+- **Actualizaciones de Control**: 100 Hz (cada 10 ms)
+- **Latido**: 10 Hz (cada 100 ms)
+- **Emergencia**: Inmediato (prioridad)
+- **Valores TTL**:
   - Control: 100 ms
-  - Heartbeat: 200 ms
-  - Emergency: 80 ms
+  - Latido: 200 ms
+  - Emergencia: 80 ms
 
-## CRC16 Calculation
+## Cálculo CRC16
 
-The protocol uses CRC16-XMODEM (polynomial 0x1021) calculated over the 13-byte payload (topic through TTL).
+El protocolo usa CRC16-XMODEM (polinomio 0x1021) calculado sobre el payload de 13 bytes (desde topic hasta TTL).
 
-## Error Handling
+## Manejo de Errores
 
-- Automatic CRC validation on received messages
-- Serial port error recovery
-- Queue overflow protection
-- Thread-safe state management
+- Validación automática de CRC en mensajes recibidos
+- Recuperación de errores del puerto serie
+- Protección contra desbordamiento de cola
+- Gestión de estado thread-safe
 
-## File Structure
+## Estructura de Archivos
 
 ```
 brain/
-├── protocol.py          # Protocol definitions, packing/unpacking, CRC16
-├── jetson_control.py    # Main control node implementation
-├── test_cli.py          # Interactive CLI for testing
-├── requirements.txt     # Python dependencies
-└── README.md           # This file
+├── protocol.py          # Definiciones de protocolo, packing/unpacking, CRC16
+├── jetson_control.py    # Implementación principal del nodo de control
+├── test_cli.py          # CLI interactivo para pruebas
+├── requirements.txt     # Dependencias de Python
+└── README.md           # Este archivo
 ```
 
-## Configuration
+## Configuración
 
-### Serial Port Settings
+### Configuración del Puerto Serie
 
-- **Baud Rate**: 921600 (default, configurable)
+- **Baud Rate**: 921600 (por defecto, configurable)
 - **Data Bits**: 8
 - **Parity**: None
 - **Stop Bits**: 1
-- **Timeout**: 100 ms (read), 1 s (write)
+- **Timeout**: 100 ms (lectura), 1 s (escritura)
 
-### Adjustable Parameters
+### Parámetros Ajustables
 
-- `control_hz`: Control update frequency (default: 100 Hz)
-- `heartbeat_hz`: Heartbeat frequency (default: 10 Hz)
-- `control_ttl`: TTL for control messages (default: 100 ms)
-- `heartbeat_ttl`: TTL for heartbeat (default: 200 ms)
-- `emergency_ttl`: TTL for emergency (default: 80 ms)
+- `control_hz`: Frecuencia de actualización de control (por defecto: 100 Hz)
+- `heartbeat_hz`: Frecuencia de latido (por defecto: 10 Hz)
+- `control_ttl`: TTL para mensajes de control (por defecto: 100 ms)
+- `heartbeat_ttl`: TTL para latido (por defecto: 200 ms)
+- `emergency_ttl`: TTL para emergencia (por defecto: 80 ms)
 
-## Troubleshooting
+## Solución de Problemas
 
-### Serial Port Not Found
+### Puerto Serie No Encontrado
 
-Check available ports:
+Verificar puertos disponibles:
 ```bash
 ls -l /dev/ttyUSB* /dev/ttyACM*
 ```
 
-Ensure user has permissions:
+Asegurar que el usuario tenga permisos:
 ```bash
 sudo usermod -a -G dialout $USER
-# Then logout/login
+# Luego cerrar sesión/iniciar sesión
 ```
 
-### High Latency
+### Alta Latencia
 
-- Reduce `control_hz` if ESP32 cannot process at 100 Hz
-- Check UART baud rate matches on both sides
-- Monitor queue size via `get_stats()`
+- Reducir `control_hz` si el ESP32 no puede procesar a 100 Hz
+- Verificar que la velocidad de baudios UART coincida en ambos lados
+- Monitorear el tamaño de la cola mediante `get_stats()`
 
-### CRC Errors
+### Errores CRC
 
-- Verify baud rate matches ESP32 configuration
-- Check wiring/connections
-- Ensure ESP32 is sending properly formatted messages
+- Verificar que la velocidad de baudios coincida con la configuración del ESP32
+- Revisar cableado/conexiones
+- Asegurar que el ESP32 esté enviando mensajes con formato correcto
 
-## Future Enhancements
+## Mejoras Futuras
 
-- [ ] ACK message handling and round-trip latency measurement
-- [ ] Telemetry visualization dashboard
-- [ ] Message priority queue for emergency commands
-- [ ] Auto-resend last control if no update received
-- [ ] Configuration file support
-- [ ] ROS2 integration wrapper
+- [ ] Manejo de mensajes ACK y medición de latencia de ida y vuelta
+- [ ] Panel de visualización de telemetría
+- [ ] Cola de prioridad de mensajes para comandos de emergencia
+- [ ] Reenvío automático del último control si no se recibe actualización
+- [ ] Soporte para archivo de configuración
+- [ ] Wrapper de integración ROS2
 
-## License
+## Licencia
 
-Part of the BFMC Autonomous Laboratory Robot project.
-
+Parte del proyecto Robot Autónomo de Laboratorio BFMC.
