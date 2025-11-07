@@ -36,6 +36,7 @@ Establece la velocidad del motor de tracción.
 - **Valor**: 0-255 (0 = detenido, 255 = máxima velocidad)
 - **TTL**: 200ms (el comando expira si no se renueva)
 - **Ejemplo**: `C:SET_SPEED:120`
+- **⚠️ Comportamiento por defecto**: Si no se envía ningún comando o el comando expira, el vehículo avanza automáticamente a velocidad 100 (hacia adelante). Esto permite que el vehículo siga moviéndose sin GPS cuando solo se controla la dirección.
 
 ```python
 # Ejemplo Python

@@ -27,6 +27,10 @@ void init_wifi_ap(void) {
     Serial.print(WIFI_AP_SSID);
     Serial.print(", IP: ");
     Serial.println(WiFi.softAPIP());
+    
+    // Turn on built-in LED when WiFi AP is ready
+    digitalWrite(GPIO_LED_BUILTIN, HIGH);
+    Serial.println("[WebTask] Built-in LED turned ON (WiFi AP ready)");
 }
 
 void web_task(void *pvParameters) {
