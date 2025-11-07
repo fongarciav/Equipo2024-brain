@@ -76,20 +76,46 @@ def to_mode(value: str) -> int:
     raise ValueError("lights mode must be off|on|auto")
 
 
-def run_demo(ser: serial.Serial, delay_s: float = 0.1) -> None:
-    seq = [
-        "C:SET_SPEED:120",
-        "C:SET_STEER:90",
-        "C:SET_SPEED:0",
-        "E:BRAKE_NOW:0",
-    ]
-    for cmd in seq:
+def run_demo(ser: serial.Serial, delay_s: float = 0.05) -> None:
+    """
+    Demo: Simulate making a corner
+    - Start at max speed (255) going forward
+    - Turn degree by degree to the right while moving forward
+    - Stop at the end
+    """
+    print("Starting corner demo...")
+    
+    # Start with max speed forward
+    print("-> C:SET_SPEED:255")
+    write_line(ser, "C:SET_SPEED:255")
+    time.sleep(delay_s)
+    
+    # Start centered (105 is center, 50 is left, 135 is right)
+    SERVO_CENTER = 105
+    SERVO_RIGHT = 135
+    
+    # Turn right degree by degree (from center to right)
+    print("Turning right while moving forward...")
+    for angle in range(SERVO_CENTER, SERVO_RIGHT + 1):
+        cmd = f"C:SET_STEER:{angle}"
         print(f"-> {cmd}")
         write_line(ser, cmd)
         time.sleep(delay_s)
+        
+        # Read any responses
         for ln in read_available(ser):
             if ln:
                 print(f"<- {ln}")
+    
+    # Continue forward a bit more
+    time.sleep(delay_s * 5)
+    
+    # Stop
+    print("-> E:BRAKE_NOW:0")
+    write_line(ser, "E:BRAKE_NOW:0")
+    time.sleep(delay_s)
+    
+    print("Demo completed!")
 
 
 def interactive_loop(ser: serial.Serial) -> None:

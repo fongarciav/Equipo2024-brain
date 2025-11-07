@@ -19,6 +19,8 @@ extern "C" {
 #define GPIO_LDR              35
 #define GPIO_ESTOP            4
 #define GPIO_LED_BUILTIN      2
+#define GPIO_ULTRASONIC_TRIG  26  // HC-SR04 Trigger pin
+#define GPIO_ULTRASONIC_ECHO  27  // HC-SR04 Echo pin
 
 // Servo configuration
 #define SERVO_CENTER           105
@@ -37,6 +39,11 @@ extern "C" {
 
 // LDR threshold
 #define LDR_THRESHOLD          3500
+
+// Ultrasonic sensor (HC-SR04) configuration
+#define ULTRASONIC_MAX_DISTANCE_CM  400  // Maximum range ~4m
+#define ULTRASONIC_MIN_DISTANCE_CM  2    // Minimum range ~2cm
+#define ULTRASONIC_OBSTACLE_THRESHOLD_CM  30  // Trigger emergency if object closer than 30cm
 
 // Watchdog timeout (ms)
 #define WATCHDOG_TIMEOUT_MS    120
@@ -61,6 +68,9 @@ uint16_t ldr_read(void);
 
 // E-STOP GPIO reading
 bool estop_is_triggered(void);
+
+// Ultrasonic sensor (HC-SR04) reading
+uint16_t ultrasonic_read_cm(void);  // Returns distance in cm, 0 if error/timeout
 
 #ifdef __cplusplus
 }

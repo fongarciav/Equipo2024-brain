@@ -15,6 +15,11 @@ void hardware_init(void) {
     pinMode(GPIO_LED_BUILTIN, OUTPUT);
     pinMode(GPIO_ESTOP, INPUT_PULLUP);
     
+    // HC-SR04 Ultrasonic sensor
+    pinMode(GPIO_ULTRASONIC_TRIG, OUTPUT);
+    pinMode(GPIO_ULTRASONIC_ECHO, INPUT);
+    digitalWrite(GPIO_ULTRASONIC_TRIG, LOW);
+    
     // LDR is analog input, no pinMode needed for GPIO 35
     
     // Initialize GPIO states
@@ -80,4 +85,33 @@ uint16_t ldr_read(void) {
 bool estop_is_triggered(void) {
     // E-STOP is active low (pulled up, triggers when grounded)
     return digitalRead(GPIO_ESTOP) == LOW;
+}
+
+uint16_t ultrasonic_read_cm(void) {
+    // Send trigger pulse (10us HIGH)
+    digitalWrite(GPIO_ULTRASONIC_TRIG, LOW);
+    delayMicroseconds(2);
+    digitalWrite(GPIO_ULTRASONIC_TRIG, HIGH);
+    delayMicroseconds(10);
+    digitalWrite(GPIO_ULTRASONIC_TRIG, LOW);
+    
+    // Read echo pulse duration
+    uint32_t duration = pulseIn(GPIO_ULTRASONIC_ECHO, HIGH, 30000); // 30ms timeout (~5m max)
+    
+    if (duration == 0) {
+        // Timeout or no echo
+        return 0;
+    }
+    
+    // Calculate distance: distance = (duration * speed_of_sound) / 2
+    // speed_of_sound = 343 m/s = 0.0343 cm/us
+    // distance_cm = (duration_us * 0.0343) / 2 = duration_us / 58.2
+    uint16_t distance_cm = duration / 58;
+    
+    // Validate range
+    if (distance_cm < ULTRASONIC_MIN_DISTANCE_CM || distance_cm > ULTRASONIC_MAX_DISTANCE_CM) {
+        return 0; // Invalid reading
+    }
+    
+    return distance_cm;
 }

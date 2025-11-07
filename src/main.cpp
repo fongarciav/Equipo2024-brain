@@ -11,6 +11,7 @@
 #include "link_tx_task.h"
 #include "supervisor_task.h"
 #include "web_task.h"
+#include "ultrasonic_task.h"
 
 // Mailboxes
 static mailbox_t motor_mailbox;
@@ -144,6 +145,18 @@ void setup(void)
         1 // Core 1
     );
     Serial.println("[main] WebTask created on Core 1, Priority 2");
+
+    // UltrasonicTask - Core 0, Priority 5 (high priority for safety)
+    xTaskCreatePinnedToCore(
+        ultrasonic_task,
+        "UltrasonicTask",
+        STACK_SIZE_4K,
+        NULL,
+        5, // Priority 5 (higher than motor task for safety)
+        NULL,
+        0 // Core 0
+    );
+    Serial.println("[main] UltrasonicTask created on Core 0, Priority 5");
 
     Serial.println("[main] All tasks created. FreeRTOS scheduler running...");
     Serial.println("[main] System ready!");
