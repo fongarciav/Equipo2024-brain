@@ -44,7 +44,7 @@ extern "C"
 // Ultrasonic sensor (HC-SR04) configuration
 #define ULTRASONIC_MAX_DISTANCE_CM 400      // Maximum range ~4m
 #define ULTRASONIC_MIN_DISTANCE_CM 2        // Minimum range ~2cm
-#define ULTRASONIC_OBSTACLE_THRESHOLD_CM 30 // Trigger emergency if object closer than 30cm
+#define ULTRASONIC_OBSTACLE_THRESHOLD_CM 15 // Trigger emergency if object closer than 15cm
 
 // Watchdog timeout (ms)
 #define WATCHDOG_TIMEOUT_MS 120

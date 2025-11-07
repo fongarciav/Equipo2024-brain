@@ -64,8 +64,7 @@ void link_tx_task(void *pvParameters) {
             }
             
             Serial1.print(buffer);
-            Serial.print("[LinkTxTask] TX: ");
-            Serial.print(buffer);
+            // Debug logging removed to reduce noise - use telemetry_monitor.py to see TX messages
         }
     }
 }

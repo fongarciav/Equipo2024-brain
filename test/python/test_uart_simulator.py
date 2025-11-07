@@ -2,9 +2,7 @@
 import sys
 import time
 import argparse
-import threading
 from typing import List
-from queue import Queue
 
 try:
     import serial  # pyserial
@@ -48,39 +46,76 @@ def select_port_interactive() -> str:
 
 
 def open_serial(port: str, baud: int) -> serial.Serial:
-    return serial.Serial(port, baudrate=baud, timeout=0.2)
+    """Open serial port with appropriate settings."""
+    ser = serial.Serial(
+        port=port,
+        baudrate=baud,
+        timeout=1.0,  # Increased timeout for reading
+        write_timeout=1.0,  # Timeout for writing
+        bytesize=serial.EIGHTBITS,
+        parity=serial.PARITY_NONE,
+        stopbits=serial.STOPBITS_ONE,
+        xonxoff=False,  # No software flow control
+        rtscts=False,  # No hardware flow control
+        dsrdtr=False  # No DSR/DTR flow control
+    )
+    # Clear any pending data
+    ser.reset_input_buffer()
+    ser.reset_output_buffer()
+    return ser
 
 
 def write_line(ser: serial.Serial, msg: str) -> None:
+    """Write a line to serial port with error handling."""
+    if not ser.is_open:
+        raise serial.SerialException("Serial port is not open")
     line = (msg.strip() + "\n").encode("utf-8")
-    ser.write(line)
-    ser.flush()
-
-
-def read_available(ser: serial.Serial) -> List[str]:
-    lines: List[str] = []
     try:
-        while True:
-            data = ser.readline()
-            if not data:
-                break
-            lines.append(data.decode(errors="ignore").rstrip())
-    except Exception:
-        pass
+        ser.write(line)
+        ser.flush()
+    except serial.SerialTimeoutException:
+        print("Warning: Write timeout - command may not have been sent", file=sys.stderr)
+    except serial.SerialException as e:
+        print(f"Error writing to serial: {e}", file=sys.stderr)
+        raise
+
+
+def read_available(ser: serial.Serial, timeout: float = 0.5, max_lines: int = 50) -> List[str]:
+    """Read available lines from serial port with timeout and line limit."""
+    lines: List[str] = []
+    if not ser.is_open:
+        return lines
+    
+    try:
+        # Read with timeout, but limit number of lines to avoid backlog
+        start_time = time.time()
+        last_data_time = start_time
+        
+        while time.time() - start_time < timeout and len(lines) < max_lines:
+            if ser.in_waiting > 0:
+                data = ser.readline()
+                if data:
+                    line = data.decode(errors="ignore").rstrip()
+                    if line:
+                        lines.append(line)
+                        last_data_time = time.time()
+                else:
+                    # No more data available right now
+                    # If we haven't received data for a while, stop
+                    if time.time() - last_data_time > 0.1:
+                        break
+            else:
+                # If no data waiting and we've read some, check if we should stop
+                if len(lines) > 0 and time.time() - last_data_time > 0.05:
+                    break
+                # Small sleep to avoid busy waiting
+                time.sleep(0.01)
+    except serial.SerialException as e:
+        print(f"Error reading from serial: {e}", file=sys.stderr)
+    except Exception as e:
+        print(f"Unexpected error reading serial: {e}", file=sys.stderr)
+    
     return lines
-
-
-def serial_reader_thread(ser: serial.Serial, output_queue: Queue) -> None:
-    """Background thread that continuously reads from serial and puts lines in queue."""
-    while True:
-        try:
-            data = ser.readline()
-            if data:
-                line = data.decode(errors="ignore").rstrip()
-                if line:
-                    output_queue.put(("serial", line))
-        except Exception:
-            break
 
 
 def to_mode(value: str) -> int:
@@ -94,24 +129,25 @@ def to_mode(value: str) -> int:
     raise ValueError("lights mode must be off|on|auto")
 
 
-def run_demo(ser: serial.Serial, delay_s: float = 0.05) -> None:
+def run_demo(ser: serial.Serial, delay_s: float = 0.02) -> None:
     """
-    Demo: Simulate making a corner
+    Demo: Simulate zigzag pattern
     - Arm the system first
+    - Set mode to MANUAL (no heartbeat required)
     - Start at max speed (255) going forward
-    - Turn degree by degree to the right while moving forward
+    - Perform fast zigzag pattern (left-right-left-right)
     - Stop at the end
     """
-    print("Starting corner demo...")
+    print("Starting zigzag demo...")
     
-    # Arm the system first
-    print("-> M:SYS_ARM:0")
-    write_line(ser, "M:SYS_ARM:0")
+    # Set mode to MANUAL first (no heartbeat required)
+    print("-> M:SYS_MODE:0")
+    write_line(ser, "M:SYS_MODE:0")
     time.sleep(delay_s * 2)
     
-    # Set mode to AUTO (so it transitions to RUNNING with heartbeat)
-    print("-> M:SYS_MODE:1")
-    write_line(ser, "M:SYS_MODE:1")
+    # Arm the system (will automatically transition to RUNNING in MANUAL mode)
+    print("-> M:SYS_ARM:0")
+    write_line(ser, "M:SYS_ARM:0")
     time.sleep(delay_s * 2)
     
     # Start with max speed forward
@@ -119,71 +155,80 @@ def run_demo(ser: serial.Serial, delay_s: float = 0.05) -> None:
     write_line(ser, "C:SET_SPEED:255")
     time.sleep(delay_s)
     
-    # Start centered (105 is center, 50 is left, 135 is right)
+    # Steering angles (105 is center, 70 is left, 140 is right)
     SERVO_CENTER = 105
-    SERVO_RIGHT = 135
+    SERVO_LEFT = 70
+    SERVO_RIGHT = 140
     
-    # Turn right degree by degree (from center to right)
-    print("Turning right while moving forward...")
-    for angle in range(SERVO_CENTER, SERVO_RIGHT + 1):
-        cmd = f"C:SET_STEER:{angle}"
-        print(f"-> {cmd}")
-        write_line(ser, cmd)
-        time.sleep(delay_s)
+    # Zigzag pattern: left -> right -> left -> right (faster)
+    print("Performing zigzag pattern...")
+    zigzag_cycles = 4  # Number of left-right cycles
+    
+    for cycle in range(zigzag_cycles):
+        # Turn left
+        print(f"Cycle {cycle + 1}: Turning LEFT")
+        for angle in range(SERVO_CENTER, SERVO_LEFT - 1, -2):  # Step by 2 for faster movement
+            cmd = f"C:SET_STEER:{angle}"
+            write_line(ser, cmd)
+            time.sleep(delay_s)
+        
+        # Turn right
+        print(f"Cycle {cycle + 1}: Turning RIGHT")
+        for angle in range(SERVO_LEFT, SERVO_RIGHT + 1, 2):  # Step by 2 for faster movement
+            cmd = f"C:SET_STEER:{angle}"
+            write_line(ser, cmd)
+            time.sleep(delay_s)
+        
+        # Return to center before next cycle
+        if cycle < zigzag_cycles - 1:  # Don't center on last cycle
+            for angle in range(SERVO_RIGHT, SERVO_CENTER - 1, -2):
+                cmd = f"C:SET_STEER:{angle}"
+                write_line(ser, cmd)
+                time.sleep(delay_s)
         
         # Read any responses
-        for ln in read_available(ser):
-            if ln:
+        responses = read_available(ser, timeout=0.1)
+        for ln in responses:
+            if ln and "STATUS:" not in ln:  # Filter STATUS messages
                 print(f"<- {ln}")
     
-    # Continue forward a bit more
-    time.sleep(delay_s * 5)
+    # Return to center
+    print("Returning to center...")
+    cmd = f"C:SET_STEER:{SERVO_CENTER}"
+    write_line(ser, cmd)
+    time.sleep(delay_s * 2)
     
     # Stop
     print("-> E:BRAKE_NOW:0")
     write_line(ser, "E:BRAKE_NOW:0")
     time.sleep(delay_s)
     
-    print("Demo completed!")
+    print("Zigzag demo completed!")
 
 
 def interactive_loop(ser: serial.Serial) -> None:
     print("Interactive UART simulator. Type 'help' for commands. Ctrl+C to quit.")
-    print("(All serial output from ESP32 will be shown in real-time)")
     print(HELP_TEXT)
-    
-    # Start background thread to read serial continuously
-    output_queue: Queue = Queue()
-    reader_thread = threading.Thread(target=serial_reader_thread, args=(ser, output_queue), daemon=True)
-    reader_thread.start()
-    
     while True:
-        # Check for serial output
         try:
-            while True:
-                source, line = output_queue.get_nowait()
-                if source == "serial":
-                    print(f"<- {line}")
-        except:
-            pass
-        
-        try:
-            # Use timeout for input to allow checking queue periodically
-            # Note: This requires a more complex approach on Windows
-            # For now, we'll check queue before each input
             raw = input("> ").strip()
         except (EOFError, KeyboardInterrupt):
             print()
             break
         if not raw:
-            # show any pending output
-            try:
-                while True:
-                    source, line = output_queue.get_nowait()
-                    if source == "serial":
-                        print(f"<- {line}")
-            except:
-                pass
+            # show any pending output (filter STATUS messages)
+            responses = read_available(ser, timeout=0.2)
+            status_messages = [ln for ln in responses if "STATUS:" in ln]
+            other_messages = [ln for ln in responses if "STATUS:" not in ln]
+            
+            for ln in other_messages:
+                if ln:
+                    print(f"<- {ln}")
+            
+            if status_messages:
+                print(f"<- {status_messages[-1]}")
+                if len(status_messages) > 1:
+                    print(f"    ... ({len(status_messages) - 1} more STATUS messages suppressed)")
             continue
         parts = raw.split()
         cmd = parts[0].lower()
@@ -260,30 +305,54 @@ def interactive_loop(ser: serial.Serial) -> None:
                     write_line(ser, raw)
                 else:
                     print("Unknown command. Type 'help'.")
-            # Check for any serial output after sending command
-            time.sleep(0.05)
-            try:
-                while True:
-                    source, line = output_queue.get_nowait()
-                    if source == "serial":
-                        print(f"<- {line}")
-            except:
-                pass
+            # Wait a bit for response, then read available data
+            # Use shorter timeout to avoid accumulating too many STATUS messages
+            time.sleep(0.05)  # Give ESP32 time to process
+            responses = read_available(ser, timeout=0.2)  # Shorter timeout to avoid backlog
+            # Filter out repetitive STATUS messages (keep only the last one if multiple)
+            status_messages = [ln for ln in responses if "STATUS:" in ln]
+            other_messages = [ln for ln in responses if "STATUS:" not in ln]
+            
+            # Print other messages immediately
+            for ln in other_messages:
+                if ln:
+                    print(f"<- {ln}")
+            
+            # Print only the last STATUS message if there are multiple
+            if status_messages:
+                print(f"<- {status_messages[-1]}")
+                if len(status_messages) > 1:
+                    print(f"    ... ({len(status_messages) - 1} more STATUS messages suppressed)")
         except ValueError as ve:
             print(f"Error: {ve}")
+        except serial.SerialException as se:
+            print(f"Serial port error: {se}")
+            print("The serial port may be disconnected or in use by another program.")
+            print("Make sure PlatformIO Serial Monitor is closed.")
+            break
+        except KeyboardInterrupt:
+            print("\nInterrupted by user")
+            break
         except Exception as ex:
-            print(f"Serial error: {ex}")
+            print(f"Unexpected error: {ex}")
+            import traceback
+            traceback.print_exc()
 
 
 def send_batch(port: str, baud: int, commands: List[str], delay_s: float) -> None:
-    with open_serial(port, baud) as ser:
+    ser = open_serial(port, baud)
+    try:
         for cmd in commands:
             print(f"-> {cmd}")
             write_line(ser, cmd)
             time.sleep(delay_s)
-            for ln in read_available(ser):
+            responses = read_available(ser, timeout=0.5)
+            for ln in responses:
                 if ln:
                     print(f"<- {ln}")
+    finally:
+        if ser.is_open:
+            ser.close()
 
 
 def main() -> None:
@@ -302,11 +371,24 @@ def main() -> None:
         return
 
     try:
-        with open_serial(port, args.baud) as ser:
+        ser = open_serial(port, args.baud)
+        try:
             interactive_loop(ser)
+        finally:
+            if ser.is_open:
+                ser.close()
+                print("\nSerial port closed.")
     except serial.SerialException as se:
-        print(f"Failed to open {port}: {se}")
+        print(f"Failed to open {port}: {se}", file=sys.stderr)
+        print("\nTroubleshooting tips:", file=sys.stderr)
+        print("  - Make sure the ESP32 is connected", file=sys.stderr)
+        print("  - Close PlatformIO Serial Monitor if it's open", file=sys.stderr)
+        print("  - Close any other programs using the serial port", file=sys.stderr)
+        print("  - Try unplugging and replugging the USB cable", file=sys.stderr)
         sys.exit(1)
+    except KeyboardInterrupt:
+        print("\n\nExiting...")
+        sys.exit(0)
 
 
 if __name__ == "__main__":
