@@ -78,6 +78,8 @@ Examples:
     parser.add_argument("--arm-system", action="store_true", help="Arm the system before starting")
     parser.add_argument("--mode", choices=["manual", "auto"], default="manual", help="System mode: manual or auto (default: manual)")
     parser.add_argument("--no-display", action="store_true", help="Disable display windows")
+    parser.add_argument("--web-stream", action="store_true", help="Enable web streaming (accessible via browser)")
+    parser.add_argument("--web-port", type=int, default=5000, help="Port for web streaming (default: 5000)")
     
     args = parser.parse_args()
     
@@ -130,12 +132,26 @@ Examples:
         # Create lane follower controller
         controller = LaneFollowerController(uart_controller, args.speed)
         
+        # Inicializar web streamer si está habilitado
+        web_streamer = None
+        if args.web_stream:
+            try:
+                from web_streamer import WebStreamer
+                web_streamer = WebStreamer(port=args.web_port)
+                web_streamer.start()
+            except ImportError:
+                print("Error: Flask not installed. Install with: pip install flask")
+                print("Web streaming disabled.")
+                args.web_stream = False
+        
         # Setup signal handler for graceful shutdown
         def signal_handler(sig, frame):
             print("\n\nShutting down...")
             uart_controller.emergency_stop()
             time.sleep(0.1)
             uart_controller.disconnect()
+            if web_streamer:
+                web_streamer.stop()
             sys.exit(0)
         
         signal.signal(signal.SIGINT, signal_handler)
@@ -143,13 +159,16 @@ Examples:
         
         print(f"Starting lane following...")
         print(f"UART control: ENABLED (speed: {args.speed})")
+        if args.web_stream:
+            print(f"Web streaming: ENABLED (port: {args.web_port})")
         print("Press 'q' to quit or Ctrl+C to stop")
         
         # Run lane detection with callback
         run_lane_detection(
             camera_path=camera_path,
             steering_callback=controller.on_steering_detected,
-            show_display=not args.no_display
+            show_display=not args.no_display,
+            web_streamer=web_streamer
         )
         
     except KeyboardInterrupt:

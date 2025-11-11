@@ -472,7 +472,8 @@ def run_lane_detection(
     steering_callback: Optional[Callable[[float], None]] = None,
     show_display: bool = True,
     target_width: int = 640,
-    target_height: int = 480
+    target_height: int = 480,
+    web_streamer=None
 ):
     """
     Ejecuta la detección de carriles con callback para eventos de dirección.
@@ -483,6 +484,7 @@ def run_lane_detection(
         show_display: Si True, muestra las ventanas de visualización
         target_width: Ancho objetivo para procesamiento
         target_height: Alto objetivo para procesamiento
+        web_streamer: Optional WebStreamer instance for web streaming
     
     Returns:
         None (ejecuta hasta que se presiona 'q')
@@ -546,39 +548,45 @@ def run_lane_detection(
                 except Exception as e:
                     print(f"Error en steering callback: {e}")
             
+            # Obtener el canny_image procesando una copia (para no modificar frame dos veces)
+            frame_copy = frame.copy()
+            _, _, _, _, canny_image = detector.image_processing(frame_copy)
+            
+            # Preparar frame con información para visualización
+            display_frame = frame.copy()
+            resolution_text = f"Resolucion: {target_width}x{target_height}"
+            cv2.putText(display_frame, resolution_text, (10, 30), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+            
+            info_text = f"Steering Angle: {steering_angle}°"
+            cv2.putText(display_frame, info_text, (10, 60), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
+            
+            # Mostrar dirección
+            if steering_angle > 0:
+                direction = f"GIRAR DERECHA"
+                color = (0, 165, 255)
+            elif steering_angle < 0:
+                direction = f"GIRAR IZQUIERDA"
+                color = (255, 0, 255)
+            else:
+                direction = "RECTO"
+                color = (0, 255, 0)
+            
+            cv2.putText(display_frame, direction, (10, 100), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, color, 2)
+            
+            # Actualizar web streamer si está disponible
+            if web_streamer:
+                canny_display = cv2.cvtColor(canny_image, cv2.COLOR_GRAY2BGR)
+                web_streamer.update_frame(display_frame, canny_display)
+            
             if show_display:
-                # Obtener el canny_image procesando una copia (para no modificar frame dos veces)
-                frame_copy = frame.copy()
-                _, _, _, _, canny_image = detector.image_processing(frame_copy)
-                
-                # Mostrar información en la imagen
-                resolution_text = f"Resolucion: {target_width}x{target_height}"
-                cv2.putText(frame, resolution_text, (10, 30), 
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-                
-                info_text = f"Steering Angle: {steering_angle}°"
-                cv2.putText(frame, info_text, (10, 60), 
-                            cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
-                
-                # Mostrar dirección
-                if steering_angle > 0:
-                    direction = f"GIRAR DERECHA"
-                    color = (0, 165, 255)
-                elif steering_angle < 0:
-                    direction = f"GIRAR IZQUIERDA"
-                    color = (255, 0, 255)
-                else:
-                    direction = "RECTO"
-                    color = (0, 255, 0)
-                
-                cv2.putText(frame, direction, (10, 100), 
-                            cv2.FONT_HERSHEY_SIMPLEX, 1.0, color, 2)
-                
                 # Convertir canny a BGR para mostrar
                 canny_display = cv2.cvtColor(canny_image, cv2.COLOR_GRAY2BGR)
                 
                 # Mostrar ventanas
-                cv2.imshow('Detección de Carriles - Marcos', frame)
+                cv2.imshow('Detección de Carriles - Marcos', display_frame)
                 cv2.imshow('Canny - Detección de Bordes', canny_display)
             
         except Exception as e:
@@ -598,6 +606,8 @@ def run_lane_detection(
     cap.release()
     if show_display:
         cv2.destroyAllWindows()
+    if web_streamer:
+        web_streamer.stop()
     
     print("Cámara cerrada")
 
@@ -609,6 +619,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Lane detection (demo mode - no UART)")
     parser.add_argument("--camera", type=int, default=None, help="Camera index (default: auto-select via config)")
     parser.add_argument("--no-display", action="store_true", help="Disable display windows")
+    parser.add_argument("--web-stream", action="store_true", help="Enable web streaming (accessible via browser)")
+    parser.add_argument("--web-port", type=int, default=5000, help="Port for web streaming (default: 5000)")
     args = parser.parse_args()
     
     # Seleccionar cámara
@@ -617,10 +629,23 @@ if __name__ == "__main__":
     else:
         camera_path = choose_camera_by_OS()
     
+    # Inicializar web streamer si está habilitado
+    web_streamer = None
+    if args.web_stream:
+        try:
+            from web_streamer import WebStreamer
+            web_streamer = WebStreamer(port=args.web_port)
+            web_streamer.start()
+        except ImportError:
+            print("Error: Flask not installed. Install with: pip install flask")
+            print("Web streaming disabled.")
+            args.web_stream = False
+    
     # Ejecutar detección sin callback (solo visualización)
     run_lane_detection(
         camera_path=camera_path,
         steering_callback=None,
-        show_display=not args.no_display
+        show_display=not args.no_display,
+        web_streamer=web_streamer
     )
     
