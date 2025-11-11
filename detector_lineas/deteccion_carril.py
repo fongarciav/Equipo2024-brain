@@ -1,21 +1,12 @@
 import time
 import sys
-import argparse
+from typing import Optional, Callable
 
 import cv2
 import numpy as np
 import math
 
 from config import choose_camera_by_OS
-
-# UART imports (optional)
-try:
-    import serial
-    from serial.tools import list_ports
-    UART_AVAILABLE = True
-except ImportError:
-    UART_AVAILABLE = False
-    print("Warning: pyserial not available. UART control disabled.")
 
 # ===== STUBS PARA FUNCIONES FALTANTES (para que funcione sin el sistema completo) =====
 def get_new_votes_logic():
@@ -37,15 +28,15 @@ class MockQueueList(dict):
 
 # LANES
 PID_TOLERANCE = 50
-PID_KP = 0.075
+PID_KP = 0.05
 PROP_CONSTANT = 1.2
 
 THRESHOLD = 165
 KERNEL = 3
 ROI = 35
 
-PID_KI = 0.05
-PID_KD = 0.05
+PID_KI = 0.02
+PID_KD = 0.1
 
 # THRESHOLD = 100
 # KERNEL = 9
@@ -475,170 +466,35 @@ class MarcosLaneDetector:
         return steering_angle
 
 
-# ===== FUNCIONES UART =====
-def degrees_to_servo(degrees: float, max_degrees: float = 22.0) -> int:
+# ===== FUNCIÓN PARA EJECUTAR DETECCIÓN CON CALLBACK =====
+def run_lane_detection(
+    camera_path,
+    steering_callback: Optional[Callable[[float], None]] = None,
+    show_display: bool = True,
+    target_width: int = 640,
+    target_height: int = 480
+):
     """
-    Convierte grados de lane detector a valor de servo.
+    Ejecuta la detección de carriles con callback para eventos de dirección.
     
     Args:
-        degrees: Ángulo en grados (-max_degrees a +max_degrees)
-        max_degrees: Máximo ángulo permitido (default: 22°)
+        camera_path: Ruta o índice de la cámara
+        steering_callback: Función callback que recibe el ángulo de dirección en grados
+        show_display: Si True, muestra las ventanas de visualización
+        target_width: Ancho objetivo para procesamiento
+        target_height: Alto objetivo para procesamiento
     
     Returns:
-        Valor de servo (50-135)
+        None (ejecuta hasta que se presiona 'q')
     """
-    SERVO_CENTER = 105
-    SERVO_RANGE = 85  # 135 - 50
-    
-    # Normalizar a -1.0 a +1.0
-    normalized = degrees / max_degrees
-    # Limitar al rango [-1, 1]
-    normalized = max(-1.0, min(1.0, normalized))
-    # Convertir a valor de servo
-    # NOTA: La convención está invertida - cuando degrees > 0 (derecha en detector),
-    # el servo necesita un valor menor a 105 (izquierda en servo) para que el carro vaya a la derecha
-    # Por lo tanto invertimos el signo
-    servo_value = SERVO_CENTER - (normalized * (SERVO_RANGE / 2))
-    return int(round(servo_value))
-
-
-def open_serial(port: str, baud: int = 115200):
-    """Open serial port with appropriate settings."""
-    if not UART_AVAILABLE:
-        raise ImportError("pyserial not available")
-    
-    ser = serial.Serial(
-        port=port,
-        baudrate=baud,
-        timeout=1.0,
-        write_timeout=1.0,
-        bytesize=serial.EIGHTBITS,
-        parity=serial.PARITY_NONE,
-        stopbits=serial.STOPBITS_ONE,
-        xonxoff=False,
-        rtscts=False,
-        dsrdtr=False
-    )
-    # Clear any pending data
-    ser.reset_input_buffer()
-    ser.reset_output_buffer()
-    return ser
-
-
-def write_line(ser: serial.Serial, msg: str) -> None:
-    """Write a line to serial port with error handling."""
-    if not ser.is_open:
-        raise serial.SerialException("Serial port is not open")
-    line = (msg.strip() + "\n").encode("utf-8")
-    try:
-        ser.write(line)
-        ser.flush()
-    except serial.SerialTimeoutException:
-        print("Warning: Write timeout - command may not have been sent", file=sys.stderr)
-    except serial.SerialException as e:
-        print(f"Error writing to serial: {e}", file=sys.stderr)
-        raise
-
-
-def select_port_interactive() -> str:
-    """Select serial port interactively."""
-    if not UART_AVAILABLE:
-        raise ImportError("pyserial not available")
-    
-    ports = list(list_ports.comports())
-    if not ports:
-        print("No serial ports found. Connect the ESP32 and try again.")
-        sys.exit(1)
-    if len(ports) == 1:
-        return ports[0].device
-    print("Available serial ports:")
-    for idx, p in enumerate(ports):
-        print(f"  [{idx}] {p.device} - {p.description}")
-    while True:
-        sel = input("Select port index: ").strip()
-        if sel.isdigit() and 0 <= int(sel) < len(ports):
-            return ports[int(sel)].device
-        print("Invalid selection. Try again.")
-
-
-# ===== BUCLE PRINCIPAL PARA CÁMARA =====
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Lane detection with UART control")
-    parser.add_argument("--uart-port", type=str, help="Serial port for UART control (e.g., /dev/ttyUSB0, COM5). If omitted, UART is disabled.")
-    parser.add_argument("--uart-baud", type=int, default=115200, help="Baud rate for UART (default: 115200)")
-    parser.add_argument("--uart-interactive", action="store_true", help="Select UART port interactively")
-    parser.add_argument("--speed", type=int, default=180, help="Speed value (180-255) to send via UART. Minimum working speed is 180 (default: 180)")
-    parser.add_argument("--camera", type=int, default=None, help="Camera index (default: auto-select via config)")
-    parser.add_argument("--arm-system", action="store_true", help="Arm the system before starting (requires --uart-port)")
-    parser.add_argument("--mode", choices=["manual", "auto"], default="manual", help="System mode: manual or auto (default: manual)")
-    args = parser.parse_args()
-    
-    # Validar velocidad mínima
-    MIN_SPEED = 180
-    if args.speed < MIN_SPEED:
-        print(f"Warning: Speed {args.speed} is below minimum working speed ({MIN_SPEED}). Setting to {MIN_SPEED}.")
-        args.speed = MIN_SPEED
-    if args.speed > 255:
-        print(f"Warning: Speed {args.speed} exceeds maximum (255). Setting to 255.")
-        args.speed = 255
-    
-    # UART setup
-    ser = None
-    use_uart = args.uart_port is not None or args.uart_interactive
-    
-    if use_uart:
-        if not UART_AVAILABLE:
-            print("Error: pyserial not available. Install with: pip install pyserial")
-            sys.exit(1)
-        
-        try:
-            if args.uart_interactive:
-                port = select_port_interactive()
-            else:
-                port = args.uart_port
-            
-            print(f"Opening UART port: {port} at {args.uart_baud} baud...")
-            ser = open_serial(port, args.uart_baud)
-            print("UART connection established!")
-            
-            # Arm system and set mode if requested
-            if args.arm_system:
-                mode_value = 0 if args.mode == "manual" else 1
-                print(f"Setting system mode to {args.mode}...")
-                write_line(ser, f"M:SYS_MODE:{mode_value}")
-                time.sleep(0.1)
-                
-                print("Arming system...")
-                write_line(ser, "M:SYS_ARM:0")
-                time.sleep(0.2)
-                print("System armed!")
-        except Exception as e:
-            print(f"Error opening UART port: {e}")
-            print("Continuing without UART control...")
-            ser = None
-            use_uart = False
-    
-    # Abrir cámara
-    if args.camera is not None:
-        camera_path = args.camera
-    else:
-        camera_path = choose_camera_by_OS()
-    
-    cap = cv2.VideoCapture(4)
+    cap = cv2.VideoCapture(camera_path)
     
     if not cap.isOpened():
-        print(f"Error: No se pudo abrir la cámara (ruta: {camera_path})")
-        if ser and ser.is_open:
-            ser.close()
-        sys.exit(1)
-    
-    # Resolución deseada para el procesamiento
-    TARGET_WIDTH = 640
-    TARGET_HEIGHT = 480
+        raise RuntimeError(f"No se pudo abrir la cámara (ruta: {camera_path})")
     
     # Configurar resolución de la cámara
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, TARGET_WIDTH)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, TARGET_HEIGHT)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, target_width)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, target_height)
     
     # Obtener la resolución real de la cámara
     actual_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -650,21 +506,22 @@ if __name__ == "__main__":
     
     print(f"Cámara abierta (ruta: {camera_path})")
     print(f"Resolución de la cámara: {actual_width}x{actual_height}")
-    print(f"Resolución de procesamiento: {TARGET_WIDTH}x{TARGET_HEIGHT}")
+    print(f"Resolución de procesamiento: {target_width}x{target_height}")
     print(f"FPS: {fps:.2f}")
-    if use_uart:
-        print(f"UART control: ENABLED (speed: {args.speed})")
+    if steering_callback:
+        print("Steering callback: ENABLED")
     else:
-        print("UART control: DISABLED")
+        print("Steering callback: DISABLED")
     print("Presiona 'q' para salir")
     
     # Inicializar detector
     queue_list = MockQueueList()
     detector = MarcosLaneDetector(queue_list)
     
-    # Crear ventanas
-    cv2.namedWindow('Detección de Carriles - Marcos', cv2.WINDOW_NORMAL)
-    cv2.namedWindow('Canny - Detección de Bordes', cv2.WINDOW_NORMAL)
+    # Crear ventanas si se requiere visualización
+    if show_display:
+        cv2.namedWindow('Detección de Carriles - Marcos', cv2.WINDOW_NORMAL)
+        cv2.namedWindow('Canny - Detección de Bordes', cv2.WINDOW_NORMAL)
     
     while cap.isOpened():
         ret, frame = cap.read()
@@ -675,92 +532,95 @@ if __name__ == "__main__":
         
         try:
             # Redimensionar el frame a la resolución deseada si es necesario
-            if frame.shape[1] != TARGET_WIDTH or frame.shape[0] != TARGET_HEIGHT:
-                frame = cv2.resize(frame, (TARGET_WIDTH, TARGET_HEIGHT))
+            if frame.shape[1] != target_width or frame.shape[0] != target_height:
+                frame = cv2.resize(frame, (target_width, target_height))
             
             # Calcular steering angle (esto procesa la imagen y dibuja las líneas)
             # La imagen ya está modificada con las líneas dibujadas
             steering_angle = detector.get_steering_angle(frame)
             
-            # Enviar comandos UART si está habilitado
-            if use_uart and ser and ser.is_open:
+            # Llamar callback si está disponible
+            if steering_callback:
                 try:
-                    # Convertir ángulo de grados a valor de servo
-                    servo_value = degrees_to_servo(steering_angle, max_degrees=22.0)
-                    
-                    # Enviar comando de dirección
-                    write_line(ser, f"C:SET_STEER:{servo_value}")
-                    
-                    # Enviar comando de velocidad (mantener constante)
-                    # Solo enviar velocidad si cambió o cada N frames para reducir carga
-                    write_line(ser, f"C:SET_SPEED:{args.speed}")
+                    steering_callback(steering_angle)
                 except Exception as e:
-                    print(f"Error sending UART command: {e}")
+                    print(f"Error en steering callback: {e}")
             
-            # Obtener el canny_image procesando una copia (para no modificar frame dos veces)
-            frame_copy = frame.copy()
-            _, _, _, _, canny_image = detector.image_processing(frame_copy)
-            
-            # Mostrar información en la imagen
-            resolution_text = f"Resolucion: {TARGET_WIDTH}x{TARGET_HEIGHT}"
-            cv2.putText(frame, resolution_text, (10, 30), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-            
-            info_text = f"Steering Angle: {steering_angle}°"
-            cv2.putText(frame, info_text, (10, 60), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
-            
-            # Mostrar información UART si está habilitado
-            if use_uart and ser and ser.is_open:
-                servo_value = degrees_to_servo(steering_angle, max_degrees=22.0)
-                uart_text = f"UART: SERVO={servo_value}, SPEED={args.speed}"
-                cv2.putText(frame, uart_text, (10, 90), 
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 2)
-            
-            # Mostrar dirección
-            if steering_angle > 0:
-                direction = f"GIRAR DERECHA"
-                color = (0, 165, 255)
-            elif steering_angle < 0:
-                direction = f"GIRAR IZQUIERDA"
-                color = (255, 0, 255)
-            else:
-                direction = "RECTO"
-                color = (0, 255, 0)
-            
-            cv2.putText(frame, direction, (10, 100), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, color, 2)
-            
-            # Convertir canny a BGR para mostrar
-            canny_display = cv2.cvtColor(canny_image, cv2.COLOR_GRAY2BGR)
-            
-            # Mostrar ventanas
-            cv2.imshow('Detección de Carriles - Marcos', frame)
-            cv2.imshow('Canny - Detección de Bordes', canny_display)
+            if show_display:
+                # Obtener el canny_image procesando una copia (para no modificar frame dos veces)
+                frame_copy = frame.copy()
+                _, _, _, _, canny_image = detector.image_processing(frame_copy)
+                
+                # Mostrar información en la imagen
+                resolution_text = f"Resolucion: {target_width}x{target_height}"
+                cv2.putText(frame, resolution_text, (10, 30), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                
+                info_text = f"Steering Angle: {steering_angle}°"
+                cv2.putText(frame, info_text, (10, 60), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
+                
+                # Mostrar dirección
+                if steering_angle > 0:
+                    direction = f"GIRAR DERECHA"
+                    color = (0, 165, 255)
+                elif steering_angle < 0:
+                    direction = f"GIRAR IZQUIERDA"
+                    color = (255, 0, 255)
+                else:
+                    direction = "RECTO"
+                    color = (0, 255, 0)
+                
+                cv2.putText(frame, direction, (10, 100), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 1.0, color, 2)
+                
+                # Convertir canny a BGR para mostrar
+                canny_display = cv2.cvtColor(canny_image, cv2.COLOR_GRAY2BGR)
+                
+                # Mostrar ventanas
+                cv2.imshow('Detección de Carriles - Marcos', frame)
+                cv2.imshow('Canny - Detección de Bordes', canny_display)
             
         except Exception as e:
             print(f"Error procesando frame: {e}")
             continue
         
         # Control de salida
-        key = cv2.waitKey(frame_delay) & 0xFF
-        
-        if key == ord('q'):
-            break
+        if show_display:
+            key = cv2.waitKey(frame_delay) & 0xFF
+            if key == ord('q'):
+                break
+        else:
+            # Si no hay display, usar pequeño delay para no saturar CPU
+            time.sleep(frame_delay / 1000.0)
     
     # Cleanup
     cap.release()
-    cv2.destroyAllWindows()
-    
-    if ser and ser.is_open:
-        # Send emergency stop before closing
-        try:
-            write_line(ser, "E:BRAKE_NOW:0")
-            time.sleep(0.1)
-        except:
-            pass
-        ser.close()
-        print("UART connection closed")
+    if show_display:
+        cv2.destroyAllWindows()
     
     print("Cámara cerrada")
+
+
+# ===== BUCLE PRINCIPAL PARA DEMO (sin UART) =====
+if __name__ == "__main__":
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="Lane detection (demo mode - no UART)")
+    parser.add_argument("--camera", type=int, default=None, help="Camera index (default: auto-select via config)")
+    parser.add_argument("--no-display", action="store_true", help="Disable display windows")
+    args = parser.parse_args()
+    
+    # Seleccionar cámara
+    if args.camera is not None:
+        camera_path = args.camera
+    else:
+        camera_path = choose_camera_by_OS()
+    
+    # Ejecutar detección sin callback (solo visualización)
+    run_lane_detection(
+        camera_path=camera_path,
+        steering_callback=None,
+        show_display=not args.no_display
+    )
     
