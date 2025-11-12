@@ -302,10 +302,8 @@ class MarcosLaneDetector:
                         screen_center = image_width / 2
                         if bottom_x < screen_center:
                             left_lines.append(line)
-                            print(f"[LINE] LEFT - bottom_x: {bottom_x} (center: {screen_center})")
                         else:
                             right_lines.append(line)
-                            print(f"[LINE] RIGHT - bottom_x: {bottom_x} (center: {screen_center})")
                     else:
                         # Fallback to old slope-based method if dimensions not provided
                         if slope < 0:
