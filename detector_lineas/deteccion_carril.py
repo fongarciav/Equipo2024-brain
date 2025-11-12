@@ -225,14 +225,12 @@ class MarcosLaneDetector:
                 self.just_seen_two_lines = True
                 steering_angle = self.prev_steering_angle
         elif average_left_line is not None:
-            print(f"[STEERING] ONLY LEFT line detected -> steering={self.follow_left_line(average_left_line) if self.consecutive_single_left_lines < 2 else 22}")
             if self.consecutive_single_left_lines == 2:
                 steering_angle = 22
             else:
                 steering_angle = self.follow_left_line(average_left_line)
                 self.consecutive_single_left_lines = self.consecutive_single_left_lines + 1
         elif average_right_line is not None:
-            print(f"[STEERING] ONLY RIGHT line detected -> steering={self.follow_right_line(average_right_line) if self.consecutive_single_right_lines < 2 else -22}")
             self.should_decrease_votes = True
             if self.consecutive_single_right_lines == 2:
                 steering_angle = -22
