@@ -197,13 +197,13 @@ class WebStreamer:
                     <div class="control-group">
                         <label for="ki">Ki (Integral): <span class="value-display" id="kiValue">0.001</span></label>
                         <div class="slider-container">
-                            <input type="range" id="ki" class="slider" min="0" max="0.01" step="0.0001" value="0.001">
+                            <input type="range" id="ki" class="slider" min="0" max="0.1" step="0.0001" value="0.001">
                         </div>
                     </div>
                     <div class="control-group">
                         <label for="kd">Kd (Derivative): <span class="value-display" id="kdValue">0.001</span></label>
                         <div class="slider-container">
-                            <input type="range" id="kd" class="slider" min="0" max="0.01" step="0.0001" value="0.001">
+                            <input type="range" id="kd" class="slider" min="0" max="0.1" step="0.0001" value="0.001">
                         </div>
                     </div>
                     <div class="control-group">
