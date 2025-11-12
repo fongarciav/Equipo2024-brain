@@ -738,16 +738,41 @@ if __name__ == "__main__":
         try:
             from signal_detector import SignalDetector
             import os
-            model_path = os.path.abspath(args.signal_model)
+            # Resolve path relative to this script's directory
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            if os.path.isabs(args.signal_model):
+                model_path = args.signal_model
+            else:
+                model_path = os.path.join(script_dir, args.signal_model)
+            model_path = os.path.abspath(model_path)
+            
             if not os.path.exists(model_path):
                 print(f"Warning: Signal model not found at {model_path}")
-                print("Signal detection disabled.")
-            else:
-                signal_detector = SignalDetector(model_path, conf_threshold=args.signal_conf)
-                if signal_detector.is_available():
-                    print(f"Signal detection: ENABLED (model: {model_path})")
+                # Try fallback to .pt file if .engine not found
+                if model_path.endswith('.engine'):
+                    fallback_path = model_path.replace('.engine', '.pt')
+                    if os.path.exists(fallback_path):
+                        print(f"Using fallback model: {fallback_path}")
+                        model_path = fallback_path
+                    else:
+                        print("Signal detection disabled.")
+                        signal_detector = None
+                        model_path = None
                 else:
-                    print("Signal detection: DISABLED (model failed to load)")
+                    print("Signal detection disabled.")
+                    signal_detector = None
+                    model_path = None
+            
+            if model_path and os.path.exists(model_path):
+                try:
+                    signal_detector = SignalDetector(model_path, conf_threshold=args.signal_conf)
+                    if signal_detector.is_available():
+                        print(f"Signal detection: ENABLED (model: {model_path})")
+                    else:
+                        print("Signal detection: DISABLED (model failed to load)")
+                        signal_detector = None
+                except Exception as e:
+                    print(f"Error loading signal detector: {e}")
                     signal_detector = None
         except ImportError as e:
             print(f"Error: Signal detector dependencies not installed: {e}")
