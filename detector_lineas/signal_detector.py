@@ -51,17 +51,25 @@ class SignalDetector:
         """Load TensorRT engine model."""
         try:
             import tensorrt as trt
+            print(f"✓ TensorRT found: version {trt.__version__}")
         except ImportError:
-            print("⚠ TensorRT not available. Install via JetPack on Jetson.")
+            print("⚠ TensorRT not available.")
+            print("   To install on Jetson:")
+            print("   sudo apt-get update")
+            print("   sudo apt-get install python3-libnvinfer python3-libnvinfer-dev")
+            print("   See INSTALL_TENSORRT.md for detailed instructions")
             return False
         
         try:
             import pycuda.driver as cuda
             import pycuda.autoinit
+            print("✓ PyCUDA found")
         except ImportError:
             print("⚠ PyCUDA not available.")
-            print("   On Jetson: sudo apt-get install python3-pycuda")
-            print("   On other systems: pip install pycuda")
+            print("   To install on Jetson:")
+            print("   sudo apt-get install python3-pycuda")
+            print("   Or: pip3 install pycuda")
+            print("   See INSTALL_TENSORRT.md for detailed instructions")
             return False
         
         try:
@@ -125,21 +133,41 @@ class SignalDetector:
             
         except ImportError as e:
             print(f"⚠ TensorRT dependencies not available: {e}")
-            print("   On Jetson: TensorRT should be pre-installed via JetPack")
-            print("   PyCUDA: sudo apt-get install python3-pycuda")
-            print("   Falling back to YOLO model if available...")
+            print("   To install on Jetson:")
+            print("   sudo apt-get install python3-libnvinfer python3-libnvinfer-dev python3-pycuda")
+            print("   See INSTALL_TENSORRT.md for detailed instructions")
             return False
         except Exception as e:
             print(f"⚠ Error loading TensorRT model: {e}")
-            print("   Falling back to YOLO model if available...")
+            import traceback
+            traceback.print_exc()
+            print("   Check that the .engine file is valid and TensorRT/PyCUDA are properly installed")
+            print("   See INSTALL_TENSORRT.md for troubleshooting")
             return False
     
     def _load_yolo_model(self, model_path: str):
         """Load YOLO model (Ultralytics or YOLOv5) as fallback."""
+        # Check if file is actually a TensorRT file (shouldn't happen, but safety check)
+        if self._is_tensorrt_model(model_path):
+            print(f"⚠ Warning: File {model_path} appears to be TensorRT but TensorRT loading failed.")
+            print("   Trying YOLO fallback...")
+            # Try to find a .pt file with the same name
+            import os
+            pt_path = os.path.splitext(model_path)[0] + '.pt'
+            if os.path.exists(pt_path):
+                print(f"   Found .pt file: {pt_path}")
+                model_path = pt_path
+            else:
+                print(f"   No .pt fallback found. Cannot load model.")
+                return False
+        
         try:
             # Try ultralytics (YOLOv8)
             try:
                 from ultralytics import YOLO
+                # Safety check: don't try to load .engine files with Ultralytics
+                if self._is_tensorrt_model(model_path):
+                    raise ValueError(f"Cannot load TensorRT file {model_path} with Ultralytics. TensorRT loader should be used.")
                 self.model = YOLO(model_path)
                 self.model_type = 'ultralytics'
                 self.device = 'cuda'  # Ultralytics auto-detects GPU
@@ -175,10 +203,27 @@ class SignalDetector:
         
         # Try TensorRT first (for Jetson optimization)
         if self._is_tensorrt_model(self.model_path):
+            print(f"Detected TensorRT model: {self.model_path}")
             if self._load_tensorrt_model(self.model_path):
                 return
+            else:
+                # TensorRT failed, try to find .pt fallback
+                import os
+                pt_path = os.path.splitext(self.model_path)[0] + '.pt'
+                if os.path.exists(pt_path):
+                    print(f"TensorRT unavailable. Using YOLO fallback: {pt_path}")
+                    if self._load_yolo_model(pt_path):
+                        return
+                else:
+                    print(f"⚠ TensorRT model failed to load and no .pt fallback found.")
+                    print("   To use your .engine file, install TensorRT and PyCUDA:")
+                    print("   sudo apt-get install python3-libnvinfer python3-libnvinfer-dev python3-pycuda")
+                    print("   Or see INSTALL_TENSORRT.md for detailed instructions")
+                    self.model = None
+                    self.device = 'cpu'
+                    return
         
-        # Fallback to YOLO
+        # Fallback to YOLO (for .pt files)
         if self._load_yolo_model(self.model_path):
             return
         
