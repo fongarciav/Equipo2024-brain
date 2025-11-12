@@ -104,7 +104,6 @@ class MarcosLaneDetector:
         self.consecutive_single_right_lines = 0
         self.consecutive_single_left_lines = 0
         self.just_seen_two_lines = False
-        self.lowered_speed = False
         self.should_decrease_votes = False
         self.first_time_in_votes_logic = True
         self.new_votes_logic_start_time = 0
@@ -149,29 +148,10 @@ class MarcosLaneDetector:
                  (165, 0, 255), 2)
         return steering_angle
 
-    def lower_speed(self):
-        self.lowered_speed = True
-        # En la demo, solo imprimir (no hay sistema de mensajes)
-        print("Velocidad reducida")
-        self.queue_list['Warning'].put({
-            "msgValue": "LOW_SPEED"
-        })
-
-    def increase_speed(self):
-        self.lowered_speed = False
-        # En la demo, solo imprimir (no hay sistema de mensajes)
-        print("Velocidad normal")
-        self.queue_list['Warning'].put({
-            "msgValue": "BASE_SPEED"
-        })
-
     def get_steering_angle(self, image, repetition=1):
         average_left_line, average_right_line, height, width, canny_image = self.image_processing(image)
 
         if average_left_line is not None and average_right_line is not None:
-            if self.lowered_speed and self.just_seen_two_lines:
-                self.increase_speed()
-
             if self.just_seen_two_lines:
                 error = self.getting_error(image, average_left_line, average_right_line, height, width)
                 self.just_seen_two_lines = False
@@ -183,20 +163,12 @@ class MarcosLaneDetector:
                 steering_angle = self.prev_steering_angle
         elif average_left_line is not None:
             if self.consecutive_single_left_lines == 2:
-                if not self.lowered_speed:
-                    self.lower_speed()
-
-            if self.consecutive_single_left_lines == 2:
                 steering_angle = 22
             else:
                 steering_angle = self.follow_left_line(average_left_line)
                 self.consecutive_single_left_lines = self.consecutive_single_left_lines + 1
         elif average_right_line is not None:
             self.should_decrease_votes = True
-            if self.consecutive_single_right_lines == 2:
-                if not self.lowered_speed:
-                    self.lower_speed()
-
             if self.consecutive_single_right_lines == 2:
                 steering_angle = -22
             else:
