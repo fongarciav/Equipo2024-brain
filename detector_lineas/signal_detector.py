@@ -152,7 +152,6 @@ class SignalDetector:
             print(f"⚠ Warning: File {model_path} appears to be TensorRT but TensorRT loading failed.")
             print("   Trying YOLO fallback...")
             # Try to find a .pt file with the same name
-            import os
             pt_path = os.path.splitext(model_path)[0] + '.pt'
             if os.path.exists(pt_path):
                 print(f"   Found .pt file: {pt_path}")
@@ -208,7 +207,6 @@ class SignalDetector:
                 return
             else:
                 # TensorRT failed, try to find .pt fallback
-                import os
                 pt_path = os.path.splitext(self.model_path)[0] + '.pt'
                 if os.path.exists(pt_path):
                     print(f"TensorRT unavailable. Using YOLO fallback: {pt_path}")
