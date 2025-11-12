@@ -202,12 +202,14 @@ class MarcosLaneDetector:
                 self.just_seen_two_lines = True
                 steering_angle = self.prev_steering_angle
         elif average_left_line is not None:
+            print(f"[STEERING] ONLY LEFT line detected -> steering={self.follow_left_line(average_left_line) if self.consecutive_single_left_lines < 2 else 22}")
             if self.consecutive_single_left_lines == 2:
                 steering_angle = 22
             else:
                 steering_angle = self.follow_left_line(average_left_line)
                 self.consecutive_single_left_lines = self.consecutive_single_left_lines + 1
         elif average_right_line is not None:
+            print(f"[STEERING] ONLY RIGHT line detected -> steering={self.follow_right_line(average_right_line) if self.consecutive_single_right_lines < 2 else -22}")
             self.should_decrease_votes = True
             if self.consecutive_single_right_lines == 2:
                 steering_angle = -22
@@ -254,7 +256,18 @@ class MarcosLaneDetector:
         steering_angle = self.pid_controller.compute(error, self.dt)
         return round(steering_angle)
 
-    def lines_classifier(self, lines):
+    def lines_classifier(self, lines, image_width=None, image_height=None):
+        """
+        Classify lines as left or right based on their position at the bottom of the image.
+        
+        Args:
+            lines: Detected lines from HoughLinesP
+            image_width: Width of the image (required for position-based classification)
+            image_height: Height of the image (required for finding lowest point)
+        
+        Returns:
+            left_lines, right_lines: Lists of classified lines
+        """
         left_lines = []
         right_lines = []
         if lines is not None:
@@ -266,11 +279,39 @@ class MarcosLaneDetector:
                     slope = np.arctan((y2 - y1) / (x2 - x1))
 
                 angle_degrees = np.degrees(abs(slope))
+                
+                # Filter lines by angle (same threshold as before)
                 if angle_degrees > 30 or (angle_degrees < 155 and angle_degrees > 180):
-                    if slope < 0:
-                        left_lines.append(line)
+                    # NEW LOGIC: Classify based on position at the bottom of the image
+                    if image_width is not None and image_height is not None:
+                        # Calculate where the line intersects the bottom of the image (highest y value)
+                        # Using line equation: y = mx + b, solve for x when y = image_height
+                        if x2 - x1 != 0:
+                            line_slope = (y2 - y1) / (x2 - x1)
+                            # y - y1 = m(x - x1) => x = (y - y1)/m + x1
+                            if line_slope != 0:
+                                bottom_x = int((image_height - y1) / line_slope + x1)
+                            else:
+                                # Horizontal line, use x1
+                                bottom_x = x1
+                        else:
+                            # Vertical line, use x1
+                            bottom_x = x1
+                        
+                        # Classify based on which half of the screen the bottom point is in
+                        screen_center = image_width / 2
+                        if bottom_x < screen_center:
+                            left_lines.append(line)
+                            print(f"[LINE] LEFT - bottom_x: {bottom_x} (center: {screen_center})")
+                        else:
+                            right_lines.append(line)
+                            print(f"[LINE] RIGHT - bottom_x: {bottom_x} (center: {screen_center})")
                     else:
-                        right_lines.append(line)
+                        # Fallback to old slope-based method if dimensions not provided
+                        if slope < 0:
+                            left_lines.append(line)
+                        else:
+                            right_lines.append(line)
                 else:
                     continue
         return left_lines, right_lines
@@ -442,7 +483,7 @@ class MarcosLaneDetector:
 
         lines = cv2.HoughLinesP(canny_image, 1, np.pi / 180, self.necessary_votes, minLineLength=50, maxLineGap=150)
 
-        left_lines, right_lines = self.lines_classifier(lines)
+        left_lines, right_lines = self.lines_classifier(lines, image_width=width, image_height=height)
 
         merged_left_lines = self.merge_lines(left_lines)
         merged_right_lines = self.merge_lines(right_lines)
