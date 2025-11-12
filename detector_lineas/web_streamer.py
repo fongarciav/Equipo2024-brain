@@ -187,7 +187,7 @@ class WebStreamer:
                     </div>
                 </div>
                 <div class="controls" id="pidControls">
-                    <h2 style="color: #4CAF50; margin-top: 0;">PID Parameters (Real-time)</h2>
+                    <h2 style="color: #4CAF50; margin-top: 0;">Control Parameters (Real-time)</h2>
                     <div class="control-group">
                         <label for="kp">Kp (Proportional): <span class="value-display" id="kpValue">0.02</span></label>
                         <div class="slider-container">
@@ -212,12 +212,20 @@ class WebStreamer:
                             <input type="range" id="tolerance" class="slider" min="0" max="200" step="1" value="60">
                         </div>
                     </div>
-                    <button onclick="resetPID()">Reset to Default</button>
+                    <div class="control-group">
+                        <label for="roi">ROI (Region of Interest) %: <span class="value-display" id="roiValue">25</span></label>
+                        <div class="slider-container">
+                            <input type="range" id="roi" class="slider" min="0" max="100" step="1" value="25">
+                        </div>
+                        <small style="color: #888; font-size: 12px;">Percentage from top of image (0 = top, 100 = bottom)</small>
+                    </div>
+                    <button onclick="resetPID()">Reset PID to Default</button>
+                    <button onclick="resetROI()" style="margin-left: 10px;">Reset ROI to Default</button>
                 </div>
                 <div class="info">
                     <div class="status">Streaming Active</div>
                     <p>Access this page from any device on your network</p>
-                    <p>Adjust PID parameters in real-time using the sliders above</p>
+                    <p>Adjust PID parameters and ROI in real-time using the sliders above</p>
                 </div>
             </div>
             <script>
@@ -238,8 +246,13 @@ class WebStreamer:
                     document.getElementById('toleranceValue').textContent = e.target.value;
                     updatePID();
                 });
+                document.getElementById('roi').addEventListener('input', function(e) {
+                    document.getElementById('roiValue').textContent = e.target.value;
+                    updateROI();
+                });
                 
                 let updateTimeout;
+                let updateROITimeout;
                 function updatePID() {
                     clearTimeout(updateTimeout);
                     updateTimeout = setTimeout(() => {
@@ -264,6 +277,25 @@ class WebStreamer:
                     }, 100); // Debounce: wait 100ms after last change
                 }
                 
+                function updateROI() {
+                    clearTimeout(updateROITimeout);
+                    updateROITimeout = setTimeout(() => {
+                        const roi = parseInt(document.getElementById('roi').value);
+                        
+                        fetch('/api/roi', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({roi: roi})
+                        }).then(response => response.json())
+                          .then(data => {
+                              if (data.status === 'ok') {
+                                  console.log('ROI updated:', roi);
+                              }
+                          })
+                          .catch(error => console.error('Error:', error));
+                    }, 100); // Debounce: wait 100ms after last change
+                }
+                
                 function resetPID() {
                     document.getElementById('kp').value = 0.02;
                     document.getElementById('ki').value = 0.001;
@@ -274,6 +306,12 @@ class WebStreamer:
                     document.getElementById('kdValue').textContent = '0.001';
                     document.getElementById('toleranceValue').textContent = '60';
                     updatePID();
+                }
+                
+                function resetROI() {
+                    document.getElementById('roi').value = 25;
+                    document.getElementById('roiValue').textContent = '25';
+                    updateROI();
                 }
                 
                 // Load current PID values on page load
@@ -292,6 +330,17 @@ class WebStreamer:
                         }
                     })
                     .catch(error => console.error('Error loading PID:', error));
+                
+                // Load current ROI value on page load
+                fetch('/api/roi')
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.status === 'ok') {
+                            document.getElementById('roi').value = data.roi;
+                            document.getElementById('roiValue').textContent = data.roi;
+                        }
+                    })
+                    .catch(error => console.error('Error loading ROI:', error));
             </script>
         </body>
         </html>
@@ -354,6 +403,32 @@ class WebStreamer:
                 return jsonify({'status': 'ok', 'message': 'PID parameters updated'})
             except Exception as e:
                 return jsonify({'status': 'error', 'message': str(e)}), 400
+        
+        @self.app.route('/api/roi', methods=['GET'])
+        def get_roi():
+            """Get current ROI percentage."""
+            if self.detector:
+                roi = self.detector.get_roi()
+                return jsonify({'status': 'ok', 'roi': roi})
+            return jsonify({'status': 'error', 'message': 'Detector not available'}), 500
+        
+        @self.app.route('/api/roi', methods=['POST'])
+        def set_roi():
+            """Set ROI percentage."""
+            if not self.detector:
+                return jsonify({'status': 'error', 'message': 'Detector not available'}), 500
+            
+            try:
+                data = request.get_json()
+                roi = data.get('roi')
+                
+                if roi is not None:
+                    self.detector.update_roi(roi_percent=roi)
+                    return jsonify({'status': 'ok', 'roi': roi})
+                else:
+                    return jsonify({'status': 'error', 'message': 'ROI value not provided'}), 400
+            except Exception as e:
+                return jsonify({'status': 'error', 'message': str(e)}), 500
     
     def _generate_frames(self, stream_type: str):
         """

@@ -147,6 +147,29 @@ class MarcosLaneDetector:
                 'kd': self.kd,
                 'tolerance': self.tolerancia
             }
+    
+    def update_roi(self, roi_percent=None):
+        """
+        Update ROI (Region of Interest) percentage in real-time.
+        
+        Args:
+            roi_percent: New ROI percentage (0-100), where 0 = top of image, 100 = bottom
+        """
+        with self._pid_lock:
+            if roi_percent is not None:
+                # Clamp to valid range
+                roi_percent = max(0, min(100, roi_percent))
+                self.ROI_value = roi_percent / 100.0
+    
+    def get_roi(self):
+        """
+        Get current ROI percentage.
+        
+        Returns:
+            ROI percentage (0-100)
+        """
+        with self._pid_lock:
+            return self.ROI_value * 100.0
 
     def follow_left_line(self, line):
         x1, y1, x2, y2 = line[0]
@@ -656,9 +679,29 @@ def run_lane_detection(
             cv2.putText(display_frame, direction, (10, 100), 
                         cv2.FONT_HERSHEY_SIMPLEX, 1.0, color, 2)
             
+            # Dibujar ROI (Region of Interest) en el frame
+            height, width = display_frame.shape[:2]
+            roi_y1 = int(detector.ROI_value * height)
+            roi_y2 = height
+            # Dibujar línea superior del ROI
+            cv2.line(display_frame, (0, roi_y1), (width, roi_y1), (255, 255, 0), 2)
+            # Dibujar líneas laterales del ROI (opcional, para mejor visualización)
+            cv2.line(display_frame, (0, roi_y1), (0, roi_y2), (255, 255, 0), 2)
+            cv2.line(display_frame, (width-1, roi_y1), (width-1, roi_y2), (255, 255, 0), 2)
+            # Agregar texto indicando el ROI
+            roi_text = f"ROI: {detector.get_roi():.1f}%"
+            cv2.putText(display_frame, roi_text, (width - 150, roi_y1 - 10), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 2)
+            
             # Actualizar web streamer si está disponible
             if web_streamer:
                 canny_display = cv2.cvtColor(canny_image, cv2.COLOR_GRAY2BGR)
+                # También dibujar ROI en el canny display
+                cv2.line(canny_display, (0, roi_y1), (width, roi_y1), (255, 255, 0), 2)
+                cv2.line(canny_display, (0, roi_y1), (0, roi_y2), (255, 255, 0), 2)
+                cv2.line(canny_display, (width-1, roi_y1), (width-1, roi_y2), (255, 255, 0), 2)
+                cv2.putText(canny_display, roi_text, (width - 150, roi_y1 - 10), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 2)
                 web_streamer.update_frame(display_frame, canny_display)
             
             # Mostrar ventanas solo si display está habilitado Y no hay web streaming
