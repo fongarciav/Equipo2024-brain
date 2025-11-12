@@ -81,7 +81,7 @@ Examples:
     parser.add_argument("--web-stream", action="store_true", help="Enable web streaming (accessible via browser)")
     parser.add_argument("--web-port", type=int, default=5000, help="Port for web streaming (default: 5000)")
     parser.add_argument("--signal-detection", action="store_true", help="Enable traffic signal detection (YOLO)")
-    parser.add_argument("--signal-model", type=str, default="../detector_señales/weights/best.pt", help="Path to YOLO model file (default: ../detector_señales/weights/best.pt)")
+    parser.add_argument("--signal-model", type=str, default="../detector_señales/weights/best.engine", help="Path to model file (.engine/.trt for TensorRT, .pt for YOLO)")
     parser.add_argument("--signal-conf", type=float, default=0.5, help="Confidence threshold for signal detection (default: 0.5)")
     
     args = parser.parse_args()
