@@ -49,14 +49,6 @@ const char *webpage = R"html(
       .btn-animate { transition: transform 0.2s ease; }
       .btn-animate:active { transform: scale(0.9); }
       * { touch-action: manipulation; }
-      #status-overlay {
-        position: fixed; top: 10px; right: 10px;
-        background: rgba(0,0,0,0.8); color: white;
-        padding: 10px; border-radius: 5px; font-size: 12px;
-        z-index: 1000; min-width: 150px;
-      }
-      .status-item { margin: 5px 0; }
-      .status-label { font-weight: bold; }
       #steering-wheel-container {
         display: flex;
         flex-direction: column;
@@ -108,31 +100,9 @@ const char *webpage = R"html(
     </style>
   </head>
   <body style="height: 100vh; background-color: white; display: flex; align-items: center; justify-content: center;">
-    <!-- Status Overlay -->
-    <div id="status-overlay">
-      <div class="status-item">
-        <span class="status-label">Mode:</span> <span id="status-mode">MANUAL</span>
-      </div>
-      <div class="status-item">
-        <span class="status-label">State:</span> <span id="status-state">DISARMED</span>
-      </div>
-      <div class="status-item">
-        <span class="status-label">Heartbeat:</span> <span id="status-heartbeat">--</span>ms
-      </div>
-    </div>
-
-    <div class="cont" style="display: grid; grid-template-columns: repeat(3); grid-template-rows: repeat(7);">
-      <!-- Mode Controls Row -->
-      <div style="grid-row: 1; grid-column: 1 / span 3; text-align: center; display: flex; gap: 10px; justify-content: center; align-items: center;">
-        <button class="btn btn-primary btn-sm" onclick="setMode('MANUAL')">MANUAL</button>
-        <button class="btn btn-primary btn-sm" onclick="setMode('AUTO')">AUTO</button>
-        <button class="btn btn-success btn-sm" onclick="makeAjaxCall('arm')">ARM</button>
-        <button class="btn btn-warning btn-sm" onclick="makeAjaxCall('disarm')">DISARM</button>
-        <button class="btn btn-danger btn-sm" onclick="makeAjaxCall('brake')">BRAKE</button>
-      </div>
-
+    <div class="cont" style="display: grid; grid-template-columns: repeat(3); grid-template-rows: repeat(3);">
       <!--LightsOff-->
-      <div style="grid-row: 2; grid-column: 1; text-align: center; margin-bottom: 10px;">
+      <div style="grid-row: 1; grid-column: 1; text-align: center; margin-bottom: 10px;">
         <button title="lightOff" class="btn btn-warning btn-lg btn-animate" style="font-size: 1.5rem; padding: 20px 25px" ontouchstart='makeAjaxCall("LightsOff")'>
           <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" fill="currentColor" viewBox="0 0 16 16">
             <path d="M2 6a6 6 0 1 1 10.174 4.31c-.203.196-.359.4-.453.619l-.762 1.769A.5.5 0 0 1 10.5 13h-5a.5.5 0 0 1-.46-.302l-.761-1.77a1.964 1.964 0 0 0-.453-.618A5.984 5.984 0 0 1 2 6zm3 8.5a.5.5 0 0 1 .5-.5h5a.5.5 0 0 1 0 1l-.224.447a1 1 0 0 1-.894.553H6.618a1 1 0 0 1-.894-.553L5.5 15a.5.5 0 0 1-.5-.5z"/>
@@ -140,7 +110,7 @@ const char *webpage = R"html(
         </button>
       </div>
       <!--LightsOn-->
-      <div style="grid-row: 2; grid-column: 2; text-align: center">
+      <div style="grid-row: 1; grid-column: 2; text-align: center">
         <button title="lightOn" class="btn btn-warning btn-lg btn-animate" style="font-size: 1.5rem; padding: 20px 25px" ontouchstart='makeAjaxCall("LightsOn")'>
           <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" fill="currentColor" viewBox="0 0 16 16">
             <path d="M2 6a6 6 0 1 1 10.174 4.31c-.203.196-.359.4-.453.619l-.762 1.769A.5.5 0 0 1 10.5 13a.5.5 0 0 1 0 1 .5.5 0 0 1 0 1l-.224.447a1 1 0 0 1-.894.553H6.618a1 1 0 0 1-.894-.553L5.5 15a.5.5 0 0 1 0-1 .5.5 0 0 1 0-1 .5.5 0 0 1-.46-.302l-.761-1.77a1.964 1.964 0 0 0-.453-.618A5.984 5.984 0 0 1 2 6zm6-5a5 5 0 0 0-3.479 8.592c.263.254.514.564.676.941L5.83 12h4.342l.632-1.467c.162-.377.413-.687.676-.941A5 5 0 0 0 8 1z"/>
@@ -148,14 +118,14 @@ const char *webpage = R"html(
         </button>
       </div>
       <!--LightsAuto-->
-      <div style="grid-row: 2; grid-column: 3; text-align: center">
+      <div style="grid-row: 1; grid-column: 3; text-align: center">
         <button class="btn btn-warning btn-lg btn-animate" style="font-size: 1rem; padding: 26px 20px" ontouchstart='makeAjaxCall("LightsAuto")'>
           <label class="fw-bold">AUTO</label>
         </button>
       </div>
 
       <!--Speed Slider Vertical-->
-      <div class="speed-slider-container" style="grid-row: 3; grid-column: 1;">
+      <div class="speed-slider-container" style="grid-row: 2; grid-column: 1;">
         <h4>Velocidad</h4>
         <input type="range" min="-255" max="255" value="0" id="speed-slider-vertical" 
                oninput='updateSpeed(this.value)' />
@@ -163,7 +133,7 @@ const char *webpage = R"html(
       </div>
 
       <!--Steering Wheel-->
-      <div id="steering-wheel-container" style="grid-row: 3; grid-column: 2 / span 2;">
+      <div id="steering-wheel-container" style="grid-row: 2; grid-column: 2 / span 2;">
         <div id="steering-wheel">
           <div class="wheel-spoke" style="transform: translateX(-50%) rotate(0deg);"></div>
           <div class="wheel-spoke" style="transform: translateX(-50%) rotate(72deg);"></div>
@@ -178,26 +148,6 @@ const char *webpage = R"html(
 
     <script>
       function makeAjaxCall(url) { $.ajax({ url: url }); }
-      
-      function setMode(mode) {
-        makeAjaxCall('mode?value=' + mode);
-        updateStatus();
-      }
-      
-      function updateStatus() {
-        $.ajax({
-          url: '/status',
-          success: function(data) {
-            var status = JSON.parse(data);
-            document.getElementById('status-mode').textContent = status.mode;
-            document.getElementById('status-state').textContent = status.state;
-          }
-        });
-      }
-      
-      // Update status every second
-      setInterval(updateStatus, 1000);
-      updateStatus();
       
       // Steering wheel control
       const SERVO_CENTER = 105;

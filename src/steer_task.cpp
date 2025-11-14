@@ -2,6 +2,7 @@
 #include "hardware.h"
 #include "mailbox.h"
 #include "messages.h"
+#include "supervisor_task.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include <Arduino.h>
@@ -14,6 +15,7 @@ void steer_task(void *pvParameters) {
     steer_mailbox = (mailbox_t *)pvParameters;
     
     uint16_t current_angle = SERVO_CENTER;
+    int32_t last_ignored_angle = -1; // Track last ignored angle command to avoid repeated logs
     
     Serial.println("[SteerTask] Steer task started");
     
@@ -29,6 +31,32 @@ void steer_task(void *pvParameters) {
             if (!expired) {
                 switch (cmd) {
                     case CMD_SET_STEER: {
+                        // Check system state before allowing steering commands
+                        system_state_t state = supervisor_get_state();
+                        system_mode_t mode = supervisor_get_mode();
+                        bool can_control = false;
+                        
+                        if (mode == MODE_AUTO) {
+                            // In AUTO mode, need to be RUNNING
+                            can_control = (state == STATE_RUNNING);
+                        } else {
+                            // In MANUAL mode, ARMED is enough
+                            can_control = (state == STATE_ARMED || state == STATE_RUNNING);
+                        }
+                        
+                        if (!can_control) {
+                            // Only print if this is a different command than the last ignored one
+                            if (last_ignored_angle != value) {
+                                Serial.println("[SteerTask] SET_STEER ignored - system DISARMED");
+                                Serial.flush();
+                                last_ignored_angle = value;
+                            }
+                            break;
+                        }
+                        
+                        // Reset ignored tracking when command can be executed
+                        last_ignored_angle = -1;
+                        
                         uint16_t new_angle = (uint16_t)value;
                         // Clamp angle to valid range
                         if (new_angle < SERVO_LEFT) {

@@ -50,30 +50,24 @@ void web_task(void *pvParameters) {
     
     // Motor control
     server.on("/forward", []() {
-        if (supervisor_get_mode() == MODE_MANUAL && supervisor_get_state() == STATE_RUNNING) {
-            if (motor_mb != NULL) {
-                mailbox_write(motor_mb, TOPIC_MOTOR, CMD_SET_SPEED, MOTOR_SPEED_MAX, 100);
-                motor_set_direction(true);
-            }
+        if (motor_mb != NULL) {
+            mailbox_write(motor_mb, TOPIC_MOTOR, CMD_SET_SPEED, MOTOR_SPEED_MAX, 100);
+            motor_set_direction(true);
         }
         server.send(200, "text/plain", "forward");
     });
     
     server.on("/back", []() {
-        if (supervisor_get_mode() == MODE_MANUAL && supervisor_get_state() == STATE_RUNNING) {
-            if (motor_mb != NULL) {
-                mailbox_write(motor_mb, TOPIC_MOTOR, CMD_SET_SPEED, MOTOR_SPEED_MAX, 100);
-                motor_set_direction(false);
-            }
+        if (motor_mb != NULL) {
+            mailbox_write(motor_mb, TOPIC_MOTOR, CMD_SET_SPEED, MOTOR_SPEED_MAX, 100);
+            motor_set_direction(false);
         }
         server.send(200, "text/plain", "back");
     });
     
     server.on("/driveStop", []() {
-        if (supervisor_get_mode() == MODE_MANUAL) {
-            if (motor_mb != NULL) {
-                mailbox_write(motor_mb, TOPIC_MOTOR, CMD_STOP, 0, 100);
-            }
+        if (motor_mb != NULL) {
+            mailbox_write(motor_mb, TOPIC_MOTOR, CMD_STOP, 0, 100);
         }
         server.send(200, "text/plain", "driveStop");
     });
@@ -81,42 +75,34 @@ void web_task(void *pvParameters) {
     // Steering control with degrees
     server.on("/steer", []() {
         String angle_str = server.arg("angle");
-        if (supervisor_get_mode() == MODE_MANUAL && supervisor_get_state() == STATE_RUNNING) {
-            if (steer_mb != NULL && angle_str.length() > 0) {
-                int angle = angle_str.toInt();
-                // Clamp angle to valid range (50-135)
-                if (angle < SERVO_LEFT) angle = SERVO_LEFT;
-                if (angle > SERVO_RIGHT) angle = SERVO_RIGHT;
-                mailbox_write(steer_mb, TOPIC_STEER, CMD_SET_STEER, angle, 200);
-            }
+        if (steer_mb != NULL && angle_str.length() > 0) {
+            int angle = angle_str.toInt();
+            // Clamp angle to valid range (50-135)
+            if (angle < SERVO_LEFT) angle = SERVO_LEFT;
+            if (angle > SERVO_RIGHT) angle = SERVO_RIGHT;
+            mailbox_write(steer_mb, TOPIC_STEER, CMD_SET_STEER, angle, 200);
         }
         server.send(200, "text/plain", "OK");
     });
     
     // Legacy endpoints for backward compatibility
     server.on("/left", []() {
-        if (supervisor_get_mode() == MODE_MANUAL && supervisor_get_state() == STATE_RUNNING) {
-            if (steer_mb != NULL) {
-                mailbox_write(steer_mb, TOPIC_STEER, CMD_SET_STEER, SERVO_LEFT, 100);
-            }
+        if (steer_mb != NULL) {
+            mailbox_write(steer_mb, TOPIC_STEER, CMD_SET_STEER, SERVO_LEFT, 100);
         }
         server.send(200, "text/plain", "left");
     });
     
     server.on("/right", []() {
-        if (supervisor_get_mode() == MODE_MANUAL && supervisor_get_state() == STATE_RUNNING) {
-            if (steer_mb != NULL) {
-                mailbox_write(steer_mb, TOPIC_STEER, CMD_SET_STEER, SERVO_RIGHT, 100);
-            }
+        if (steer_mb != NULL) {
+            mailbox_write(steer_mb, TOPIC_STEER, CMD_SET_STEER, SERVO_RIGHT, 100);
         }
         server.send(200, "text/plain", "right");
     });
     
     server.on("/steerStop", []() {
-        if (supervisor_get_mode() == MODE_MANUAL) {
-            if (steer_mb != NULL) {
-                mailbox_write(steer_mb, TOPIC_STEER, CMD_SET_STEER, SERVO_CENTER, 200);
-            }
+        if (steer_mb != NULL) {
+            mailbox_write(steer_mb, TOPIC_STEER, CMD_SET_STEER, SERVO_CENTER, 200);
         }
         server.send(200, "text/plain", "steerStop");
     });
@@ -148,30 +134,28 @@ void web_task(void *pvParameters) {
         String speed_str = server.arg("speed");
         String direction_str = server.arg("direction");
         
-        if (supervisor_get_mode() == MODE_MANUAL && supervisor_get_state() == STATE_RUNNING) {
-            if (speed_str.length() > 0) {
-                int speed = speed_str.toInt();
-                if (speed >= 0 && speed <= MOTOR_SPEED_MAX) {
-                    if (motor_mb != NULL) {
-                        if (speed == 0) {
-                            // Stop
-                            mailbox_write(motor_mb, TOPIC_MOTOR, CMD_STOP, 0, 200);
+        if (speed_str.length() > 0) {
+            int speed = speed_str.toInt();
+            if (speed >= 0 && speed <= MOTOR_SPEED_MAX) {
+                if (motor_mb != NULL) {
+                    if (speed == 0) {
+                        // Stop
+                        mailbox_write(motor_mb, TOPIC_MOTOR, CMD_STOP, 0, 200);
+                    } else {
+                        // Set speed and direction
+                        mailbox_write(motor_mb, TOPIC_MOTOR, CMD_SET_SPEED, speed, 200);
+                        if (direction_str == "backward") {
+                            motor_set_direction(false);
                         } else {
-                            // Set speed and direction
-                            mailbox_write(motor_mb, TOPIC_MOTOR, CMD_SET_SPEED, speed, 200);
-                            if (direction_str == "backward") {
-                                motor_set_direction(false);
-                            } else {
-                                motor_set_direction(true); // forward or default
-                            }
+                            motor_set_direction(true); // forward or default
                         }
                     }
-                    server.send(200, "text/plain", "OK");
-                    return;
                 }
+                server.send(200, "text/plain", "OK");
+                return;
             }
         }
-        server.send(400, "text/plain", "Invalid speed or not in manual mode");
+        server.send(400, "text/plain", "Invalid speed value");
     });
     
     // System control

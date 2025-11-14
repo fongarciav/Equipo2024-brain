@@ -517,20 +517,27 @@
         }
 
         async function updateStatus() {
-            if (!isConnected) return;
+            if (!isConnected) {
+                document.getElementById('status-mode').textContent = '--';
+                document.getElementById('status-state').textContent = 'DISCONNECTED';
+                document.getElementById('status-time').textContent = '--';
+                return;
+            }
 
             try {
-                const response = await fetch(`${getBaseURL()}/health`, {
+                // Get system status (mode and state)
+                const statusResponse = await fetch(`${getBaseURL()}/status`, {
                     cache: 'no-cache'
                 });
-                if (response.ok) {
-                    const data = await response.json();
-                    // Status not available over UART, show connection status instead
-                    document.getElementById('status-mode').textContent = data.uart_connected ? 'UART' : '--';
-                    document.getElementById('status-state').textContent = data.uart_connected ? 'CONNECTED' : 'DISCONNECTED';
+                if (statusResponse.ok) {
+                    const statusData = await statusResponse.json();
+                    document.getElementById('status-mode').textContent = statusData.mode || '--';
+                    document.getElementById('status-state').textContent = statusData.state || '--';
                     
+                    // Update state color
                     const stateEl = document.getElementById('status-state');
-                    stateEl.className = 'status-value ' + (data.uart_connected ? 'running' : 'disarmed');
+                    const state = (statusData.state || '').toLowerCase();
+                    stateEl.className = 'status-value ' + state;
                     
                     document.getElementById('status-time').textContent = new Date().toLocaleTimeString();
                 }
@@ -571,6 +578,8 @@
                             select.appendChild(option);
                         });
                         log(`Found ${data.ports.length} serial port(s)`, 'success');
+                        // After ports are loaded, check if we're already connected and select the port
+                        checkInitialConnectionStatus();
                     } else {
                         log(`No serial ports found (count: ${data.count || 0}). Make sure your ESP32 is connected.`, 'error');
                         const option = document.createElement('option');
@@ -706,7 +715,40 @@
             updateSteering(angle);
         }
 
-        // Initialize - refresh ports on load
+        async function checkInitialConnectionStatus() {
+            try {
+                const response = await fetch(`${getBaseURL()}/health`, {
+                    cache: 'no-cache'
+                });
+                if (response.ok) {
+                    const data = await response.json();
+                    if (data.uart_connected && data.uart_port) {
+                        updateConnectionStatus(true);
+                        // Select the connected port in the dropdown
+                        const portSelect = document.getElementById('uart-port-select');
+                        if (portSelect) {
+                            portSelect.value = data.uart_port;
+                        }
+                        log(`Already connected to serial port: ${data.uart_port}`, 'success');
+                        // Start periodic status updates
+                        if (statusUpdateInterval) {
+                            clearInterval(statusUpdateInterval);
+                        }
+                        statusUpdateInterval = setInterval(updateStatus, 1000);
+                        updateStatus();
+                        // Start listening to serial messages from ESP32
+                        startSerialStream();
+                    } else {
+                        updateConnectionStatus(false);
+                    }
+                }
+            } catch (error) {
+                // Silently fail - connection check is not critical
+                updateConnectionStatus(false);
+            }
+        }
+
+        // Initialize - refresh ports on load (connection status will be checked after ports load)
         log('Dashboard initialized. Select UART port and click Connect.', 'info');
         refreshPorts();
     </script>

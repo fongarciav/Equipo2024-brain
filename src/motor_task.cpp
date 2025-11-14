@@ -2,6 +2,7 @@
 #include "hardware.h"
 #include "mailbox.h"
 #include "messages.h"
+#include "supervisor_task.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include <Arduino.h>
@@ -26,6 +27,7 @@ void motor_task(void *pvParameters)
     bool has_valid_command = false;
     uint32_t last_stop_timestamp = 0;
     bool in_cooldown = false;
+    int32_t last_ignored_speed = -1; // Track last ignored speed command to avoid repeated logs
 
     Serial.println("[MotorTask] Motor task started");
 
@@ -87,15 +89,41 @@ void motor_task(void *pvParameters)
                 has_valid_command = true;
                 switch (cmd)
                 {
-                case CMD_SET_SPEED:
+                case CMD_SET_SPEED: {
+                    // Check system state before allowing speed commands
+                    system_state_t state = supervisor_get_state();
+                    system_mode_t mode = supervisor_get_mode();
+                    bool can_control = false;
+                    
+                    if (mode == MODE_AUTO) {
+                        // In AUTO mode, need to be RUNNING
+                        can_control = (state == STATE_RUNNING);
+                    } else {
+                        // In MANUAL mode, ARMED is enough
+                        can_control = (state == STATE_ARMED || state == STATE_RUNNING);
+                    }
+                    
+                    if (!can_control) {
+                        // Only print if this is a different command than the last ignored one
+                        if (last_ignored_speed != value) {
+                            Serial.println("[MotorTask] SET_SPEED ignored - system DISARMED");
+                            Serial.flush();
+                            last_ignored_speed = value;
+                        }
+                        has_valid_command = false; // Treat as no command
+                    }
                     // Only allow speed commands if not in cooldown
-                    if (in_cooldown)
+                    else if (in_cooldown)
                     {
                         Serial.println("[MotorTask] Speed command ignored (in cooldown)");
                         has_valid_command = false; // Treat as no command
+                        // Reset ignored tracking when command can be executed but is in cooldown
+                        last_ignored_speed = -1;
                     }
                     else
                     {
+                        // Reset ignored tracking when command can be executed
+                        last_ignored_speed = -1;
                         uint8_t new_speed = (uint8_t)value;
                         if (new_speed > MOTOR_SPEED_MAX)
                         {
@@ -126,6 +154,7 @@ void motor_task(void *pvParameters)
                         }
                     }
                     break;
+                }
 
                 case CMD_BRAKE_NOW:
                 case CMD_STOP:

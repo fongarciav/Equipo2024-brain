@@ -34,6 +34,10 @@ serial_message_queue = queue.Queue()
 serial_reader_thread = None
 serial_reader_running = False
 
+# System state tracking
+system_state = {'mode': 'MANUAL', 'state': 'DISARMED'}
+system_state_lock = threading.Lock()
+
 app = Flask(__name__, static_folder=SCRIPT_DIR)
 CORS(app)  # Enable CORS for all routes
 
@@ -207,6 +211,19 @@ def read_available_lines(ser):
     
     return lines
 
+def parse_system_events(line: str):
+    """Parse system state and mode events from serial messages."""
+    global system_state
+    
+    if line.startswith('EVENT:STATE_CHANGED:'):
+        state = line.replace('EVENT:STATE_CHANGED:', '').strip()
+        with system_state_lock:
+            system_state['state'] = state
+    elif line.startswith('EVENT:MODE_CHANGED:'):
+        mode = line.replace('EVENT:MODE_CHANGED:', '').strip()
+        with system_state_lock:
+            system_state['mode'] = mode
+
 def serial_reader_worker():
     """Background thread that reads from serial port."""
     global serial_conn, serial_reader_running, serial_message_queue
@@ -217,6 +234,9 @@ def serial_reader_worker():
                 lines = read_available_lines(serial_conn)
                 for line in lines:
                     if line:
+                        # Parse system events for state tracking
+                        parse_system_events(line)
+                        
                         serial_message_queue.put({
                             'type': 'serial',
                             'message': line,
@@ -337,17 +357,56 @@ def uart_stream():
     response.headers['Cache-Control'] = 'no-cache'
     return response
 
+@app.route('/status')
+def get_status():
+    """Get current system status (mode and state)."""
+    global system_state
+    with system_state_lock:
+        return jsonify({
+            'mode': system_state['mode'],
+            'state': system_state['state']
+        })
+
 @app.route('/health')
 def health():
     """Health check endpoint."""
     global serial_conn, serial_reader_running
+    port_name = None
+    if serial_conn and serial_conn.is_open:
+        port_name = serial_conn.port
     return jsonify({
         'status': 'ok',
         'message': 'Dashboard server is running',
         'uart_connected': serial_conn is not None and serial_conn.is_open if serial_conn else False,
+        'uart_port': port_name,
         'serial_available': SERIAL_AVAILABLE,
         'serial_reader_running': serial_reader_running
     })
+
+def select_port_interactive() -> str:
+    """Interactive port selection from available serial ports."""
+    if not SERIAL_AVAILABLE:
+        print("Warning: pyserial not installed. Cannot select port.")
+        return None
+    
+    ports = list(serial_list_ports.comports())
+    if not ports:
+        print("No serial ports found. Connect the ESP32 and try again.")
+        return None
+    if len(ports) == 1:
+        selected = ports[0].device
+        print(f"Only one port found, auto-selecting: {selected}")
+        return selected
+    print("\nAvailable serial ports:")
+    for idx, p in enumerate(ports):
+        print(f"  [{idx}] {p.device} - {p.description}")
+    while True:
+        sel = input("\nSelect port index (or press Enter to skip): ").strip()
+        if sel == "":
+            return None  # Skip selection
+        if sel.isdigit() and 0 <= int(sel) < len(ports):
+            return ports[int(sel)].device
+        print("Invalid selection. Try again.")
 
 def get_local_ip():
     """Get the local IP address of this machine."""
@@ -369,6 +428,8 @@ if __name__ == '__main__':
     parser.add_argument('--host', default='0.0.0.0', help='Host to bind to (default: 0.0.0.0 for all interfaces)')
     parser.add_argument('--port', type=int, default=5000, help='Port to bind to (default: 5000)')
     parser.add_argument('--debug', action='store_true', help='Enable debug mode')
+    parser.add_argument('--auto-connect', action='store_true', help='Automatically connect to a serial port on startup')
+    parser.add_argument('--port-name', type=str, default=None, help='Specific serial port to connect to (e.g., /dev/ttyUSB0)')
     
     args = parser.parse_args()
     
@@ -376,6 +437,43 @@ if __name__ == '__main__':
     
     print("=" * 60)
     print("ESP32 Car Control Dashboard Server")
+    print("=" * 60)
+    
+    # Handle serial port connection
+    if args.port_name:
+        # Connect to specific port
+        if SERIAL_AVAILABLE:
+            try:
+                serial_conn = open_serial(args.port_name, UART_BAUD_RATE)
+                time.sleep(0.1)
+                start_serial_reader()
+                print(f"Connected to serial port: {args.port_name}")
+            except Exception as e:
+                print(f"Warning: Failed to connect to {args.port_name}: {e}")
+                print("You can connect manually from the dashboard.")
+        else:
+            print("Warning: pyserial not installed. Cannot connect to serial port.")
+    elif args.auto_connect:
+        # Interactive port selection
+        if SERIAL_AVAILABLE:
+            selected_port = select_port_interactive()
+            if selected_port:
+                try:
+                    serial_conn = open_serial(selected_port, UART_BAUD_RATE)
+                    time.sleep(0.1)
+                    start_serial_reader()
+                    print(f"Connected to serial port: {selected_port}")
+                except Exception as e:
+                    print(f"Warning: Failed to connect to {selected_port}: {e}")
+                    print("You can connect manually from the dashboard.")
+            else:
+                print("No port selected. You can connect manually from the dashboard.")
+        else:
+            print("Warning: pyserial not installed. Cannot connect to serial port.")
+    else:
+        print("Serial port not connected. Use the dashboard to connect manually.")
+        print("Tip: Use --auto-connect to select a port on startup, or --port-name to specify one.")
+    
     print("=" * 60)
     print(f"Dashboard available at:")
     print(f"  Local:   http://127.0.0.1:{args.port}")

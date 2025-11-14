@@ -119,51 +119,20 @@ void link_rx_task(void *pvParameters) {
                         break;
                         
                     case CHANNEL_CONTROL: {
-                        // Only process control commands if system is ARMED (and RUNNING in AUTO mode, or just ARMED in MANUAL mode)
-                        system_state_t state = supervisor_get_state();
-                        system_mode_t mode = supervisor_get_mode();
-                        bool can_control = false;
-                        
-                        if (mode == MODE_AUTO) {
-                            // In AUTO mode, need to be RUNNING (ARMED transitions to RUNNING with heartbeat)
-                            can_control = (state == STATE_RUNNING);
-                        } else {
-                            // In MANUAL mode, ARMED is enough (no need for RUNNING state)
-                            can_control = (state == STATE_ARMED || state == STATE_RUNNING);
-                        }
-                        
-                        // Always print received command event, even if ignored
+                        // Always send commands to mailboxes - tasks will validate state before execution
                         if (strcmp(cmd, "SET_SPEED") == 0) {
                             Serial.print("EVENT:CMD_RECEIVED:SET_SPEED:");
                             Serial.println(value);
                             Serial.flush();
-                            if (can_control && motor_mb != NULL) {
+                            if (motor_mb != NULL) {
                                 mailbox_write(motor_mb, TOPIC_MOTOR, CMD_SET_SPEED, value, 200);
-                                Serial.print("[LinkRxTask] SET_SPEED command: ");
-                                Serial.println(value);
-                            } else {
-                                Serial.print("[LinkRxTask] SET_SPEED ignored - system state: ");
-                                Serial.print(state == STATE_DISARMED ? "DISARMED" : 
-                                           state == STATE_ARMED ? "ARMED" : 
-                                           state == STATE_RUNNING ? "RUNNING" : "FAULT");
-                                Serial.print(", mode: ");
-                                Serial.println(mode == MODE_AUTO ? "AUTO" : "MANUAL");
                             }
                         } else if (strcmp(cmd, "SET_STEER") == 0) {
                             Serial.print("EVENT:CMD_RECEIVED:SET_STEER:");
                             Serial.println(value);
                             Serial.flush();
-                            if (can_control && steer_mb != NULL) {
+                            if (steer_mb != NULL) {
                                 mailbox_write(steer_mb, TOPIC_STEER, CMD_SET_STEER, value, 200);
-                                Serial.print("[LinkRxTask] SET_STEER command: ");
-                                Serial.println(value);
-                            } else {
-                                Serial.print("[LinkRxTask] SET_STEER ignored - system state: ");
-                                Serial.print(state == STATE_DISARMED ? "DISARMED" : 
-                                           state == STATE_ARMED ? "ARMED" : 
-                                           state == STATE_RUNNING ? "RUNNING" : "FAULT");
-                                Serial.print(", mode: ");
-                                Serial.println(mode == MODE_AUTO ? "AUTO" : "MANUAL");
                             }
                         }
                         break;
