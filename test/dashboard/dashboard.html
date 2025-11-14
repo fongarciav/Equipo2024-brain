@@ -1,0 +1,715 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ESP32 Car Control Dashboard</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 15px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+            padding: 30px;
+        }
+
+        h1 {
+            text-align: center;
+            color: #333;
+            margin-bottom: 30px;
+            font-size: 2.5em;
+        }
+
+        .connection-panel {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 30px;
+            display: flex;
+            gap: 15px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .connection-panel input {
+            flex: 1;
+            min-width: 200px;
+            padding: 12px;
+            border: 2px solid #ddd;
+            border-radius: 5px;
+            font-size: 16px;
+        }
+
+        .connection-panel button {
+            padding: 12px 30px;
+            background: #28a745;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: bold;
+            transition: background 0.3s;
+        }
+
+        .connection-panel button:hover {
+            background: #218838;
+        }
+
+        .status-panel {
+            background: #e9ecef;
+            padding: 15px;
+            border-radius: 10px;
+            margin-bottom: 30px;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+        }
+
+        .status-item {
+            text-align: center;
+        }
+
+        .status-label {
+            font-weight: bold;
+            color: #666;
+            display: block;
+            margin-bottom: 5px;
+        }
+
+        .status-value {
+            font-size: 1.2em;
+            color: #333;
+            padding: 8px;
+            background: white;
+            border-radius: 5px;
+        }
+
+        .status-value.armed { color: #28a745; }
+        .status-value.disarmed { color: #dc3545; }
+        .status-value.running { color: #007bff; }
+        .status-value.fault { color: #ffc107; }
+
+        .section {
+            margin-bottom: 40px;
+        }
+
+        .section-title {
+            font-size: 1.5em;
+            color: #333;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 3px solid #667eea;
+        }
+
+        .button-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+
+        .btn {
+            padding: 15px 20px;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.3s;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 12px rgba(0,0,0,0.15);
+        }
+
+        .btn:active {
+            transform: translateY(0);
+        }
+
+        .btn-primary { background: #007bff; color: white; }
+        .btn-success { background: #28a745; color: white; }
+        .btn-danger { background: #dc3545; color: white; }
+        .btn-warning { background: #ffc107; color: #333; }
+        .btn-info { background: #17a2b8; color: white; }
+        .btn-secondary { background: #6c757d; color: white; }
+
+        .control-group {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+        }
+
+        .slider-container {
+            margin: 25px 0;
+            padding: 20px;
+            background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+
+        .slider-label {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 15px;
+            font-weight: bold;
+            color: #333;
+            font-size: 1.1em;
+        }
+
+        input[type="range"] {
+            width: 100%;
+            height: 12px;
+            border-radius: 6px;
+            background: linear-gradient(to right, #e0e0e0 0%, #bdbdbd 100%);
+            outline: none;
+            -webkit-appearance: none;
+            appearance: none;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: inset 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        input[type="range"]:hover {
+            background: linear-gradient(to right, #d0d0d0 0%, #adadad 100%);
+        }
+
+        input[type="range"]:active {
+            background: linear-gradient(to right, #c0c0c0 0%, #9d9d9d 100%);
+        }
+
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            cursor: pointer;
+            box-shadow: 0 3px 8px rgba(102, 126, 234, 0.4), 0 0 0 3px rgba(102, 126, 234, 0.1);
+            transition: all 0.3s ease;
+            border: 3px solid white;
+        }
+
+        input[type="range"]::-webkit-slider-thumb:hover {
+            transform: scale(1.15);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.6), 0 0 0 4px rgba(102, 126, 234, 0.2);
+        }
+
+        input[type="range"]::-webkit-slider-thumb:active {
+            transform: scale(1.05);
+            box-shadow: 0 2px 6px rgba(102, 126, 234, 0.5), 0 0 0 3px rgba(102, 126, 234, 0.15);
+        }
+
+        input[type="range"]::-moz-range-thumb {
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            cursor: pointer;
+            border: 3px solid white;
+            box-shadow: 0 3px 8px rgba(102, 126, 234, 0.4), 0 0 0 3px rgba(102, 126, 234, 0.1);
+            transition: all 0.3s ease;
+        }
+
+        input[type="range"]::-moz-range-thumb:hover {
+            transform: scale(1.15);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.6), 0 0 0 4px rgba(102, 126, 234, 0.2);
+        }
+
+        input[type="range"]::-moz-range-thumb:active {
+            transform: scale(1.05);
+            box-shadow: 0 2px 6px rgba(102, 126, 234, 0.5), 0 0 0 3px rgba(102, 126, 234, 0.15);
+        }
+
+        input[type="range"]::-moz-range-track {
+            height: 12px;
+            border-radius: 6px;
+            background: linear-gradient(to right, #e0e0e0 0%, #bdbdbd 100%);
+            box-shadow: inset 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        .value-display {
+            text-align: center;
+            font-size: 1.8em;
+            font-weight: bold;
+            color: #667eea;
+            margin-top: 15px;
+            padding: 10px;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            transition: all 0.3s ease;
+        }
+
+        .value-display:hover {
+            transform: scale(1.05);
+            box-shadow: 0 4px 8px rgba(0,0,0,0.15);
+        }
+
+        .log-panel {
+            background: #1e1e1e;
+            color: #00ff00;
+            padding: 15px;
+            border-radius: 10px;
+            height: 200px;
+            overflow-y: auto;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            margin-top: 20px;
+        }
+
+        .log-entry {
+            margin-bottom: 5px;
+        }
+
+        .log-entry.success { color: #00ff00; }
+        .log-entry.error { color: #ff0000; }
+        .log-entry.info { color: #00aaff; }
+        .log-entry.serial { color: #ffff00; font-style: italic; }
+
+        .connection-status {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 8px;
+        }
+
+        .connection-status.connected {
+            background: #28a745;
+            box-shadow: 0 0 10px #28a745;
+        }
+
+        .connection-status.disconnected {
+            background: #dc3545;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🚗 ESP32 Car Control Dashboard</h1>
+
+        <!-- Connection Panel -->
+        <div class="connection-panel">
+            <select id="uart-port-select" style="padding: 12px; border: 2px solid #ddd; border-radius: 5px;">
+                <option value="">Select UART Port...</option>
+            </select>
+            <button onclick="refreshPorts()">Refresh Ports</button>
+            <button onclick="connectUART()">Connect UART</button>
+            <button onclick="disconnectUART()">Disconnect</button>
+            <span>
+                <span class="connection-status disconnected" id="connection-status"></span>
+                <span id="connection-text">Disconnected</span>
+            </span>
+        </div>
+
+        <!-- Status Panel -->
+        <div class="status-panel">
+            <div class="status-item">
+                <span class="status-label">Mode</span>
+                <div class="status-value" id="status-mode">--</div>
+            </div>
+            <div class="status-item">
+                <span class="status-label">State</span>
+                <div class="status-value" id="status-state">--</div>
+            </div>
+            <div class="status-item">
+                <span class="status-label">Last Update</span>
+                <div class="status-value" id="status-time">--</div>
+            </div>
+        </div>
+
+        <!-- System Control Section -->
+        <div class="section">
+            <h2 class="section-title">System Control</h2>
+            <div class="button-grid">
+                <button class="btn btn-success" onclick="sendCommand('arm')">ARM</button>
+                <button class="btn btn-danger" onclick="sendCommand('disarm')">DISARM</button>
+                <button class="btn btn-primary" onclick="sendCommand('mode?value=MANUAL')">MODE: MANUAL</button>
+                <button class="btn btn-primary" onclick="sendCommand('mode?value=AUTO')">MODE: AUTO</button>
+                <button class="btn btn-warning" onclick="sendCommand('brake')">EMERGENCY BRAKE</button>
+            </div>
+        </div>
+
+        <!-- Motor Control Section -->
+        <div class="section">
+            <h2 class="section-title">Motor Control</h2>
+            <div class="button-grid">
+                <button class="btn btn-success" onclick="sendCommand('forward')">FORWARD</button>
+                <button class="btn btn-danger" onclick="sendCommand('back')">BACKWARD</button>
+                <button class="btn btn-secondary" onclick="sendCommand('driveStop')">STOP</button>
+            </div>
+            <div class="control-group">
+                <div class="slider-container">
+                    <div class="slider-label">
+                        <span>Speed Control</span>
+                        <span id="speed-value">0</span>
+                    </div>
+                    <input type="range" id="speed-slider" min="0" max="255" value="0" 
+                           oninput="updateSpeed(this.value)">
+                    <div class="value-display" id="speed-display">Stopped: 0</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Steering Control Section -->
+        <div class="section">
+            <h2 class="section-title">Steering Control</h2>
+            <div class="button-grid">
+                <button class="btn btn-primary" onclick="sendCommand('left')">LEFT</button>
+                <button class="btn btn-secondary" onclick="sendCommand('steerStop')">CENTER</button>
+                <button class="btn btn-primary" onclick="sendCommand('right')">RIGHT</button>
+            </div>
+            <div class="control-group">
+                <div class="slider-container">
+                    <div class="slider-label">
+                        <span>Steering Angle</span>
+                        <span id="steer-value">105°</span>
+                    </div>
+                    <input type="range" id="steer-slider" min="50" max="135" value="105" 
+                           oninput="updateSteering(this.value)">
+                    <div class="value-display" id="steer-display">Center: 105°</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Lights Control Section -->
+        <div class="section">
+            <h2 class="section-title">Lights Control</h2>
+            <div class="button-grid">
+                <button class="btn btn-warning" onclick="sendCommand('LightsOn')">LIGHTS ON</button>
+                <button class="btn btn-secondary" onclick="sendCommand('LightsOff')">LIGHTS OFF</button>
+                <button class="btn btn-info" onclick="sendCommand('LightsAuto')">LIGHTS AUTO</button>
+            </div>
+        </div>
+
+        <!-- Event Log -->
+        <div class="section">
+            <h2 class="section-title">Event Log</h2>
+            <div class="log-panel" id="log-panel">
+                <div class="log-entry info">Dashboard ready. Connect to ESP32 to start sending commands.</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Auto-detect server URL (same origin)
+        let serverURL = window.location.origin;
+        let isConnected = false;
+        let statusUpdateInterval = null;
+        let serialEventSource = null;
+
+        function getBaseURL() {
+            return serverURL;
+        }
+
+        function log(message, type = 'info') {
+            const logPanel = document.getElementById('log-panel');
+            const entry = document.createElement('div');
+            entry.className = `log-entry ${type}`;
+            const timestamp = new Date().toLocaleTimeString();
+            entry.textContent = `[${timestamp}] ${message}`;
+            logPanel.appendChild(entry);
+            logPanel.scrollTop = logPanel.scrollHeight;
+        }
+
+        function updateConnectionStatus(connected) {
+            isConnected = connected;
+            const statusEl = document.getElementById('connection-status');
+            const textEl = document.getElementById('connection-text');
+            
+            if (connected) {
+                statusEl.className = 'connection-status connected';
+                textEl.textContent = 'Connected';
+            } else {
+                statusEl.className = 'connection-status disconnected';
+                textEl.textContent = 'Disconnected';
+            }
+        }
+
+        function startSerialStream() {
+            // Close existing stream if any
+            if (serialEventSource) {
+                serialEventSource.close();
+                serialEventSource = null;
+            }
+
+            // Start SSE stream for serial messages
+            const streamURL = `${getBaseURL()}/uart/stream`;
+            serialEventSource = new EventSource(streamURL);
+
+            serialEventSource.onmessage = function(event) {
+                // Messages from ESP32
+                const message = event.data;
+                console.log('SSE message received:', message);
+                if (message && message.trim().length > 0) {
+                    log(`ESP32: ${message}`, 'serial');
+                } else {
+                    console.warn('Received empty SSE message');
+                }
+            };
+
+            serialEventSource.onerror = function(event) {
+                console.error('SSE stream error:', event);
+                // Try to reconnect after a delay
+                setTimeout(() => {
+                    if (isConnected) {
+                        startSerialStream();
+                    }
+                }, 2000);
+            };
+
+            log('Serial stream started - listening for ESP32 messages', 'info');
+        }
+
+        function stopSerialStream() {
+            if (serialEventSource) {
+                serialEventSource.close();
+                serialEventSource = null;
+                log('Serial stream stopped', 'info');
+            }
+        }
+
+        async function sendCommand(endpoint) {
+            if (!isConnected) {
+                log('UART not connected. Please connect first.', 'error');
+                return;
+            }
+
+            const url = `${getBaseURL()}/${endpoint}`;
+            log(`Sending: ${endpoint}`, 'info');
+
+            try {
+                const response = await fetch(url, {
+                    method: 'GET',
+                    cache: 'no-cache'
+                });
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    const uartCmd = data.uart_command ? ` → UART: ${data.uart_command}` : '';
+                    log(`Command sent: ${endpoint}${uartCmd}`, 'success');
+                } else {
+                    const errorData = await response.json().catch(() => ({error: 'Unknown error'}));
+                    log(`Error: ${endpoint} - ${errorData.error || response.status}`, 'error');
+                }
+            } catch (error) {
+                log(`Failed to send: ${endpoint} - ${error.message}`, 'error');
+            }
+        }
+
+        async function updateStatus() {
+            if (!isConnected) return;
+
+            try {
+                const response = await fetch(`${getBaseURL()}/health`, {
+                    cache: 'no-cache'
+                });
+                if (response.ok) {
+                    const data = await response.json();
+                    // Status not available over UART, show connection status instead
+                    document.getElementById('status-mode').textContent = data.uart_connected ? 'UART' : '--';
+                    document.getElementById('status-state').textContent = data.uart_connected ? 'CONNECTED' : 'DISCONNECTED';
+                    
+                    const stateEl = document.getElementById('status-state');
+                    stateEl.className = 'status-value ' + (data.uart_connected ? 'running' : 'disarmed');
+                    
+                    document.getElementById('status-time').textContent = new Date().toLocaleTimeString();
+                }
+            } catch (error) {
+                // Silently fail - status update is not critical
+            }
+        }
+
+        async function refreshPorts() {
+            try {
+                log('Refreshing serial ports...', 'info');
+                const url = `${getBaseURL()}/uart/ports`;
+                log(`Requesting: ${url}`, 'info');
+                
+                const response = await fetch(url, {
+                    method: 'GET',
+                    cache: 'no-cache',
+                    headers: {
+                        'Accept': 'application/json'
+                    }
+                });
+                
+                log(`Response status: ${response.status} ${response.statusText}`, 'info');
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    log(`Received data: ${JSON.stringify(data)}`, 'info');
+                    
+                    const select = document.getElementById('uart-port-select');
+                    select.innerHTML = '<option value="">Select UART Port...</option>';
+                    
+                    if (data.ports && Array.isArray(data.ports) && data.ports.length > 0) {
+                        data.ports.forEach(port => {
+                            const option = document.createElement('option');
+                            option.value = port.device;
+                            const desc = port.description || 'No description';
+                            option.textContent = `${port.device} - ${desc}`;
+                            select.appendChild(option);
+                        });
+                        log(`Found ${data.ports.length} serial port(s)`, 'success');
+                    } else {
+                        log(`No serial ports found (count: ${data.count || 0}). Make sure your ESP32 is connected.`, 'error');
+                        const option = document.createElement('option');
+                        option.value = '';
+                        option.textContent = 'No ports available';
+                        option.disabled = true;
+                        select.appendChild(option);
+                    }
+                } else {
+                    const errorText = await response.text();
+                    log(`Failed to get ports: ${response.status} - ${errorText}`, 'error');
+                    try {
+                        const errorData = JSON.parse(errorText);
+                        log(`Error details: ${JSON.stringify(errorData)}`, 'error');
+                    } catch (e) {
+                        // Not JSON, already logged as text
+                    }
+                }
+            } catch (error) {
+                log(`Failed to refresh ports: ${error.message}`, 'error');
+                log(`Error type: ${error.name}`, 'error');
+                log('Make sure the server is running and accessible', 'error');
+                console.error('Full error:', error);
+            }
+        }
+
+        async function connectUART() {
+            const portSelect = document.getElementById('uart-port-select');
+            const port = portSelect.value;
+            
+            if (!port) {
+                log('Please select a UART port', 'error');
+                return;
+            }
+
+            log(`Connecting to UART port ${port} via ${serverURL}...`, 'info');
+
+            try {
+                const response = await fetch(`${serverURL}/uart/connect`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({port: port})
+                });
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    updateConnectionStatus(true);
+                    log(`Connected to ${data.port} at ${data.baudrate} baud`, 'success');
+                    
+                    // Start periodic status updates
+                    if (statusUpdateInterval) {
+                        clearInterval(statusUpdateInterval);
+                    }
+                    statusUpdateInterval = setInterval(updateStatus, 1000);
+                    updateStatus();
+                    
+                    // Start listening to serial messages from ESP32
+                    startSerialStream();
+                } else {
+                    const errorData = await response.json();
+                    log(`Connection failed: ${errorData.error}`, 'error');
+                }
+            } catch (error) {
+                log(`Connection error: ${error.message}`, 'error');
+            }
+        }
+
+        async function disconnectUART() {
+            try {
+                const response = await fetch(`${getBaseURL()}/uart/disconnect`, {
+                    method: 'POST'
+                });
+                
+                if (response.ok) {
+                    updateConnectionStatus(false);
+                    log('Disconnected from UART', 'info');
+                    
+                    // Stop serial stream
+                    stopSerialStream();
+                    
+                    if (statusUpdateInterval) {
+                        clearInterval(statusUpdateInterval);
+                        statusUpdateInterval = null;
+                    }
+                }
+            } catch (error) {
+                log(`Disconnect error: ${error.message}`, 'error');
+            }
+        }
+
+
+        function updateSpeed(value) {
+            const speed = parseInt(value);
+            document.getElementById('speed-value').textContent = speed;
+            
+            if (speed === 0) {
+                document.getElementById('speed-display').textContent = 'Stopped: 0';
+                sendCommand('changeSpeed?speed=0&direction=forward');
+            } else {
+                document.getElementById('speed-display').textContent = `Speed: ${speed}`;
+                // Send command with forward direction by default
+                sendCommand(`changeSpeed?speed=${speed}&direction=forward`);
+            }
+        }
+
+        function setSpeedDirection(speed, direction) {
+            document.getElementById('speed-slider').value = speed;
+            document.getElementById('speed-value').textContent = speed;
+            document.getElementById('speed-display').textContent = 
+                speed === 0 ? 'Stopped: 0' : `${direction === 'forward' ? 'Forward' : 'Backward'}: ${speed}`;
+            sendCommand(`changeSpeed?speed=${speed}&direction=${direction}`);
+        }
+
+        function updateSteering(value) {
+            const angle = parseInt(value);
+            document.getElementById('steer-value').textContent = `${angle}°`;
+            
+            const center = 105;
+            const displayAngle = angle - center;
+            if (displayAngle === 0) {
+                document.getElementById('steer-display').textContent = 'Center: 105°';
+            } else if (displayAngle > 0) {
+                document.getElementById('steer-display').textContent = `Right: ${angle}°`;
+            } else {
+                document.getElementById('steer-display').textContent = `Left: ${angle}°`;
+            }
+            
+            sendCommand(`steer?angle=${angle}`);
+        }
+
+        function setSteering(angle) {
+            document.getElementById('steer-slider').value = angle;
+            updateSteering(angle);
+        }
+
+        // Initialize - refresh ports on load
+        log('Dashboard initialized. Select UART port and click Connect.', 'info');
+        refreshPorts();
+    </script>
+</body>
+</html>
+
