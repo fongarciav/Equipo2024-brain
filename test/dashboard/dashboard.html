@@ -403,7 +403,10 @@
 
         <!-- Event Log -->
         <div class="section">
-            <h2 class="section-title">Event Log</h2>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                <h2 class="section-title" style="margin: 0;">Event Log</h2>
+                <button class="btn btn-secondary" onclick="clearLogs()" style="padding: 5px 15px; font-size: 12px;">Clear</button>
+            </div>
             <div class="log-panel" id="log-panel">
                 <div class="log-entry info">Dashboard ready. Connect to ESP32 to start sending commands.</div>
             </div>
@@ -415,7 +418,88 @@
         let serverURL = window.location.origin;
         let isConnected = false;
         let serialEventSource = null;
-        let statusFallbackInterval = null;
+
+        // Functions to save/restore slider values from localStorage
+        function saveSliderValues(speed, steer) {
+            if (speed !== null && speed !== undefined) {
+                localStorage.setItem('dashboard_last_speed', speed.toString());
+            }
+            if (steer !== null && steer !== undefined) {
+                localStorage.setItem('dashboard_last_steer', steer.toString());
+            }
+        }
+
+        // Functions to save/restore Mode and State from localStorage
+        function saveSystemStatus(mode, state) {
+            if (mode !== null && mode !== undefined) {
+                localStorage.setItem('dashboard_last_mode', mode);
+            }
+            if (state !== null && state !== undefined) {
+                localStorage.setItem('dashboard_last_state', state);
+            }
+        }
+
+        function restoreSystemStatus() {
+            // Restore mode
+            const savedMode = localStorage.getItem('dashboard_last_mode');
+            if (savedMode !== null && (savedMode === 'MANUAL' || savedMode === 'AUTO')) {
+                document.getElementById('status-mode').textContent = savedMode;
+            }
+
+            // Restore state
+            const savedState = localStorage.getItem('dashboard_last_state');
+            if (savedState !== null && 
+                (savedState === 'DISARMED' || savedState === 'ARMED' || 
+                 savedState === 'RUNNING' || savedState === 'FAULT')) {
+                const stateEl = document.getElementById('status-state');
+                stateEl.textContent = savedState;
+                stateEl.className = 'status-value ' + savedState.toLowerCase();
+            }
+        }
+
+        function restoreSliderValues() {
+            // Restore speed
+            const savedSpeed = localStorage.getItem('dashboard_last_speed');
+            if (savedSpeed !== null) {
+                const speed = parseInt(savedSpeed);
+                if (!isNaN(speed) && speed >= 0 && speed <= 255) {
+                    const speedSlider = document.getElementById('speed-slider');
+                    const speedValue = document.getElementById('speed-value');
+                    const speedDisplay = document.getElementById('speed-display');
+                    
+                    if (speedSlider) speedSlider.value = speed;
+                    if (speedValue) speedValue.textContent = speed;
+                    if (speedDisplay) {
+                        speedDisplay.textContent = speed === 0 ? 'Stopped: 0' : `Speed: ${speed}`;
+                    }
+                }
+            }
+
+            // Restore steering
+            const savedSteer = localStorage.getItem('dashboard_last_steer');
+            if (savedSteer !== null) {
+                const steer = parseInt(savedSteer);
+                if (!isNaN(steer) && steer >= 50 && steer <= 135) {
+                    const steerSlider = document.getElementById('steer-slider');
+                    const steerValue = document.getElementById('steer-value');
+                    const steerDisplay = document.getElementById('steer-display');
+                    
+                    if (steerSlider) steerSlider.value = steer;
+                    if (steerValue) steerValue.textContent = `${steer}°`;
+                    if (steerDisplay) {
+                        const center = 105;
+                        const displayAngle = steer - center;
+                        if (displayAngle === 0) {
+                            steerDisplay.textContent = 'Center: 105°';
+                        } else if (displayAngle > 0) {
+                            steerDisplay.textContent = `Right: ${steer}°`;
+                        } else {
+                            steerDisplay.textContent = `Left: ${steer}°`;
+                        }
+                    }
+                }
+            }
+        }
 
         function getBaseURL() {
             return serverURL;
@@ -429,6 +513,11 @@
             entry.textContent = `[${timestamp}] ${message}`;
             logPanel.appendChild(entry);
             logPanel.scrollTop = logPanel.scrollHeight;
+        }
+
+        function clearLogs() {
+            const logPanel = document.getElementById('log-panel');
+            logPanel.innerHTML = '<div class="log-entry info">Logs cleared.</div>';
         }
 
         function updateConnectionStatus(connected) {
@@ -452,16 +541,6 @@
                 serialEventSource = null;
             }
 
-            // Start fallback polling for status (every 5 seconds as backup)
-            if (statusFallbackInterval) {
-                clearInterval(statusFallbackInterval);
-            }
-            statusFallbackInterval = setInterval(() => {
-                if (isConnected) {
-                    updateStatus();
-                }
-            }, 5000); // Fallback every 5 seconds
-
             // Start SSE stream for serial messages
             const streamURL = `${getBaseURL()}/uart/stream`;
             serialEventSource = new EventSource(streamURL);
@@ -477,9 +556,13 @@
                     if (message.startsWith('EVENT:STATE_CHANGED:')) {
                         const state = message.replace('EVENT:STATE_CHANGED:', '').trim();
                         updateStatusDisplay(state, null);
+                        // Save to localStorage for persistence across page reloads
+                        saveSystemStatus(null, state);
                     } else if (message.startsWith('EVENT:MODE_CHANGED:')) {
                         const mode = message.replace('EVENT:MODE_CHANGED:', '').trim();
                         updateStatusDisplay(null, mode);
+                        // Save to localStorage for persistence across page reloads
+                        saveSystemStatus(mode, null);
                     } else if (message.startsWith('EVENT:CMD_EXECUTED:SET_SPEED:')) {
                         // Update speed slider and display
                         const speedStr = message.replace('EVENT:CMD_EXECUTED:SET_SPEED:', '').trim();
@@ -493,6 +576,9 @@
                                 speedSlider.value = speed;
                                 speedValue.textContent = speed;
                                 speedDisplay.textContent = speed === 0 ? 'Stopped: 0' : `Speed: ${speed}`;
+                                
+                                // Save to localStorage for persistence across page reloads
+                                saveSliderValues(speed, null);
                             }
                         }
                     } else if (message.startsWith('EVENT:CMD_EXECUTED:SET_STEER:')) {
@@ -517,6 +603,9 @@
                                 } else {
                                     steerDisplay.textContent = `Left: ${angle}°`;
                                 }
+                                
+                                // Save to localStorage for persistence across page reloads
+                                saveSliderValues(null, angle);
                             }
                         }
                     } else if (message === 'EVENT:CMD_EXECUTED:SET_STEER_CENTER') {
@@ -530,6 +619,9 @@
                             steerSlider.value = center;
                             steerValue.textContent = `${center}°`;
                             steerDisplay.textContent = 'Center: 105°';
+                            
+                            // Save to localStorage for persistence across page reloads
+                            saveSliderValues(null, center);
                         }
                     }
                 } else {
@@ -555,11 +647,6 @@
                 serialEventSource.close();
                 serialEventSource = null;
                 log('Serial stream stopped', 'info');
-            }
-            // Stop fallback polling
-            if (statusFallbackInterval) {
-                clearInterval(statusFallbackInterval);
-                statusFallbackInterval = null;
             }
         }
 
@@ -597,18 +684,24 @@
                 document.getElementById('status-state').textContent = state;
                 const stateEl = document.getElementById('status-state');
                 stateEl.className = 'status-value ' + state.toLowerCase();
+                // Save to localStorage for persistence across page reloads
+                saveSystemStatus(null, state);
             }
             
             // Update mode if provided
             if (mode !== null) {
                 document.getElementById('status-mode').textContent = mode;
+                // Save to localStorage for persistence across page reloads
+                saveSystemStatus(mode, null);
             }
             
             // Always update timestamp when status changes
             document.getElementById('status-time').textContent = new Date().toLocaleTimeString();
         }
 
-        async function updateStatus() {
+        async function updateStatusInitial() {
+            // Only used once on initial connection to get current state
+            // After that, all updates come from events
             if (!isConnected) {
                 document.getElementById('status-mode').textContent = '--';
                 document.getElementById('status-state').textContent = 'DISCONNECTED';
@@ -617,7 +710,7 @@
             }
 
             try {
-                // Get system status (mode and state) - fallback polling
+                // Get initial system status (mode and state) - only once on connect
                 const statusResponse = await fetch(`${getBaseURL()}/status`, {
                     cache: 'no-cache'
                 });
@@ -713,11 +806,11 @@
                     updateConnectionStatus(true);
                     log(`Connected to ${data.port} at ${data.baudrate} baud`, 'success');
                     
-                    // Get initial status once
-                    updateStatus();
-                    
                     // Start listening to serial messages from ESP32 (will update status via events)
                     startSerialStream();
+                    
+                    // Get initial status once (after stream starts, events will handle updates)
+                    updateStatusInitial();
                 } else {
                     const errorData = await response.json();
                     log(`Connection failed: ${errorData.error}`, 'error');
@@ -752,47 +845,48 @@
 
 
         function updateSpeed(value) {
+            // Update UI immediately for user feedback
             const speed = parseInt(value);
-            document.getElementById('speed-value').textContent = speed;
+            const speedValue = document.getElementById('speed-value');
+            const speedDisplay = document.getElementById('speed-display');
             
+            if (speedValue) speedValue.textContent = speed;
+            if (speedDisplay) {
+                speedDisplay.textContent = speed === 0 ? 'Stopped: 0' : `Speed: ${speed}`;
+            }
+            
+            // Send command to ESP32
             if (speed === 0) {
-                document.getElementById('speed-display').textContent = 'Stopped: 0';
                 sendCommand('changeSpeed?speed=0&direction=forward');
             } else {
-                document.getElementById('speed-display').textContent = `Speed: ${speed}`;
                 // Send command with forward direction by default
                 sendCommand(`changeSpeed?speed=${speed}&direction=forward`);
             }
-        }
-
-        function setSpeedDirection(speed, direction) {
-            document.getElementById('speed-slider').value = speed;
-            document.getElementById('speed-value').textContent = speed;
-            document.getElementById('speed-display').textContent = 
-                speed === 0 ? 'Stopped: 0' : `${direction === 'forward' ? 'Forward' : 'Backward'}: ${speed}`;
-            sendCommand(`changeSpeed?speed=${speed}&direction=${direction}`);
+            // Note: Slider value will be updated again when ESP32 confirms via EVENT:CMD_EXECUTED
         }
 
         function updateSteering(value) {
+            // Update UI immediately for user feedback
             const angle = parseInt(value);
-            document.getElementById('steer-value').textContent = `${angle}°`;
+            const steerValue = document.getElementById('steer-value');
+            const steerDisplay = document.getElementById('steer-display');
             
-            const center = 105;
-            const displayAngle = angle - center;
-            if (displayAngle === 0) {
-                document.getElementById('steer-display').textContent = 'Center: 105°';
-            } else if (displayAngle > 0) {
-                document.getElementById('steer-display').textContent = `Right: ${angle}°`;
-            } else {
-                document.getElementById('steer-display').textContent = `Left: ${angle}°`;
+            if (steerValue) steerValue.textContent = `${angle}°`;
+            if (steerDisplay) {
+                const center = 105;
+                const displayAngle = angle - center;
+                if (displayAngle === 0) {
+                    steerDisplay.textContent = 'Center: 105°';
+                } else if (displayAngle > 0) {
+                    steerDisplay.textContent = `Right: ${angle}°`;
+                } else {
+                    steerDisplay.textContent = `Left: ${angle}°`;
+                }
             }
             
-            sendCommand(`steer?angle=${angle}`);
-        }
-
-        function setSteering(angle) {
-            document.getElementById('steer-slider').value = angle;
-            updateSteering(angle);
+            // Send command to ESP32
+            sendCommand(`changeSteer?angle=${angle}`);
+            // Note: Slider value will be updated again when ESP32 confirms via EVENT:CMD_EXECUTED
         }
 
         async function checkInitialConnectionStatus() {
@@ -810,10 +904,10 @@
                             portSelect.value = data.uart_port;
                         }
                         log(`Already connected to serial port: ${data.uart_port}`, 'success');
-                        // Get initial status once
-                        updateStatus();
                         // Start listening to serial messages from ESP32 (will update status via events)
                         startSerialStream();
+                        // Get initial status once (after stream starts, events will handle updates)
+                        updateStatusInitial();
                     } else {
                         updateConnectionStatus(false);
                     }
@@ -824,6 +918,10 @@
             }
         }
 
+        // Initialize - restore slider values and system status from localStorage
+        restoreSliderValues();
+        restoreSystemStatus();
+        
         // Initialize - refresh ports on load (connection status will be checked after ports load)
         log('Dashboard initialized. Select UART port and click Connect.', 'info');
         refreshPorts();

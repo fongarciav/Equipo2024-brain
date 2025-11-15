@@ -25,7 +25,7 @@ except ImportError:
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # UART Configuration
-UART_BAUD_RATE = 921600
+UART_BAUD_RATE = 115200
 
 # Global serial connection
 serial_conn = None
@@ -34,6 +34,10 @@ serial_message_queue = queue.Queue()
 serial_reader_thread = None
 serial_reader_running = False
 
+# SSE client connections - list of queues, one per connected client
+sse_clients = []
+sse_clients_lock = threading.Lock()
+
 # System state tracking
 system_state = {'mode': 'MANUAL', 'state': 'DISARMED'}
 system_state_lock = threading.Lock()
@@ -41,12 +45,13 @@ system_state_lock = threading.Lock()
 app = Flask(__name__, static_folder=SCRIPT_DIR)
 CORS(app)  # Enable CORS for all routes
 
+
 def write_uart_command(command: str):
     """Write a UART command to ESP32."""
     global serial_conn
     if not serial_conn or not serial_conn.is_open:
         return False, "Serial port not connected"
-    
+
     try:
         with serial_lock:
             line = (command.strip() + "\n").encode("utf-8")
@@ -56,13 +61,14 @@ def write_uart_command(command: str):
     except Exception as e:
         return False, str(e)
 
+
 def translate_http_to_uart(endpoint: str, args: dict):
     """Translate HTTP endpoint to UART command."""
     SERVO_CENTER = 105
     SERVO_LEFT = 50
     SERVO_RIGHT = 135
     MOTOR_SPEED_MAX = 255
-    
+
     if endpoint == 'arm':
         return True, "ARM", "M:SYS_ARM:0"
     elif endpoint == 'disarm':
@@ -96,7 +102,7 @@ def translate_http_to_uart(endpoint: str, args: dict):
                 return True, f"SPEED: {speed} ({direction_str})", f"C:SET_SPEED:{speed}"
         except ValueError:
             return False, "Invalid speed value", None
-    elif endpoint == 'steer':
+    elif endpoint == 'steer' or endpoint == 'changeSteer':
         angle_str = args.get('angle', '105')
         try:
             angle = int(angle_str)
@@ -120,30 +126,33 @@ def translate_http_to_uart(endpoint: str, args: dict):
     else:
         return False, f"Unknown endpoint: {endpoint}", None
 
+
 @app.route('/')
 def index():
     """Serve the dashboard HTML file."""
     return send_from_directory(SCRIPT_DIR, 'dashboard.html')
 
+
 @app.route('/<path:endpoint>')
 def handle_command(endpoint):
     """Handle all dashboard commands and translate to UART."""
     args = request.args.to_dict()
-    
+
     success, message, uart_cmd = translate_http_to_uart(endpoint, args)
-    
+
     if not success:
         return jsonify({'error': message}), 400
-    
+
     if uart_cmd is None:
         return jsonify({'status': 'ok', 'message': message}), 200
-    
+
     cmd_success, cmd_message = write_uart_command(uart_cmd)
-    
+
     if cmd_success:
         return jsonify({'status': 'ok', 'message': message, 'uart_command': uart_cmd}), 200
     else:
         return jsonify({'error': f'Failed to send UART command: {cmd_message}'}), 500
+
 
 @app.route('/proxy/<path:endpoint>')
 def proxy_request(endpoint):
@@ -153,7 +162,7 @@ def proxy_request(endpoint):
     """
     esp32_ip = request.args.get('ip', '192.168.4.1')
     url = f'http://{esp32_ip}/{endpoint}'
-    
+
     try:
         import requests
         response = requests.get(url, timeout=2)
@@ -163,11 +172,12 @@ def proxy_request(endpoint):
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+
 def open_serial(port: str, baud: int = UART_BAUD_RATE):
     """Open serial port with appropriate settings."""
     if not SERIAL_AVAILABLE:
         raise RuntimeError("pyserial not installed")
-    
+
     ser = serial.Serial(
         port=port,
         baudrate=baud,
@@ -184,12 +194,13 @@ def open_serial(port: str, baud: int = UART_BAUD_RATE):
     ser.reset_output_buffer()
     return ser
 
+
 def read_available_lines(ser):
     """Read all available lines from serial port, like test_uart_simulator.py"""
     lines = []
     if not ser or not ser.is_open:
         return lines
-    
+
     try:
         # Read all available data first
         available = ser.in_waiting
@@ -215,13 +226,14 @@ def read_available_lines(ser):
     except Exception as e:
         print(f"[DEBUG] Read error: {e}", file=sys.stderr)
         pass
-    
+
     return lines
+
 
 def parse_system_events(line: str):
     """Parse system state and mode events from serial messages."""
     global system_state
-    
+
     if line.startswith('EVENT:STATE_CHANGED:'):
         state = line.replace('EVENT:STATE_CHANGED:', '').strip()
         with system_state_lock:
@@ -231,10 +243,11 @@ def parse_system_events(line: str):
         with system_state_lock:
             system_state['mode'] = mode
 
+
 def serial_reader_worker():
     """Background thread that reads from serial port."""
-    global serial_conn, serial_reader_running, serial_message_queue
-    
+    global serial_conn, serial_reader_running, sse_clients
+
     while serial_reader_running:
         if serial_conn and serial_conn.is_open:
             try:
@@ -243,12 +256,25 @@ def serial_reader_worker():
                     if line:
                         # Parse system events for state tracking
                         parse_system_events(line)
-                        
-                        serial_message_queue.put({
+
+                        # Broadcast message to all connected SSE clients
+                        message_data = {
                             'type': 'serial',
                             'message': line,
                             'timestamp': time.time()
-                        })
+                        }
+                        with sse_clients_lock:
+                            # Send to all connected clients
+                            # Copy list to avoid modification during iteration
+                            for client_queue in sse_clients[:]:
+                                try:
+                                    client_queue.put(message_data, block=False)
+                                except queue.Full:
+                                    # Client queue is full, remove it (client might be disconnected)
+                                    try:
+                                        sse_clients.remove(client_queue)
+                                    except ValueError:
+                                        pass  # Already removed
                 if not lines:
                     time.sleep(0.01)
             except Exception as e:
@@ -258,30 +284,34 @@ def serial_reader_worker():
         else:
             time.sleep(0.1)
 
+
 def start_serial_reader():
     """Start the serial reader thread."""
     global serial_reader_thread, serial_reader_running
-    
+
     if serial_reader_thread is None or not serial_reader_thread.is_alive():
         serial_reader_running = True
-        serial_reader_thread = threading.Thread(target=serial_reader_worker, daemon=True)
+        serial_reader_thread = threading.Thread(
+            target=serial_reader_worker, daemon=True)
         serial_reader_thread.start()
+
 
 def stop_serial_reader():
     """Stop the serial reader thread."""
     global serial_reader_running, serial_reader_thread
-    
+
     serial_reader_running = False
     if serial_reader_thread:
         serial_reader_thread.join(timeout=1.0)
         serial_reader_thread = None
+
 
 @app.route('/uart/ports', methods=['GET'])
 def list_ports():
     """List available serial ports."""
     if not SERIAL_AVAILABLE:
         return jsonify({'error': 'pyserial not installed', 'ports': []}), 500
-    
+
     try:
         ports_list = list(serial_list_ports.comports())
         ports = []
@@ -295,29 +325,30 @@ def list_ports():
     except Exception as e:
         return jsonify({'error': str(e), 'ports': []}), 500
 
+
 @app.route('/uart/connect', methods=['POST'])
 def uart_connect():
     """Connect to ESP32 via UART."""
     global serial_conn
-    
+
     if not SERIAL_AVAILABLE:
         return jsonify({'error': 'pyserial not installed'}), 500
-    
+
     data = request.get_json() or {}
     port = data.get('port')
-    
+
     if not port:
         return jsonify({'error': 'Port not specified'}), 400
-    
+
     try:
         if serial_conn and serial_conn.is_open:
             stop_serial_reader()
             serial_conn.close()
-        
+
         serial_conn = open_serial(port, UART_BAUD_RATE)
         time.sleep(0.1)
         start_serial_reader()
-        
+
         return jsonify({
             'status': 'ok',
             'message': f'Connected to {port}',
@@ -327,42 +358,61 @@ def uart_connect():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+
 @app.route('/uart/disconnect', methods=['POST'])
 def uart_disconnect():
     """Disconnect from ESP32."""
     global serial_conn
-    
+
     stop_serial_reader()
-    
+
     if serial_conn and serial_conn.is_open:
         serial_conn.close()
         serial_conn = None
-    
+
     return jsonify({'status': 'ok', 'message': 'Disconnected'})
+
 
 @app.route('/uart/stream')
 def uart_stream():
     """Server-Sent Events stream for serial messages."""
     def generate():
-        while True:
-            try:
+        # Create a dedicated queue for this client
+        client_queue = queue.Queue(maxsize=100)
+
+        # Register this client
+        with sse_clients_lock:
+            sse_clients.append(client_queue)
+
+        try:
+            while True:
                 try:
-                    msg = serial_message_queue.get(timeout=1.0)
+                    # Get message from this client's queue
+                    msg = client_queue.get(timeout=1.0)
                     message = msg.get('message', '')
                     if message and len(message.strip()) > 0:
                         data = f"data: {message}\n\n"
                         yield data
                 except queue.Empty:
                     yield ": heartbeat\n\n"
-            except GeneratorExit:
-                break
-            except Exception as e:
-                print(f"[SSE] Error: {e}", file=sys.stderr)
-                break
-    
-    response = Response(stream_with_context(generate()), mimetype='text/event-stream')
+        except GeneratorExit:
+            pass  # Client disconnected
+        except Exception as e:
+            print(f"[SSE] Error: {e}", file=sys.stderr)
+        finally:
+            # Unregister this client
+            with sse_clients_lock:
+                try:
+                    sse_clients.remove(client_queue)
+                except ValueError:
+                    pass  # Already removed
+
+    response = Response(stream_with_context(generate()),
+                        mimetype='text/event-stream')
     response.headers['Cache-Control'] = 'no-cache'
+    response.headers['X-Accel-Buffering'] = 'no'  # Disable buffering for nginx
     return response
+
 
 @app.route('/status')
 def get_status():
@@ -373,6 +423,7 @@ def get_status():
             'mode': system_state['mode'],
             'state': system_state['state']
         })
+
 
 @app.route('/health')
 def health():
@@ -390,12 +441,13 @@ def health():
         'serial_reader_running': serial_reader_running
     })
 
+
 def select_port_interactive() -> str:
     """Interactive port selection from available serial ports."""
     if not SERIAL_AVAILABLE:
         print("Warning: pyserial not installed. Cannot select port.")
         return None
-    
+
     ports = list(serial_list_ports.comports())
     if not ports:
         print("No serial ports found. Connect the ESP32 and try again.")
@@ -415,6 +467,7 @@ def select_port_interactive() -> str:
             return ports[int(sel)].device
         print("Invalid selection. Try again.")
 
+
 def get_local_ip():
     """Get the local IP address of this machine."""
     import socket
@@ -428,24 +481,31 @@ def get_local_ip():
     except Exception:
         return "127.0.0.1"
 
+
 if __name__ == '__main__':
     import argparse
-    
-    parser = argparse.ArgumentParser(description='ESP32 Car Control Dashboard Server')
-    parser.add_argument('--host', default='0.0.0.0', help='Host to bind to (default: 0.0.0.0 for all interfaces)')
-    parser.add_argument('--port', type=int, default=5000, help='Port to bind to (default: 5000)')
-    parser.add_argument('--debug', action='store_true', help='Enable debug mode')
-    parser.add_argument('--auto-connect', action='store_true', help='Automatically connect to a serial port on startup')
-    parser.add_argument('--port-name', type=str, default=None, help='Specific serial port to connect to (e.g., /dev/ttyUSB0)')
-    
+
+    parser = argparse.ArgumentParser(
+        description='ESP32 Car Control Dashboard Server')
+    parser.add_argument('--host', default='0.0.0.0',
+                        help='Host to bind to (default: 0.0.0.0 for all interfaces)')
+    parser.add_argument('--port', type=int, default=5000,
+                        help='Port to bind to (default: 5000)')
+    parser.add_argument('--debug', action='store_true',
+                        help='Enable debug mode')
+    parser.add_argument('--auto-connect', action='store_true',
+                        help='Automatically connect to a serial port on startup')
+    parser.add_argument('--port-name', type=str, default=None,
+                        help='Specific serial port to connect to (e.g., /dev/ttyUSB0)')
+
     args = parser.parse_args()
-    
+
     local_ip = get_local_ip()
-    
+
     print("=" * 60)
     print("ESP32 Car Control Dashboard Server")
     print("=" * 60)
-    
+
     # Handle serial port connection
     if args.port_name:
         # Connect to specific port
@@ -471,7 +531,8 @@ if __name__ == '__main__':
                     start_serial_reader()
                     print(f"Connected to serial port: {selected_port}")
                 except Exception as e:
-                    print(f"Warning: Failed to connect to {selected_port}: {e}")
+                    print(
+                        f"Warning: Failed to connect to {selected_port}: {e}")
                     print("You can connect manually from the dashboard.")
             else:
                 print("No port selected. You can connect manually from the dashboard.")
@@ -480,7 +541,7 @@ if __name__ == '__main__':
     else:
         print("Serial port not connected. Use the dashboard to connect manually.")
         print("Tip: Use --auto-connect to select a port on startup, or --port-name to specify one.")
-    
+
     print("=" * 60)
     print(f"Dashboard available at:")
     print(f"  Local:   http://127.0.0.1:{args.port}")
@@ -488,6 +549,5 @@ if __name__ == '__main__':
     print("=" * 60)
     print("Press Ctrl+C to stop the server")
     print("=" * 60)
-    
-    app.run(host=args.host, port=args.port, debug=args.debug)
 
+    app.run(host=args.host, port=args.port, debug=args.debug)
