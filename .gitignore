@@ -32,3 +32,5 @@ lib/dependencies/
 
 # Log files
 *.log
+
+brain/dashboard/venv/
