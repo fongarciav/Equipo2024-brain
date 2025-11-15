@@ -16,8 +16,8 @@ static mailbox_t *motor_mb = NULL;
 static mailbox_t *steer_mb = NULL;
 
 static system_mode_t current_mode = MODE_MANUAL;
-static system_state_t current_state = STATE_DISARMED;
-static system_state_t previous_state = STATE_DISARMED;
+static system_state_t current_state = STATE_ARMED;
+static system_state_t previous_state = STATE_ARMED;
 static uint32_t last_heartbeat_ms = 0;
 static bool estop_triggered = false;
 

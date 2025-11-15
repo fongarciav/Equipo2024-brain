@@ -1,3 +1,4 @@
+
 #!/usr/bin/env python3
 """
 Flask server to serve the ESP32 Car Control Dashboard.
@@ -11,6 +12,23 @@ import sys
 import threading
 import time
 import queue
+
+# Import auto-pilot modules
+import sys
+import os
+# Add parent directory to path to import autopilot modules
+parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, parent_dir)
+try:
+    from autopilot.video_streamer import VideoStreamer
+    from autopilot.autopilot_controller import AutoPilotController
+    from autopilot.command_sender import CommandSender
+except ImportError as e:
+    print(f"Warning: Could not import autopilot modules: {e}")
+    print("Auto-pilot features will be disabled.")
+    VideoStreamer = None
+    AutoPilotController = None
+    CommandSender = None
 
 # Try to import serial
 try:
@@ -33,14 +51,20 @@ serial_lock = threading.Lock()
 serial_message_queue = queue.Queue()
 serial_reader_thread = None
 serial_reader_running = False
+serial_read_buffer = ""  # Buffer for incomplete serial lines
 
 # SSE client connections - list of queues, one per connected client
 sse_clients = []
 sse_clients_lock = threading.Lock()
 
 # System state tracking
-system_state = {'mode': 'MANUAL', 'state': 'DISARMED'}
+system_state = {'mode': 'MANUAL', 'state': 'ARMED'}
 system_state_lock = threading.Lock()
+
+# Auto-pilot components
+video_streamer = None
+autopilot_controller = None
+command_sender = None
 
 app = Flask(__name__, static_folder=SCRIPT_DIR)
 CORS(app)  # Enable CORS for all routes
@@ -196,7 +220,8 @@ def open_serial(port: str, baud: int = UART_BAUD_RATE):
 
 
 def read_available_lines(ser):
-    """Read all available lines from serial port, like test_uart_simulator.py"""
+    """Read all available lines from serial port, buffering incomplete lines."""
+    global serial_read_buffer
     lines = []
     if not ser or not ser.is_open:
         return lines
@@ -207,14 +232,31 @@ def read_available_lines(ser):
         if available > 0:
             # Read in chunks to avoid blocking
             data = ser.read(available)
-            # Split by newlines and process each line
-            buffer = data.decode('utf-8', errors='ignore')
-            for line in buffer.split('\n'):
-                line = line.strip()
-                if line:
-                    lines.append(line)
+            # Decode and append to buffer
+            new_data = data.decode('utf-8', errors='ignore')
+            serial_read_buffer += new_data
+            
+            # Process complete lines (ending with \n or \r\n)
+            # Keep processing until no more complete lines in buffer
+            while True:
+                # Check for \r\n first (Windows line ending)
+                if '\r\n' in serial_read_buffer:
+                    line, serial_read_buffer = serial_read_buffer.split('\r\n', 1)
+                    line = line.strip()
+                    if line:
+                        lines.append(line)
+                # Then check for \n (Unix line ending)
+                elif '\n' in serial_read_buffer:
+                    line, serial_read_buffer = serial_read_buffer.split('\n', 1)
+                    line = line.strip()
+                    if line:
+                        lines.append(line)
+                else:
+                    # No more complete lines, break
+                    break
         else:
             # If no data available, try readline with short timeout
+            # This helps catch any remaining complete lines
             try:
                 data = ser.readline()
                 if data:
@@ -329,7 +371,7 @@ def list_ports():
 @app.route('/uart/connect', methods=['POST'])
 def uart_connect():
     """Connect to ESP32 via UART."""
-    global serial_conn
+    global serial_conn, serial_read_buffer
 
     if not SERIAL_AVAILABLE:
         return jsonify({'error': 'pyserial not installed'}), 500
@@ -344,8 +386,10 @@ def uart_connect():
         if serial_conn and serial_conn.is_open:
             stop_serial_reader()
             serial_conn.close()
+            serial_read_buffer = ""  # Clear buffer on reconnect
 
         serial_conn = open_serial(port, UART_BAUD_RATE)
+        serial_read_buffer = ""  # Clear buffer on new connection
         time.sleep(0.1)
         start_serial_reader()
 
@@ -362,13 +406,15 @@ def uart_connect():
 @app.route('/uart/disconnect', methods=['POST'])
 def uart_disconnect():
     """Disconnect from ESP32."""
-    global serial_conn
+    global serial_conn, serial_read_buffer
 
     stop_serial_reader()
 
     if serial_conn and serial_conn.is_open:
         serial_conn.close()
         serial_conn = None
+    
+    serial_read_buffer = ""  # Clear buffer on disconnect
 
     return jsonify({'status': 'ok', 'message': 'Disconnected'})
 
@@ -425,20 +471,222 @@ def get_status():
         })
 
 
+# Global debug mode flag
+debug_mode_enabled = False
+
+@app.route('/video_stream')
+def video_stream():
+    """MJPEG video stream endpoint."""
+    global video_streamer
+    if video_streamer is None:
+        return "Video streamer not initialized", 503
+    
+    try:
+        return Response(
+            stream_with_context(video_streamer.generate_mjpeg()),
+            mimetype='multipart/x-mixed-replace; boundary=frame'
+        )
+    except Exception as e:
+        return f"Error generating video stream: {e}", 500
+
+
+def generate_debug_mjpeg(image_key):
+    """Generate MJPEG stream from debug images."""
+    import cv2
+    import time
+    import numpy as np
+    
+    global autopilot_controller, video_streamer
+    
+    # Create a placeholder black image
+    placeholder = np.zeros((480, 640, 3), dtype=np.uint8)
+    cv2.putText(placeholder, 'Waiting for auto-pilot...', (50, 240), 
+                cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+    
+    while True:
+        if autopilot_controller is None:
+            # Send placeholder if autopilot not initialized
+            ret, buffer = cv2.imencode('.jpg', placeholder, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            if ret:
+                yield (b'--frame\r\n'
+                       b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
+            time.sleep(0.1)
+            continue
+        
+        # Check if autopilot is running
+        status = autopilot_controller.get_status()
+        if not status.get('is_running', False):
+            # Send placeholder if autopilot not running
+            placeholder_text = np.zeros((480, 640, 3), dtype=np.uint8)
+            cv2.putText(placeholder_text, 'Auto-pilot not running', (50, 240), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+            ret, buffer = cv2.imencode('.jpg', placeholder_text, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            if ret:
+                yield (b'--frame\r\n'
+                       b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
+            time.sleep(0.1)
+            continue
+        
+        debug_image = autopilot_controller.get_debug_image(image_key)
+        if debug_image is not None:
+            # Make sure image is valid (not empty)
+            try:
+                if debug_image.size > 0 and len(debug_image.shape) >= 2:
+                    # Convert grayscale ROI to BGR if needed for display
+                    if len(debug_image.shape) == 2:  # Grayscale image (like 'roi' or 'binary')
+                        debug_image = cv2.cvtColor(debug_image, cv2.COLOR_GRAY2BGR)
+                    
+                    ret, buffer = cv2.imencode('.jpg', debug_image, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                    if ret:
+                        yield (b'--frame\r\n'
+                               b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
+                    else:
+                        # Encoding failed, send placeholder
+                        ret, buffer = cv2.imencode('.jpg', placeholder, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                        if ret:
+                            yield (b'--frame\r\n'
+                                   b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
+                else:
+                    # Empty or invalid image, send placeholder
+                    ret, buffer = cv2.imencode('.jpg', placeholder, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                    if ret:
+                        yield (b'--frame\r\n'
+                               b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
+            except Exception as e:
+                # Error processing image, send placeholder
+                print(f"[Debug Stream] Error processing {image_key}: {e}")
+                ret, buffer = cv2.imencode('.jpg', placeholder, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                if ret:
+                    yield (b'--frame\r\n'
+                           b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
+        else:
+            # No debug image available, try to show regular video frame as fallback
+            if video_streamer is not None:
+                frame = video_streamer.get_frame()
+                if frame is not None:
+                    ret, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                    if ret:
+                        yield (b'--frame\r\n'
+                               b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
+                else:
+                    ret, buffer = cv2.imencode('.jpg', placeholder, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                    if ret:
+                        yield (b'--frame\r\n'
+                               b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
+            else:
+                ret, buffer = cv2.imencode('.jpg', placeholder, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                if ret:
+                    yield (b'--frame\r\n'
+                           b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
+        
+        time.sleep(0.033)  # ~30 FPS
+
+
+@app.route('/debug/bird_view_lines')
+def debug_bird_view_lines():
+    """MJPEG stream for bird view with lines."""
+    return Response(
+        stream_with_context(generate_debug_mjpeg('bird_view_lines')),
+        mimetype='multipart/x-mixed-replace; boundary=frame'
+    )
+
+
+@app.route('/debug/sliding_windows')
+def debug_sliding_windows():
+    """MJPEG stream for sliding windows."""
+    return Response(
+        stream_with_context(generate_debug_mjpeg('sliding_windows')),
+        mimetype='multipart/x-mixed-replace; boundary=frame'
+    )
+
+
+@app.route('/debug/final_result')
+def debug_final_result():
+    """MJPEG stream for final result."""
+    return Response(
+        stream_with_context(generate_debug_mjpeg('final_result')),
+        mimetype='multipart/x-mixed-replace; boundary=frame'
+    )
+
+
+@app.route('/debug/toggle', methods=['POST'])
+def toggle_debug_mode():
+    """Toggle debug mode on/off."""
+    global debug_mode_enabled
+    debug_mode_enabled = not debug_mode_enabled
+    return jsonify({
+        'debug_mode': debug_mode_enabled,
+        'message': 'Debug mode ' + ('enabled' if debug_mode_enabled else 'disabled')
+    })
+
+
+@app.route('/debug/status', methods=['GET'])
+def debug_status():
+    """Get current debug mode status."""
+    global debug_mode_enabled
+    return jsonify({'debug_mode': debug_mode_enabled})
+
+
+@app.route('/autopilot/start', methods=['POST'])
+def autopilot_start():
+    """Start the auto-pilot controller."""
+    global autopilot_controller
+    if autopilot_controller is None:
+        return jsonify({'error': 'Auto-pilot controller not initialized'}), 503
+    
+    success = autopilot_controller.start()
+    if success:
+        return jsonify({'status': 'ok', 'message': 'Auto-pilot started'})
+    else:
+        return jsonify({'error': 'Auto-pilot already running'}), 400
+
+
+@app.route('/autopilot/stop', methods=['POST'])
+def autopilot_stop():
+    """Stop the auto-pilot controller."""
+    global autopilot_controller
+    if autopilot_controller is None:
+        return jsonify({'error': 'Auto-pilot controller not initialized'}), 503
+    
+    success = autopilot_controller.stop()
+    if success:
+        return jsonify({'status': 'ok', 'message': 'Auto-pilot stopped'})
+    else:
+        return jsonify({'error': 'Auto-pilot not running'}), 400
+
+
+@app.route('/autopilot/status', methods=['GET'])
+def autopilot_status():
+    """Get auto-pilot controller status."""
+    global autopilot_controller
+    if autopilot_controller is None:
+        return jsonify({'error': 'Auto-pilot controller not initialized'}), 503
+    
+    status = autopilot_controller.get_status()
+    return jsonify(status)
+
+
 @app.route('/health')
 def health():
     """Health check endpoint."""
-    global serial_conn, serial_reader_running
+    global serial_conn, serial_reader_running, video_streamer, autopilot_controller
     port_name = None
     if serial_conn and serial_conn.is_open:
         port_name = serial_conn.port
+    
+    autopilot_status_info = None
+    if autopilot_controller is not None:
+        autopilot_status_info = autopilot_controller.get_status()
+    
     return jsonify({
         'status': 'ok',
         'message': 'Dashboard server is running',
         'uart_connected': serial_conn is not None and serial_conn.is_open if serial_conn else False,
         'uart_port': port_name,
         'serial_available': SERIAL_AVAILABLE,
-        'serial_reader_running': serial_reader_running
+        'serial_reader_running': serial_reader_running,
+        'video_streamer_initialized': video_streamer is not None,
+        'autopilot_status': autopilot_status_info
     })
 
 
@@ -497,6 +745,16 @@ if __name__ == '__main__':
                         help='Automatically connect to a serial port on startup')
     parser.add_argument('--port-name', type=str, default=None,
                         help='Specific serial port to connect to (e.g., /dev/ttyUSB0)')
+    parser.add_argument('--pid-kp', type=float, default=0.045,
+                        help='PID proportional gain (default: 0.045)')
+    parser.add_argument('--pid-ki', type=float, default=0.002,
+                        help='PID integral gain (default: 0.002)')
+    parser.add_argument('--pid-kd', type=float, default=0.02,
+                        help='PID derivative gain (default: 0.02)')
+    parser.add_argument('--pid-tolerance', type=int, default=40,
+                        help='PID tolerance for straight detection (default: 40)')
+    parser.add_argument('--threshold', type=int, default=180,
+                        help='Image processing threshold (default: 180)')
 
     args = parser.parse_args()
 
@@ -542,6 +800,55 @@ if __name__ == '__main__':
         print("Serial port not connected. Use the dashboard to connect manually.")
         print("Tip: Use --auto-connect to select a port on startup, or --port-name to specify one.")
 
+    # Initialize video streamer
+    if VideoStreamer is not None:
+        print("=" * 60)
+        print("Initializing video streamer...")
+        video_streamer = VideoStreamer()
+        if video_streamer.initialize():
+            print("✓ Video streamer initialized")
+        else:
+            print("⚠ Video streamer initialization failed - video features disabled")
+            video_streamer = None
+    else:
+        print("⚠ Video streamer not available - autopilot modules not found")
+        video_streamer = None
+
+    # Initialize command sender (requires serial connection)
+    if CommandSender is not None and serial_conn and serial_conn.is_open:
+        command_sender = CommandSender(write_uart_command)
+        print("✓ Command sender initialized")
+        
+        # Initialize and auto-start auto-pilot controller
+        if AutoPilotController is not None:
+            print("Initializing auto-pilot controller...")
+            autopilot_controller = AutoPilotController(
+                video_streamer=video_streamer,
+                command_sender=command_sender,
+                pid_kp=args.pid_kp,
+                pid_ki=args.pid_ki,
+                pid_kd=args.pid_kd,
+                pid_tolerance=args.pid_tolerance,
+                threshold=args.threshold
+            )
+            
+            if video_streamer is not None:
+                autopilot_controller.start()
+                print("✓ Auto-pilot controller started")
+            else:
+                print("⚠ Auto-pilot controller not started - video streamer not available")
+        else:
+            print("⚠ Auto-pilot controller not available")
+            autopilot_controller = None
+    else:
+        if CommandSender is None:
+            print("⚠ Command sender not available - autopilot modules not found")
+        else:
+            print("⚠ Command sender not initialized - serial port not connected")
+        print("⚠ Auto-pilot controller not initialized - serial port required")
+        command_sender = None
+        autopilot_controller = None
+
     print("=" * 60)
     print(f"Dashboard available at:")
     print(f"  Local:   http://127.0.0.1:{args.port}")
@@ -550,4 +857,11 @@ if __name__ == '__main__':
     print("Press Ctrl+C to stop the server")
     print("=" * 60)
 
-    app.run(host=args.host, port=args.port, debug=args.debug)
+    try:
+        app.run(host=args.host, port=args.port, debug=args.debug)
+    finally:
+        # Cleanup on shutdown
+        if autopilot_controller:
+            autopilot_controller.stop()
+        if video_streamer:
+            video_streamer.stop()
