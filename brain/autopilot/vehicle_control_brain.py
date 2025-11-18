@@ -1,4 +1,4 @@
-git"""
+"""
 Vehicle Control Brain Module - Orchestrates lane detection and PID control.
 
 This module acts as the main orchestrator, combining lane detection with PID control.
