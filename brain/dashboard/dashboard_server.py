@@ -90,7 +90,7 @@ def translate_http_to_uart(endpoint: str, args: dict):
     """Translate HTTP endpoint to UART command."""
     SERVO_CENTER = 105
     SERVO_RIGHT = 50   # Right turn (lower value)
-    SERVO_LEFT = 135   # Left turn (higher value)
+    SERVO_LEFT = 160   # Left turn (higher value)
     MOTOR_SPEED_MAX = 255
 
     if endpoint == 'arm':

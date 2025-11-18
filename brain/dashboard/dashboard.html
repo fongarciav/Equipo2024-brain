@@ -384,7 +384,7 @@
                         <span>Steering Angle</span>
                         <span id="steer-value">105°</span>
                     </div>
-                    <input type="range" id="steer-slider" min="50" max="135" value="105" 
+                    <input type="range" id="steer-slider" min="50" max="160" value="105" 
                            oninput="updateSteering(this.value)">
                     <div class="value-display" id="steer-display">Center: 105°</div>
                 </div>
@@ -574,7 +574,7 @@
             const savedSteer = localStorage.getItem('dashboard_last_steer');
             if (savedSteer !== null) {
                 const steer = parseInt(savedSteer);
-                if (!isNaN(steer) && steer >= 50 && steer <= 135) {
+                if (!isNaN(steer) && steer >= 50 && steer <= 160) {
                     const steerSlider = document.getElementById('steer-slider');
                     const steerValue = document.getElementById('steer-value');
                     const steerDisplay = document.getElementById('steer-display');
@@ -583,14 +583,14 @@
                     if (steerValue) steerValue.textContent = `${steer}°`;
                     if (steerDisplay) {
                         const center = 105;
-                        // NOTE: Servo is inverted - 50 = right, 135 = left
+                        // NOTE: Servo is inverted - 50 = right, 160 = left
                         if (steer === center) {
                             steerDisplay.textContent = 'Center: 105°';
                         } else if (steer < center) {
                             // Lower value (50) = right turn
                             steerDisplay.textContent = `Right: ${steer}°`;
                         } else {
-                            // Higher value (135) = left turn
+                            // Higher value (160) = left turn
                             steerDisplay.textContent = `Left: ${steer}°`;
                         }
                     }
@@ -692,14 +692,14 @@
                                 steerValue.textContent = `${angle}°`;
                                 
                                 const center = 105;
-                                // NOTE: Servo is inverted - 50 = right, 135 = left
+                                // NOTE: Servo is inverted - 50 = right, 160 = left
                                 if (angle === center) {
                                     steerDisplay.textContent = 'Center: 105°';
                                 } else if (angle < center) {
                                     // Lower value (50) = right turn
                                     steerDisplay.textContent = `Right: ${angle}°`;
                                 } else {
-                                    // Higher value (135) = left turn
+                                    // Higher value (160) = left turn
                                     steerDisplay.textContent = `Left: ${angle}°`;
                                 }
                                 
@@ -975,14 +975,14 @@
             if (steerValue) steerValue.textContent = `${angle}°`;
             if (steerDisplay) {
                 const center = 105;
-                // NOTE: Servo is inverted - 50 = right, 135 = left
+                // NOTE: Servo is inverted - 50 = right, 160 = left
                 if (angle === center) {
                     steerDisplay.textContent = 'Center: 105°';
                 } else if (angle < center) {
                     // Lower value (50) = right turn
                     steerDisplay.textContent = `Right: ${angle}°`;
                 } else {
-                    // Higher value (135) = left turn
+                    // Higher value (160) = left turn
                     steerDisplay.textContent = `Left: ${angle}°`;
                 }
             }

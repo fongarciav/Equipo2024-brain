@@ -15,7 +15,7 @@ except ImportError:
 HELP_TEXT = """
 Commands (type and press Enter):
   speed <0-255>       Set motor speed (C:SET_SPEED)
-  steer <0-180>       Set steering angle in degrees (C:SET_STEER)
+  steer <50-160>      Set steering angle (C:SET_STEER) - 50=right, 105=center, 160=left
   lights <off|on|auto>  Set lights mode (not handled over UART by firmware)
   emergency           Trigger emergency brake (E:BRAKE_NOW)
   stop                Alias for speed 0
@@ -155,33 +155,33 @@ def run_demo(ser: serial.Serial, delay_s: float = 0.02) -> None:
     write_line(ser, "C:SET_SPEED:255")
     time.sleep(delay_s)
     
-    # Steering angles (105 is center, 70 is left, 140 is right)
+    # Steering angles (matching hardware.h: 50=right, 105=center, 160=left)
     SERVO_CENTER = 105
-    SERVO_LEFT = 70
-    SERVO_RIGHT = 140
+    SERVO_RIGHT = 50   # Right turn (lower value)
+    SERVO_LEFT = 160   # Left turn (higher value)
     
     # Zigzag pattern: left -> right -> left -> right (faster)
     print("Performing zigzag pattern...")
     zigzag_cycles = 4  # Number of left-right cycles
     
     for cycle in range(zigzag_cycles):
-        # Turn left
+        # Turn left (higher value = left)
         print(f"Cycle {cycle + 1}: Turning LEFT")
-        for angle in range(SERVO_CENTER, SERVO_LEFT - 1, -2):  # Step by 2 for faster movement
+        for angle in range(SERVO_CENTER, SERVO_LEFT + 1, 2):  # Step by 2 for faster movement
             cmd = f"C:SET_STEER:{angle}"
             write_line(ser, cmd)
             time.sleep(delay_s)
         
-        # Turn right
+        # Turn right (lower value = right)
         print(f"Cycle {cycle + 1}: Turning RIGHT")
-        for angle in range(SERVO_LEFT, SERVO_RIGHT + 1, 2):  # Step by 2 for faster movement
+        for angle in range(SERVO_LEFT, SERVO_RIGHT - 1, -2):  # Step by 2 for faster movement
             cmd = f"C:SET_STEER:{angle}"
             write_line(ser, cmd)
             time.sleep(delay_s)
         
         # Return to center before next cycle
         if cycle < zigzag_cycles - 1:  # Don't center on last cycle
-            for angle in range(SERVO_RIGHT, SERVO_CENTER - 1, -2):
+            for angle in range(SERVO_RIGHT, SERVO_CENTER + 1, 2):
                 cmd = f"C:SET_STEER:{angle}"
                 write_line(ser, cmd)
                 time.sleep(delay_s)
@@ -250,11 +250,11 @@ def interactive_loop(ser: serial.Serial) -> None:
                 write_line(ser, msg)
             elif cmd == "steer":
                 if len(parts) != 2:
-                    print("Usage: steer <0-180>")
+                    print("Usage: steer <50-160> (50=right, 105=center, 160=left)")
                     continue
                 val = int(parts[1])
-                if not (0 <= val <= 180):
-                    print("Value must be 0..180")
+                if not (50 <= val <= 160):
+                    print("Value must be 50..160 (50=right, 105=center, 160=left)")
                     continue
                 msg = f"C:SET_STEER:{val}"
                 print(f"-> {msg}")

@@ -26,7 +26,7 @@ extern "C"
 // Servo configuration
 #define SERVO_CENTER 105
 #define SERVO_LEFT 50
-#define SERVO_RIGHT 135
+#define SERVO_RIGHT 160
 #define SERVO_PWM_FREQ_HZ 50
 
 // Motor configuration
