@@ -5,9 +5,10 @@ Following SRP: This module only handles angle conversion.
 """
 
 # ESP32 Servo constants
+# NOTE: 50 = right turn, 135 = left turn (inverted from typical convention)
 SERVO_CENTER = 105
-SERVO_LEFT = 50
-SERVO_RIGHT = 135
+SERVO_RIGHT = 50   # Right turn (lower value)
+SERVO_LEFT = 135   # Left turn (higher value)
 
 # PID angle constants
 PID_STRAIGHT = -3  # Special value for "go straight"
@@ -24,7 +25,10 @@ class AngleConverter:
         # Servo range: 135 - 50 = 85 degrees (42.5 each side from center)
         # PID range: 22 - (-22) = 44 degrees (22 each side)
         # Conversion: 42.5 / 22 ≈ 1.93 degrees servo per degree PID
-        self.conversion_factor = (SERVO_RIGHT - SERVO_CENTER) / PID_MAX
+        # NOTE: Since 50 is right and 135 is left, we need to invert the conversion
+        # Positive PID angle (right turn) → lower servo value (50)
+        # Negative PID angle (left turn) → higher servo value (135)
+        self.conversion_factor = (SERVO_CENTER - SERVO_RIGHT) / PID_MAX
     
     def convert(self, pid_angle: float) -> int:
         """
@@ -41,11 +45,14 @@ class AngleConverter:
             return SERVO_CENTER
         
         # Convert PID angle to servo angle
-        # Formula: servo_angle = center + (pid_angle * conversion_factor)
-        servo_angle = SERVO_CENTER + (pid_angle * self.conversion_factor)
+        # NOTE: Servo is inverted: 50 = right, 135 = left
+        # Positive PID angle (right turn) → subtract from center → lower value (50)
+        # Negative PID angle (left turn) → add to center → higher value (135)
+        # Formula: servo_angle = center - (pid_angle * conversion_factor)
+        servo_angle = SERVO_CENTER - (pid_angle * self.conversion_factor)
         
-        # Clamp to valid range
-        servo_angle = max(SERVO_LEFT, min(SERVO_RIGHT, int(servo_angle)))
+        # Clamp to valid range (SERVO_RIGHT=50 is minimum, SERVO_LEFT=135 is maximum)
+        servo_angle = max(SERVO_RIGHT, min(SERVO_LEFT, int(servo_angle)))
         
         return servo_angle
     
