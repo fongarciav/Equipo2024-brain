@@ -236,7 +236,7 @@ class MarcosLaneDetector_Advanced:
         # Convertir el error posicional (píxeles) a error angular usando arctan
         # Error positivo = carril a la derecha del auto → ángulo positivo
         # Error negativo = carril a la izquierda del auto → ángulo negativo
-        error_angle_rad = math.atan2(error_pixels, lookahead_distance)
+        error_angle_rad = math.atan2(-error_pixels, lookahead_distance)
         error_angle_deg = math.degrees(error_angle_rad)
         
         # Combinar el error angular con el ángulo de curvatura
