@@ -23,7 +23,7 @@ class CommandSender:
         Send steering command to ESP32.
         
         Args:
-            servo_angle: Servo angle (50-135, where 105 is center)
+            servo_angle: Servo angle (50-160, where 105 is center)
             
         Returns:
             True if command was sent successfully, False otherwise

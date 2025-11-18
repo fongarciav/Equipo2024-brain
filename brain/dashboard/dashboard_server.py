@@ -404,14 +404,10 @@ def initialize_autopilot_if_needed():
     # Initialize autopilot controller
     if video_streamer is not None:
         print("[UART] Initializing autopilot controller...", file=sys.stderr)
-        # Use default PID parameters (can be made configurable later)
+        # Initialize autopilot controller with default threshold
         autopilot_controller = AutoPilotController(
             video_streamer=video_streamer,
             command_sender=command_sender,
-            pid_kp=0.06,  # Increased from 0.045 for more aggressive response
-            pid_ki=0.002,
-            pid_kd=0.02,
-            pid_tolerance=40,
             threshold=180
         )
         print("[UART] Autopilot controller initialized (not started - use /autopilot/start)", file=sys.stderr)
@@ -792,50 +788,7 @@ def autopilot_status():
         return jsonify({'error': 'Auto-pilot controller not initialized'}), 503
     
     status = autopilot_controller.get_status()
-    pid_params = autopilot_controller.get_pid_parameters()
-    status['pid_parameters'] = pid_params
     return jsonify(status)
-
-@app.route('/autopilot/pid', methods=['POST'])
-def autopilot_update_pid():
-    """Update PID parameters."""
-    global autopilot_controller
-    if autopilot_controller is None:
-        return jsonify({'error': 'Auto-pilot controller not initialized'}), 503
-    
-    data = request.get_json() or {}
-    kp = data.get('kp')
-    ki = data.get('ki')
-    kd = data.get('kd')
-    
-    # Validate parameters
-    if kp is not None and (not isinstance(kp, (int, float)) or kp < 0):
-        return jsonify({'error': 'Invalid kp value'}), 400
-    if ki is not None and (not isinstance(ki, (int, float)) or ki < 0):
-        return jsonify({'error': 'Invalid ki value'}), 400
-    if kd is not None and (not isinstance(kd, (int, float)) or kd < 0):
-        return jsonify({'error': 'Invalid kd value'}), 400
-    
-    # Update parameters
-    autopilot_controller.update_pid_parameters(kp=kp, ki=ki, kd=kd)
-    
-    # Return updated parameters
-    updated_params = autopilot_controller.get_pid_parameters()
-    return jsonify({
-        'status': 'ok',
-        'message': 'PID parameters updated',
-        'pid_parameters': updated_params
-    })
-
-@app.route('/autopilot/pid', methods=['GET'])
-def autopilot_get_pid():
-    """Get current PID parameters."""
-    global autopilot_controller
-    if autopilot_controller is None:
-        return jsonify({'error': 'Auto-pilot controller not initialized'}), 503
-    
-    pid_params = autopilot_controller.get_pid_parameters()
-    return jsonify(pid_params)
 
 
 @app.route('/health')
@@ -917,14 +870,6 @@ if __name__ == '__main__':
                         help='Automatically connect to a serial port on startup')
     parser.add_argument('--port-name', type=str, default=None,
                         help='Specific serial port to connect to (e.g., /dev/ttyUSB0)')
-    parser.add_argument('--pid-kp', type=float, default=0.045,
-                        help='PID proportional gain (default: 0.045)')
-    parser.add_argument('--pid-ki', type=float, default=0.002,
-                        help='PID integral gain (default: 0.002)')
-    parser.add_argument('--pid-kd', type=float, default=0.02,
-                        help='PID derivative gain (default: 0.02)')
-    parser.add_argument('--pid-tolerance', type=int, default=40,
-                        help='PID tolerance for straight detection (default: 40)')
     parser.add_argument('--threshold', type=int, default=180,
                         help='Image processing threshold (default: 180)')
 
@@ -997,10 +942,6 @@ if __name__ == '__main__':
             autopilot_controller = AutoPilotController(
                 video_streamer=video_streamer,
                 command_sender=command_sender,
-                pid_kp=args.pid_kp,
-                pid_ki=args.pid_ki,
-                pid_kd=args.pid_kd,
-                pid_tolerance=args.pid_tolerance,
                 threshold=args.threshold
             )
             

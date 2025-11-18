@@ -1,5 +1,5 @@
 """
-Angle Converter Module - Converts PID angles to ESP32 servo values.
+Angle Converter Module - Converts steering angles to ESP32 servo values.
 
 Following SRP: This module only handles angle conversion.
 """
@@ -10,47 +10,46 @@ SERVO_CENTER = 105
 SERVO_RIGHT = 50   # Right turn (lower value)
 SERVO_LEFT = 160   # Left turn (higher value)
 
-# PID angle constants
-PID_STRAIGHT = -3  # Special value for "go straight"
-PID_MIN = -30  # Increased from -22 for more aggressive turns
-PID_MAX = 30   # Increased from 22 for more aggressive turns
+# Steering angle constants
+STRAIGHT_THRESHOLD = 6.0  # If angle is within ±6 degrees, go straight
+ANGLE_MIN = -30  # Minimum steering angle (degrees)
+ANGLE_MAX = 30   # Maximum steering angle (degrees)
 
 
 class AngleConverter:
-    """Converts PID steering angles to ESP32 servo angles."""
+    """Converts steering angles to ESP32 servo angles."""
     
     def __init__(self):
         """Initialize the angle converter."""
-        # Calculate conversion factor: servo range / PID range
+        # Calculate conversion factor: servo range / angle range
         # Servo range: 160 - 50 = 110 degrees (55 each side from center)
-        # PID range: 30 - (-30) = 60 degrees (30 each side)
-        # Use more of the servo range for aggressive turns: ~1.42 degrees servo per degree PID
+        # Angle range: 30 - (-30) = 60 degrees (30 each side)
+        # Conversion: 55 / 30 ≈ 1.83 degrees servo per degree steering angle
         # NOTE: Since 50 is right and 160 is left, we need to invert the conversion
-        # Positive PID angle (right turn) → lower servo value (50)
-        # Negative PID angle (left turn) → higher servo value (160)
-        # Using aggressive factor to utilize more servo range
-        self.conversion_factor = (SERVO_CENTER - SERVO_RIGHT) / PID_MAX
+        # Positive angle (right turn) → lower servo value (50)
+        # Negative angle (left turn) → higher servo value (160)
+        self.conversion_factor = (SERVO_CENTER - SERVO_RIGHT) / ANGLE_MAX
     
-    def convert(self, pid_angle: float) -> int:
+    def convert(self, steering_angle: float) -> int:
         """
         Convert steering angle to ESP32 servo angle.
         
         Args:
-            pid_angle: Steering angle from curvature (-30 to +30 degrees, or 0 for straight)
+            steering_angle: Steering angle from curvature (-30 to +30 degrees, or 0 for straight)
             
         Returns:
             Servo angle (50-160, where 105 is center)
         """
         # Special case: angle between -6 and 6 degrees means "go straight" → servo center
-        if abs(pid_angle) <= 6.0:
+        if abs(steering_angle) <= STRAIGHT_THRESHOLD:
             return SERVO_CENTER
         
-        # Convert PID angle to servo angle
+        # Convert steering angle to servo angle
         # NOTE: Servo is inverted: 50 = right, 160 = left
-        # Positive PID angle (right turn) → subtract from center → lower value (50)
-        # Negative PID angle (left turn) → add to center → higher value (160)
-        # Formula: servo_angle = center - (pid_angle * conversion_factor)
-        servo_angle = SERVO_CENTER - (pid_angle * self.conversion_factor)
+        # Positive angle (right turn) → subtract from center → lower value (50)
+        # Negative angle (left turn) → add to center → higher value (160)
+        # Formula: servo_angle = center - (steering_angle * conversion_factor)
+        servo_angle = SERVO_CENTER - (steering_angle * self.conversion_factor)
         
         # Clamp to valid range (SERVO_RIGHT=50 is minimum, SERVO_LEFT=160 is maximum)
         servo_angle = max(SERVO_RIGHT, min(SERVO_LEFT, int(servo_angle)))
@@ -63,9 +62,9 @@ class AngleConverter:
             'servo_center': SERVO_CENTER,
             'servo_left': SERVO_LEFT,
             'servo_right': SERVO_RIGHT,
-            'pid_straight': PID_STRAIGHT,
-            'pid_min': PID_MIN,
-            'pid_max': PID_MAX,
+            'straight_threshold': STRAIGHT_THRESHOLD,
+            'angle_min': ANGLE_MIN,
+            'angle_max': ANGLE_MAX,
             'conversion_factor': self.conversion_factor
         }
 

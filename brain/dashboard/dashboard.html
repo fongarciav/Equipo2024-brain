@@ -1088,8 +1088,8 @@
                     
                     // Update steering angle
                     const pidAngleEl = document.getElementById('autopilot-pid-angle');
-                    if (pidAngleEl && data.last_pid_angle !== null && data.last_pid_angle !== undefined) {
-                        pidAngleEl.textContent = `${data.last_pid_angle.toFixed(2)}°`;
+                    if (pidAngleEl && data.last_steering_angle !== null && data.last_steering_angle !== undefined) {
+                        pidAngleEl.textContent = `${data.last_steering_angle.toFixed(2)}°`;
                     } else if (pidAngleEl) {
                         pidAngleEl.textContent = '--';
                     }

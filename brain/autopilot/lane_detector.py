@@ -4,118 +4,12 @@ import time
 import math
 
 # ======================================================================
-# --- 1. MEJORADO PID CONTROLLER ---
-# ======================================================================
-
-class PIDController:
-    """
-    Improved PID Controller with better stability and noise filtering.
-    Features:
-    - Anti-windup protection for integral term
-    - Derivative filtering to reduce noise sensitivity
-    - Dead zone handling
-    - Output clamping
-    """
-    def __init__(self, Kp, Ki, Kd, tolerancia, max_output=30.0, min_output=-30.0):
-        self.Kp = Kp
-        self.Ki = Ki
-        self.Kd = Kd
-        self.tolerancia = tolerancia
-        
-        # Output limits
-        self.max_output = max_output
-        self.min_output = min_output
-        
-        # State variables
-        self.prev_error = 0.0
-        self.integral = 0.0
-        self.prev_derivative = 0.0
-        
-        # Derivative filter (low-pass filter to reduce noise)
-        self.derivative_alpha = 0.7  # Filter coefficient (0-1, higher = less filtering)
-        
-        # Anti-windup: limit integral accumulation
-        self.integral_max = 200.0  # Maximum integral value to prevent windup
-        
-        # Minimum dt to avoid division by zero
-        self.min_dt = 0.001
-        
-        # Reset counter for periodic integral reset
-        self.iteration_count = 0
-        self.integral_reset_interval = 20  # Reset integral every N iterations
-
-    def compute(self, error, dt, integral_reset_interval=None):
-        """
-        Compute PID control output.
-        
-        Args:
-            error: Current error (pixels)
-            dt: Time delta since last call (seconds)
-            integral_reset_interval: Optional override for reset interval
-            
-        Returns:
-            Control signal (angle in degrees, or -3 for straight)
-        """
-        if integral_reset_interval is not None:
-            self.integral_reset_interval = integral_reset_interval
-        
-        # Ensure dt is valid
-        if dt <= 0:
-            dt = self.min_dt
-        
-        # Dead zone: if error is very small, go straight
-        if abs(error) < self.tolerancia:
-            # Reset integral when in dead zone to prevent accumulation
-            self.integral = 0.0
-            self.prev_error = error
-            return -3.0  # Special value for "go straight"
-        
-        # Proportional term
-        proportional = error
-        
-        # Integral term with anti-windup protection
-        self.integral += error * dt
-        
-        # Clamp integral to prevent windup
-        self.integral = max(min(self.integral, self.integral_max), -self.integral_max)
-        
-        # Periodic integral reset to prevent long-term drift
-        self.iteration_count += 1
-        if self.iteration_count % self.integral_reset_interval == 0:
-            self.integral = 0.0
-        
-        # Derivative term with filtering to reduce noise sensitivity
-        raw_derivative = (error - self.prev_error) / dt
-        
-        # Apply low-pass filter to derivative to reduce noise
-        derivative = self.derivative_alpha * raw_derivative + (1 - self.derivative_alpha) * self.prev_derivative
-        self.prev_derivative = derivative
-        
-        # Compute PID output
-        control_signal = self.Kp * proportional + self.Ki * self.integral + self.Kd * derivative
-        
-        # Clamp output to valid range
-        control_signal = max(min(control_signal, self.max_output), self.min_output)
-        
-        # Update previous error
-        self.prev_error = error
-        
-        return control_signal
-    
-    def reset(self):
-        """Reset PID controller state (useful when restarting or changing parameters)."""
-        self.prev_error = 0.0
-        self.integral = 0.0
-        self.prev_derivative = 0.0
-        self.iteration_count = 0
-
-# ======================================================================
-# --- 2. LA NUEVA CLASE DE DETECCIÓN (LA "MEZCLA") ---
+# --- LANE DETECTOR ---
 # ======================================================================
 
 class MarcosLaneDetector_Advanced:
     
-    def __init__(self, pid_kp, pid_ki, pid_kd, pid_tolerance, threshold):
+    def __init__(self, threshold):
         # --- Parámetros de la lógica de tu NUEVO script ---
         self.LANE_WIDTH_PX = 400 # ¡CALIBRAR ESTE VALOR! Ancho del carril en píxeles en vista cenital
         self.prev_left_fit = None
@@ -145,8 +39,7 @@ class MarcosLaneDetector_Advanced:
         self.hsv_lower = np.array([0, 0, threshold]) # L-H, L-S, L-V (threshold usado aquí)
         self.hsv_upper = np.array([255, 50, 255]) # U-H, U-S, U-V
         
-        # --- Parámetros del PID (de tu script ORIGINAL) ---
-        self.pid_controller = PIDController(pid_kp, pid_ki, pid_kd, pid_tolerance)
+        # Time tracking for frame rate
         self.last_time = time.time()
 
     def get_steering_angle(self, frame):
@@ -341,23 +234,20 @@ class MarcosLaneDetector_Advanced:
         angle_rad = math.atan2(dx, -dy)
         curvature_angle_deg = math.degrees(angle_rad)
         
-        # Limitar el ángulo de curvatura al rango válido (para visualización)
+        # Limitar el ángulo de curvatura al rango válido
         curvature_angle_deg = max(min(curvature_angle_deg, 30), -30)
         
-        # --- USAR PID CONTROLLER CON EL ERROR ---
-        # Calcular dt para el PID
-        current_time = time.time()
-        dt = current_time - self.last_time
-        if dt <= 0:
-            dt = 0.033  # Default a ~30 FPS si dt es inválido
-        self.last_time = current_time
+        # --- USAR CURVATURA DIRECTAMENTE ---
+        # Usar el ángulo de curvatura directamente como ángulo de dirección
+        # El ángulo de curvatura ya está en grados y representa la dirección del carril
+        # Positivo = carril se curva hacia la derecha → girar a la derecha
+        # Negativo = carril se curva hacia la izquierda → girar a la izquierda
+        # Rango: -30 a +30 grados
+        steering_angle = curvature_angle_deg
         
-        # Usar el PID controller con el error para obtener un ángulo de dirección suave
-        # El PID está diseñado para trabajar con errores en píxeles directamente
-        # El PID devuelve un ángulo en el rango -30 a +30 (o -3 para ir recto)
-        # Error positivo (carril a la derecha) → ángulo positivo → girar a la derecha
-        # Error negativo (carril a la izquierda) → ángulo negativo → girar a la izquierda
-        steering_angle = self.pid_controller.compute(error, dt)
+        # Si el ángulo está entre -6 y 6 grados, ir recto
+        if abs(steering_angle) <= 6.0:
+            steering_angle = 0.0
 
         # --- 6. Visualización (de tu nuevo script) ---
         # Vista aérea sin procesar (solo la transformación)
@@ -404,17 +294,15 @@ class MarcosLaneDetector_Advanced:
         original_perpective_lane_image = cv2.warpPerspective(transformed_frame, self.inv_matrix, (640, 480))
         result = cv2.addWeighted(original_frame, 1, original_perpective_lane_image, 0.5, 0)
         
-        # Mostrar el ángulo PID (usado para control) y el ángulo de curvatura (visualización)
-        cv2.putText(result, f'PID Angle: {steering_angle:.2f} deg', (30, 110), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-        cv2.putText(result, f'Curvature: {curvature_angle_deg:.2f} deg', (30, 150), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 2)
+        # Mostrar el ángulo de dirección (usado para control)
+        cv2.putText(result, f'Steering Angle: {steering_angle:.2f} deg', (30, 110), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
         cv2.putText(result, f'Error: {error:.2f} px', (30, 70), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
         
         # Agregar texto a la vista aérea con líneas
-        cv2.putText(bird_view_with_lines, f'PID Angle: {steering_angle:.2f} deg', (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-        cv2.putText(bird_view_with_lines, f'Curvature: {curvature_angle_deg:.2f} deg', (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
-        cv2.putText(bird_view_with_lines, f'Error: {error:.2f} px', (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-        cv2.putText(bird_view_with_lines, f'Lane Center: {lane_center:.1f}', (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-        cv2.putText(bird_view_with_lines, f'Car Position: {car_position_x}', (10, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        cv2.putText(bird_view_with_lines, f'Steering Angle: {steering_angle:.2f} deg', (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        cv2.putText(bird_view_with_lines, f'Error: {error:.2f} px', (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        cv2.putText(bird_view_with_lines, f'Lane Center: {lane_center:.1f}', (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        cv2.putText(bird_view_with_lines, f'Car Position: {car_position_x}', (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
 
         # Empaquetar imágenes de depuración para mostrarlas fuera
         debug_images = {
