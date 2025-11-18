@@ -285,8 +285,16 @@ class MarcosLaneDetector_Advanced:
         # Rango: -30 a +30 grados
         steering_angle = curvature_angle_deg
         
-        # Si el ángulo está entre -6 y 6 grados, ir recto
-        if abs(steering_angle) <= 6.0:
+        # Zona muerta mejorada: usar tanto la curvatura como el error para determinar si ir recto
+        # Si el error es pequeño (carril centrado) Y la curvatura es pequeña (carril recto), ir recto
+        error_threshold = 30  # píxeles - si el error es menor que esto, consideramos que está centrado
+        curvature_threshold = 8.0  # grados - aumentado de 6 a 8 para reducir oscilaciones
+        
+        # Si el error es pequeño Y la curvatura es pequeña, ir recto
+        if abs(error) < error_threshold and abs(steering_angle) <= curvature_threshold:
+            steering_angle = 0.0
+        # Si solo la curvatura es muy pequeña (carril muy recto), también ir recto
+        elif abs(steering_angle) <= 4.0:
             steering_angle = 0.0
 
         # --- 6. Visualización (de tu nuevo script) ---
