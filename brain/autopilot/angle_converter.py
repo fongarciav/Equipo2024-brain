@@ -40,7 +40,7 @@ class AngleConverter:
         Returns:
             Servo angle (50-160, where 105 is center)
         """
-        # Special case: angle between -6 and 6 degrees means "go straight" → servo center
+        # Special case: angle close to 0 means "go straight" → servo center
         if abs(steering_angle) <= STRAIGHT_THRESHOLD:
             return SERVO_CENTER
         

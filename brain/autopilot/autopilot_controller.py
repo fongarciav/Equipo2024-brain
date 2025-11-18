@@ -22,7 +22,8 @@ class AutoPilotController:
     """Orchestrates lane detection, angle conversion, and command sending."""
     
     def __init__(self, video_streamer: VideoStreamer, command_sender: CommandSender,
-                 threshold: int = 180):
+                 threshold: int = 180, pid_kp: float = 0.06, pid_ki: float = 0.002, 
+                 pid_kd: float = 0.02, pid_tolerance: int = 40):
         """
         Initialize the auto-pilot controller.
         
@@ -30,13 +31,29 @@ class AutoPilotController:
             video_streamer: VideoStreamer instance for getting frames
             command_sender: CommandSender instance for sending commands
             threshold: Image processing threshold
+            pid_kp: PID proportional gain
+            pid_ki: PID integral gain
+            pid_kd: PID derivative gain
+            pid_tolerance: PID tolerance for "straight" detection
         """
         self.video_streamer = video_streamer
         self.command_sender = command_sender
         self.angle_converter = AngleConverter()
         
-        # Initialize lane detector
-        self.detector = MarcosLaneDetector_Advanced(threshold=threshold)
+        # Initialize lane detector with PID parameters
+        self.detector = MarcosLaneDetector_Advanced(
+            threshold=threshold,
+            pid_kp=pid_kp,
+            pid_ki=pid_ki,
+            pid_kd=pid_kd,
+            pid_tolerance=pid_tolerance
+        )
+        
+        # Store PID parameters for later updates
+        self.pid_kp = pid_kp
+        self.pid_ki = pid_ki
+        self.pid_kd = pid_kd
+        self.pid_tolerance = pid_tolerance
         
         self.is_running = False
         self.thread = None
@@ -125,6 +142,37 @@ class AutoPilotController:
                 'last_servo_angle': self.last_servo_angle,
                 'command_count': self.command_count,
                 'error_count': self.error_count
+            }
+    
+    def update_pid_parameters(self, kp: float = None, ki: float = None, kd: float = None):
+        """
+        Update PID parameters dynamically.
+        
+        Args:
+            kp: New proportional gain (None to keep current)
+            ki: New integral gain (None to keep current)
+            kd: New derivative gain (None to keep current)
+        """
+        with self.lock:
+            if kp is not None:
+                self.pid_kp = kp
+            if ki is not None:
+                self.pid_ki = ki
+            if kd is not None:
+                self.pid_kd = kd
+            
+            # Update PID controller parameters
+            self.detector.pid_controller.set_parameters(Kp=kp, Ki=ki, Kd=kd)
+    
+    def get_pid_parameters(self) -> dict:
+        """Get current PID parameters."""
+        with self.lock:
+            pid_params = self.detector.pid_controller.get_parameters()
+            return {
+                'kp': pid_params['Kp'],
+                'ki': pid_params['Ki'],
+                'kd': pid_params['Kd'],
+                'tolerance': pid_params['tolerance']
             }
     
     def get_debug_image(self, image_key: str):
