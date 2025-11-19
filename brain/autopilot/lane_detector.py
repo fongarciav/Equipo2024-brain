@@ -14,16 +14,17 @@ class MarcosLaneDetector_Advanced:
     
     def __init__(self, threshold):
         # --- Parámetros de la lógica de tu NUEVO script ---
-        self.LANE_WIDTH_PX = 800 # ¡CALIBRAR ESTE VALOR! Ancho del carril en píxeles en vista cenital
+        self.LANE_WIDTH_PX = 500 # ¡CALIBRAR ESTE VALOR! Ancho del carril en píxeles en vista cenital
         self.prev_left_fit = None
         self.prev_right_fit = None
         self.MIN_POINTS_FOR_FIT = 3
+        self.MIN_LANE_DISTANCE_PX = 100  # Distancia mínima entre líneas para evitar que se fusionen
         
         # --- Puntos de perspectiva (de tu nuevo script) ---
         # Puntos Origen (SRC) en la imagen original - roi
-        self.tl = (160, 140)
+        self.tl = (160, 180)
         self.bl = (-150, 450)
-        self.tr = (480, 140)
+        self.tr = (480, 180)
         self.br = (790, 450)
         self.pts1 = np.float32([self.tl, self.bl, self.tr, self.br])
         
@@ -158,23 +159,43 @@ class MarcosLaneDetector_Advanced:
             try: right_fit_current = np.polyfit(ry, rx, 2)
             except np.linalg.LinAlgError: pass
 
-        # Decidir qué líneas usar (CASO 1-5)
+        # Helper function to calculate distance between two lines at a reference y position
+        def get_line_distance(fit1, fit2, y_ref=480):
+            """Calculate horizontal distance between two polynomial fits at y_ref"""
+            x1 = fit1[0]*y_ref**2 + fit1[1]*y_ref + fit1[2]
+            x2 = fit2[0]*y_ref**2 + fit2[1]*y_ref + fit2[2]
+            return abs(x2 - x1)
+
+        # Decidir qué líneas usar (priorizando el carril derecho primero)
+        # CASO 1: Ambas líneas detectadas - verificar distancia mínima
         if left_fit_current is not None and right_fit_current is not None:
-            left_fit = left_fit_current
-            right_fit = right_fit_current
-            self.prev_left_fit = left_fit
-            self.prev_right_fit = right_fit
-        elif left_fit_current is not None:
-            left_fit = left_fit_current
-            right_fit = left_fit + [0, 0, self.LANE_WIDTH_PX]
-            self.prev_left_fit = left_fit
-            self.prev_right_fit = right_fit
+            distance = get_line_distance(left_fit_current, right_fit_current)
+            if distance >= self.MIN_LANE_DISTANCE_PX:
+                # Distancia válida, usar ambas líneas
+                left_fit = left_fit_current
+                right_fit = right_fit_current
+                self.prev_left_fit = left_fit
+                self.prev_right_fit = right_fit
+            else:
+                # Líneas demasiado cercanas - priorizar carril derecho
+                right_fit = right_fit_current
+                left_fit = right_fit - [0, 0, self.LANE_WIDTH_PX]
+                self.prev_left_fit = left_fit
+                self.prev_right_fit = right_fit
+        # CASO 2: Solo carril derecho detectado (prioridad)
         elif right_fit_current is not None:
             right_fit = right_fit_current
             left_fit = right_fit - [0, 0, self.LANE_WIDTH_PX]
             self.prev_left_fit = left_fit
             self.prev_right_fit = right_fit
-        elif self.prev_left_fit is not None:
+        # CASO 3: Solo carril izquierdo detectado
+        elif left_fit_current is not None:
+            left_fit = left_fit_current
+            right_fit = left_fit + [0, 0, self.LANE_WIDTH_PX]
+            self.prev_left_fit = left_fit
+            self.prev_right_fit = right_fit
+        # CASO 4: Usar líneas previas si están disponibles
+        elif self.prev_left_fit is not None and self.prev_right_fit is not None:
             left_fit = self.prev_left_fit
             right_fit = self.prev_right_fit
         else:

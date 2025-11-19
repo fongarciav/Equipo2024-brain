@@ -9,7 +9,7 @@
 
 #define MOTOR_TASK_PERIOD_MS 10 // 100 Hz
 #define EMERGENCY_NOTIFICATION_BIT (1 << 0)
-#define DEFAULT_FORWARD_SPEED 255 // Default speed when no command received (0-255)
+#define DEFAULT_FORWARD_SPEED 220 // Default speed when no command received (0-255)
 #define STOP_COOLDOWN_MS 5000 // 5 seconds cooldown after stop
 
 static mailbox_t *motor_mailbox = NULL;

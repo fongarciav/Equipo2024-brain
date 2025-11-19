@@ -75,17 +75,17 @@ El autopilot acepta varios parámetros para ajustar el comportamiento:
 ```bash
 python dashboard_server.py \
   --port-name /dev/ttyUSB0 \
-  --pid-kp 0.045 \          # Ganancia proporcional del PID
+  --pid-kp 0.43 \          # Ganancia proporcional del PID
   --pid-ki 0.002 \          # Ganancia integral del PID
-  --pid-kd 0.02 \           # Ganancia derivativa del PID
+  --pid-kd 0.12 \           # Ganancia derivativa del PID
   --pid-tolerance 40 \      # Tolerancia para detección de recta
   --threshold 180            # Umbral de procesamiento de imagen
 ```
 
 ### Valores por Defecto:
-- `--pid-kp`: 0.045
+- `--pid-kp`: 0.43
 - `--pid-ki`: 0.002
-- `--pid-kd`: 0.02
+- `--pid-kd`: 0.12
 - `--pid-tolerance`: 40
 - `--threshold`: 180
 
