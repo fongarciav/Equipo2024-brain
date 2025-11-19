@@ -198,10 +198,9 @@ void motor_task(void *pvParameters)
         }
         else
         {
-            // No speed command ever received, use default forward behavior
-            current_speed = DEFAULT_FORWARD_SPEED;
-            motor_set_direction(true);
-            motor_set_speed(current_speed);
+            // No speed command ever received, stop the motor
+            motor_stop();
+            current_speed = 0;
             motor_direction = true;
             lights_set_reverse(false);
         }
