@@ -23,9 +23,9 @@ class MarcosLaneDetector_Advanced:
         # --- Puntos de perspectiva (de tu nuevo script) ---
         # Puntos Origen (SRC) en la imagen original - roi
         self.tl = (160, 180)
-        self.bl = (-150, 450)
+        self.bl = (-150, 480)
         self.tr = (480, 180)
-        self.br = (790, 450)
+        self.br = (790, 480)
         self.pts1 = np.float32([self.tl, self.bl, self.tr, self.br])
         
         # Puntos Destino (DST) para la vista cenital
