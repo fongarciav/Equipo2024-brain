@@ -694,100 +694,154 @@
               <div class="value-display" id="steer-display">Center: 105°</div>
             </div>
           </div>
-        </div>
-
-        <!-- Right Panel: Video & Auto-Pilot -->
-        <div class="right-panel">
-          <!-- Camera Feeds Grid -->
-          <div class="section">
-            <h2 class="section-title">Camera Feeds</h2>
-            <div
-              style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px"
-            >
-              <div class="video-container">
-                <img src="/video_stream" alt="Main Camera" />
-                <div class="video-label">Main Camera</div>
-              </div>
-              <div class="video-container">
-                <img src="/debug/bird_view_lines" alt="Bird View" />
-                <div class="video-label">Bird View</div>
-              </div>
-              <div class="video-container">
-                <img src="/debug/sliding_windows" alt="Sliding Windows" />
-                <div class="video-label">Sliding Windows</div>
-              </div>
-              <div class="video-container">
-                <img src="/debug/final_result" alt="Final Result" />
-                <div class="video-label">Final Result</div>
-              </div>
-            </div>
-          </div>
 
           <!-- Auto-Pilot Section -->
           <div class="section">
             <h2 class="section-title">Auto-Pilot</h2>
-            <div
-              style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px"
-            >
-              <div class="autopilot-controls">
+            <div class="autopilot-controls">
+              <div
+                style="
+                  background: #1a1a1a;
+                  border-radius: 5px;
+                  padding: 6px;
+                  font-size: 10px;
+                "
+              >
+                <div style="font-weight: bold; color: #fff; margin-bottom: 6px">
+                  PID Parameters
+                </div>
                 <div
+                  class="pid-grid"
                   style="
-                    background: #1a1a1a;
-                    border-radius: 5px;
-                    padding: 6px;
+                    grid-template-columns: repeat(4, 1fr);
                     margin-bottom: 8px;
-                    font-size: 10px;
                   "
                 >
-                  <div
-                    style="
-                      display: flex;
-                      justify-content: space-between;
-                      margin-bottom: 4px;
-                    "
-                  >
-                    <span style="color: #fff; font-weight: bold">Status:</span>
-                    <span
-                      id="autopilot-status"
-                      style="color: #ffc107; font-weight: bold"
-                      >Checking...</span
+                  <div class="pid-control">
+                    <label
+                      >Kp:
+                      <span id="pid-kp-value" class="pid-value"
+                        >0.43</span
+                      ></label
                     >
+                    <input
+                      type="range"
+                      id="pid-kp-slider"
+                      min="0"
+                      max="1"
+                      step="0.001"
+                      value="0.43"
+                      oninput="updatePIDParameter('kp', this.value)"
+                    />
                   </div>
-                  <div
-                    style="
-                      display: flex;
-                      justify-content: space-between;
-                      margin-bottom: 4px;
-                    "
-                  >
-                    <span style="color: #fff">Steer:</span>
-                    <span id="autopilot-pid-angle" style="color: #fff">--</span>
-                  </div>
-                  <div
-                    style="
-                      display: flex;
-                      justify-content: space-between;
-                      margin-bottom: 4px;
-                    "
-                  >
-                    <span style="color: #fff">Servo:</span>
-                    <span id="autopilot-servo-angle" style="color: #fff"
-                      >--</span
+                  <div class="pid-control">
+                    <label
+                      >Ki:
+                      <span id="pid-ki-value" class="pid-value"
+                        >0.002</span
+                      ></label
                     >
+                    <input
+                      type="range"
+                      id="pid-ki-slider"
+                      min="0"
+                      max="0.01"
+                      step="0.0001"
+                      value="0.002"
+                      oninput="updatePIDParameter('ki', this.value)"
+                    />
                   </div>
-                  <div style="display: flex; justify-content: space-between">
-                    <span style="color: #fff">Commands:</span>
-                    <span id="autopilot-command-count" style="color: #fff"
-                      >0</span
+                  <div class="pid-control">
+                    <label
+                      >Kd:
+                      <span id="pid-kd-value" class="pid-value"
+                        >0.12</span
+                      ></label
                     >
+                    <input
+                      type="range"
+                      id="pid-kd-slider"
+                      min="0"
+                      max="0.5"
+                      step="0.001"
+                      value="0.12"
+                      oninput="updatePIDParameter('kd', this.value)"
+                    />
+                  </div>
+                  <div class="pid-control">
+                    <label
+                      >Tol:
+                      <span id="pid-tolerance-value" class="pid-value"
+                        >3.0</span
+                      ></label
+                    >
+                    <input
+                      type="range"
+                      id="pid-tolerance-slider"
+                      min="0"
+                      max="10"
+                      step="0.1"
+                      value="3.0"
+                      oninput="updatePIDParameter('tolerance', this.value)"
+                    />
                   </div>
                 </div>
+
+                <div style="font-weight: bold; color: #fff; margin-bottom: 6px">
+                  Status
+                </div>
+                <div
+                  style="
+                    display: flex;
+                    justify-content: space-between;
+                    margin-bottom: 4px;
+                  "
+                >
+                  <span style="color: #fff; font-weight: bold">Status:</span>
+                  <span
+                    id="autopilot-status"
+                    style="color: #ffc107; font-weight: bold"
+                    >Checking...</span
+                  >
+                </div>
+                <div
+                  style="
+                    display: flex;
+                    justify-content: space-between;
+                    margin-bottom: 4px;
+                  "
+                >
+                  <span style="color: #fff">Steer:</span>
+                  <span id="autopilot-pid-angle" style="color: #fff">--</span>
+                </div>
+                <div
+                  style="
+                    display: flex;
+                    justify-content: space-between;
+                    margin-bottom: 4px;
+                  "
+                >
+                  <span style="color: #fff">Servo:</span>
+                  <span id="autopilot-servo-angle" style="color: #fff">--</span>
+                </div>
+                <div
+                  style="
+                    display: flex;
+                    justify-content: space-between;
+                    margin-bottom: 8px;
+                  "
+                >
+                  <span style="color: #fff">Commands:</span>
+                  <span id="autopilot-command-count" style="color: #fff"
+                    >0</span
+                  >
+                </div>
+
                 <div
                   style="
                     display: grid;
                     grid-template-columns: 1fr 1fr;
                     gap: 4px;
-                    margin-bottom: 8px;
                   "
                 >
                   <button
@@ -806,92 +860,41 @@
                   </button>
                 </div>
               </div>
+            </div>
+          </div>
+        </div>
 
-              <div class="autopilot-controls">
-                <div
-                  style="
-                    background: #1a1a1a;
-                    border-radius: 5px;
-                    padding: 6px;
-                    font-size: 10px;
-                  "
-                >
-                  <div
-                    style="font-weight: bold; color: #fff; margin-bottom: 6px"
-                  >
-                    PID Parameters
-                  </div>
-                  <div class="pid-grid">
-                    <div class="pid-control">
-                      <label
-                        >Kp:
-                        <span id="pid-kp-value" class="pid-value"
-                          >0.43</span
-                        ></label
-                      >
-                      <input
-                        type="range"
-                        id="pid-kp-slider"
-                        min="0"
-                        max="1"
-                        step="0.001"
-                        value="0.43"
-                        oninput="updatePIDParameter('kp', this.value)"
-                      />
-                    </div>
-                    <div class="pid-control">
-                      <label
-                        >Ki:
-                        <span id="pid-ki-value" class="pid-value"
-                          >0.002</span
-                        ></label
-                      >
-                      <input
-                        type="range"
-                        id="pid-ki-slider"
-                        min="0"
-                        max="0.01"
-                        step="0.0001"
-                        value="0.002"
-                        oninput="updatePIDParameter('ki', this.value)"
-                      />
-                    </div>
-                    <div class="pid-control">
-                      <label
-                        >Kd:
-                        <span id="pid-kd-value" class="pid-value"
-                          >0.12</span
-                        ></label
-                      >
-                      <input
-                        type="range"
-                        id="pid-kd-slider"
-                        min="0"
-                        max="0.5"
-                        step="0.001"
-                        value="0.12"
-                        oninput="updatePIDParameter('kd', this.value)"
-                      />
-                    </div>
-                    <div class="pid-control">
-                      <label
-                        >Tol:
-                        <span id="pid-tolerance-value" class="pid-value"
-                          >3.0</span
-                        ></label
-                      >
-                      <input
-                        type="range"
-                        id="pid-tolerance-slider"
-                        min="0"
-                        max="10"
-                        step="0.1"
-                        value="3.0"
-                        oninput="updatePIDParameter('tolerance', this.value)"
-                      />
-                    </div>
-                  </div>
-                </div>
+        <!-- Right Panel: Video Feeds -->
+        <div class="right-panel">
+          <!-- Camera Views in 2x2 Grid -->
+          <div class="section">
+            <h2 class="section-title">Camera Views</h2>
+            <div
+              style="
+                display: grid;
+                grid-template-columns: repeat(2, 1fr);
+                gap: 8px;
+              "
+            >
+              <div class="video-container">
+                <img
+                  src="/video_stream"
+                  alt="Main Camera"
+                  style="width: 100%; height: auto"
+                />
+                <div class="video-label">Main Camera</div>
+              </div>
+              <div class="video-container">
+                <img src="/debug/bird_view_lines" alt="Bird View" />
+                <div class="video-label">Bird View</div>
+              </div>
+              <div class="video-container">
+                <img src="/debug/sliding_windows" alt="Sliding Windows" />
+                <div class="video-label">Sliding Windows</div>
+              </div>
+              <div class="video-container">
+                <img src="/debug/final_result" alt="Final Result" />
+                <div class="video-label">Final Result</div>
               </div>
             </div>
           </div>

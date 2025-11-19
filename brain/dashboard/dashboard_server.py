@@ -92,6 +92,7 @@ def translate_http_to_uart(endpoint: str, args: dict):
     SERVO_RIGHT = 50   # Right turn (lower value)
     SERVO_LEFT = 160   # Left turn (higher value)
     MOTOR_SPEED_MAX = 255
+    FORWARD_SPEED = 210
 
     if endpoint == 'arm':
         return True, "ARM", "M:SYS_ARM:0"
@@ -108,7 +109,7 @@ def translate_http_to_uart(endpoint: str, args: dict):
     elif endpoint == 'brake':
         return True, "BRAKE", "E:BRAKE_NOW:0"
     elif endpoint == 'forward':
-        return True, "FORWARD", f"C:SET_SPEED:{MOTOR_SPEED_MAX}"
+        return True, "FORWARD", f"C:SET_SPEED:{FORWARD_SPEED}"
     elif endpoint == 'back':
         return True, "BACKWARD", f"C:SET_SPEED:{MOTOR_SPEED_MAX}"
     elif endpoint == 'driveStop':
