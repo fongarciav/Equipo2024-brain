@@ -13,13 +13,6 @@ class MarcosLaneDetector_Advanced:
     """
     
     def __init__(self, threshold):
-        # --- Verificar si CUDA está disponible ---
-        try:
-            cuda_device_count = cv2.cuda.getCudaEnabledDeviceCount()
-            print(f"[LaneDetector] CUDA habilitado: {cuda_device_count} dispositivo(s) disponible(s)")
-        except Exception as e:
-            print(f"[LaneDetector] CUDA no disponible: {e}")
-        
         # --- Parámetros de la lógica de tu NUEVO script ---
         self.LANE_WIDTH_PX = 500 # ¡CALIBRAR ESTE VALOR! Ancho del carril en píxeles en vista cenital
         self.prev_left_fit = None

@@ -39,6 +39,20 @@ except ImportError:
     SERIAL_AVAILABLE = False
     print("Warning: pyserial not installed. Install with: pip install pyserial", file=sys.stderr)
 
+# Check CUDA availability
+CUDA_AVAILABLE = False
+CUDA_DEVICE_COUNT = 0
+CUDA_ERROR = None
+try:
+    import cv2
+    cuda_device_count = cv2.cuda.getCudaEnabledDeviceCount()
+    CUDA_AVAILABLE = True
+    CUDA_DEVICE_COUNT = cuda_device_count
+except Exception as e:
+    CUDA_AVAILABLE = False
+    CUDA_DEVICE_COUNT = 0
+    CUDA_ERROR = str(e)
+
 # Get the directory where this script is located
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -945,6 +959,15 @@ if __name__ == '__main__':
     print("=" * 60)
     print("ESP32 Car Control Dashboard Server")
     print("=" * 60)
+    
+    # Display CUDA status
+    if CUDA_AVAILABLE:
+        print(f"✓ CUDA habilitado: {CUDA_DEVICE_COUNT} dispositivo(s) disponible(s)")
+    else:
+        if CUDA_ERROR:
+            print(f"⚠ CUDA no disponible: {CUDA_ERROR}")
+        else:
+            print("⚠ CUDA no disponible: OpenCV no está instalado o no tiene soporte CUDA")
 
     # Handle serial port connection
     if args.port_name:
