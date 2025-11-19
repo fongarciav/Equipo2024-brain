@@ -698,41 +698,34 @@
 
         <!-- Right Panel: Video & Auto-Pilot -->
         <div class="right-panel">
-          <!-- Main Video Stream -->
+          <!-- Camera Feeds Grid -->
           <div class="section">
-            <h2 class="section-title">Camera Feed</h2>
-            <div class="video-container">
-              <img
-                src="/video_stream"
-                alt="Video Stream"
-                style="width: 100%; height: auto"
-              />
+            <h2 class="section-title">Camera Feeds</h2>
+            <div
+              style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px"
+            >
+              <div class="video-container">
+                <img src="/video_stream" alt="Main Camera" />
+                <div class="video-label">Main Camera</div>
+              </div>
+              <div class="video-container">
+                <img src="/debug/bird_view_lines" alt="Bird View" />
+                <div class="video-label">Bird View</div>
+              </div>
+              <div class="video-container">
+                <img src="/debug/sliding_windows" alt="Sliding Windows" />
+                <div class="video-label">Sliding Windows</div>
+              </div>
+              <div class="video-container">
+                <img src="/debug/final_result" alt="Final Result" />
+                <div class="video-label">Final Result</div>
+              </div>
             </div>
           </div>
 
           <!-- Auto-Pilot Section -->
           <div class="section">
-            <div
-              style="
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-                margin-bottom: 8px;
-              "
-            >
-              <h2 class="section-title" style="margin: 0">Auto-Pilot</h2>
-              <label class="toggle-label" style="margin: 0">
-                <span>Debug</span>
-                <label class="toggle-switch">
-                  <input
-                    type="checkbox"
-                    id="debug-view-toggle"
-                    onchange="toggleDebugView()"
-                  />
-                  <span class="toggle-slider"></span>
-                </label>
-              </label>
-            </div>
+            <h2 class="section-title">Auto-Pilot</h2>
             <div
               style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px"
             >
@@ -840,7 +833,7 @@
                         type="range"
                         id="pid-kp-slider"
                         min="0"
-                        max="0.5"
+                        max="1"
                         step="0.001"
                         value="0.43"
                         oninput="updatePIDParameter('kp', this.value)"
@@ -874,7 +867,7 @@
                         type="range"
                         id="pid-kd-slider"
                         min="0"
-                        max="0.2"
+                        max="0.5"
                         step="0.001"
                         value="0.12"
                         oninput="updatePIDParameter('kd', this.value)"
@@ -898,30 +891,6 @@
                       />
                     </div>
                   </div>
-                </div>
-              </div>
-            </div>
-
-            <!-- Debug View Section (toggleable) -->
-            <div id="debug-view-section" style="display: none; margin-top: 8px">
-              <div
-                style="
-                  display: grid;
-                  grid-template-columns: repeat(3, 1fr);
-                  gap: 8px;
-                "
-              >
-                <div class="video-container">
-                  <img src="/debug/bird_view_lines" alt="Bird View" />
-                  <div class="video-label">Bird View</div>
-                </div>
-                <div class="video-container">
-                  <img src="/debug/sliding_windows" alt="Sliding Windows" />
-                  <div class="video-label">Sliding Windows</div>
-                </div>
-                <div class="video-container">
-                  <img src="/debug/final_result" alt="Final Result" />
-                  <div class="video-label">Final Result</div>
                 </div>
               </div>
             </div>
@@ -1683,35 +1652,6 @@
             statusEl.textContent = "Error";
             statusEl.style.color = "#dc3545";
           }
-        }
-      }
-
-      // Debug view toggle function
-      function toggleDebugView() {
-        const debugSection = document.getElementById("debug-view-section");
-        const toggle = document.getElementById("debug-view-toggle");
-
-        if (toggle.checked) {
-          debugSection.style.display = "block";
-          // Force reload of debug images
-          const images = [
-            "debug-bird-view",
-            "debug-sliding-windows",
-            "debug-final-result",
-          ];
-          images.forEach((imgId) => {
-            const img = document.getElementById(imgId);
-            if (img) {
-              const src = img.src;
-              img.src = "";
-              setTimeout(() => {
-                img.src = src + "?t=" + Date.now();
-                img.style.display = "block";
-              }, 100);
-            }
-          });
-        } else {
-          debugSection.style.display = "none";
         }
       }
 

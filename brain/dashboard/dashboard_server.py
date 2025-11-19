@@ -926,12 +926,12 @@ if __name__ == '__main__':
                         help='Specific serial port to connect to (e.g., /dev/ttyUSB0)')
     parser.add_argument('--threshold', type=int, default=180,
                         help='Image processing threshold (default: 180)')
-    parser.add_argument('--pid-kp', type=float, default=0.06,
-                        help='PID proportional gain (default: 0.06)')
+    parser.add_argument('--pid-kp', type=float, default=0.43,
+                        help='PID proportional gain (default: 0.43)')
     parser.add_argument('--pid-ki', type=float, default=0.002,
                         help='PID integral gain (default: 0.002)')
-    parser.add_argument('--pid-kd', type=float, default=0.02,
-                        help='PID derivative gain (default: 0.02)')
+    parser.add_argument('--pid-kd', type=float, default=0.12,
+                        help='PID derivative gain (default: 0.12)')
     parser.add_argument('--max-angle', type=float, default=30.0,
                         help='Maximum steering angle in degrees (default: 30.0)')
     parser.add_argument('--deadband', type=float, default=6.0,
