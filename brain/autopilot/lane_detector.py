@@ -21,10 +21,10 @@ class MarcosLaneDetector_Advanced:
         
         # --- Puntos de perspectiva (de tu nuevo script) ---
         # Puntos Origen (SRC) en la imagen original - roi
-        self.tl = (0, 150)
-        self.bl = (0, 440)
-        self.tr = (640, 150)
-        self.br = (640, 440)
+        self.tl = (160, 140)
+        self.bl = (-150, 450)
+        self.tr = (480, 140)
+        self.br = (790, 450)
         self.pts1 = np.float32([self.tl, self.bl, self.tr, self.br])
         
         # Puntos Destino (DST) para la vista cenital
@@ -286,7 +286,7 @@ class MarcosLaneDetector_Advanced:
         quad_points = np.hstack((points_left, points_right)).astype(np.int32)
 
         cv2.fillPoly(overlay, [quad_points], (0, 255, 0))
-        cv2.addWeighted(overlay, 0.2, transformed_frame, 0.8, 0, transformed_frame) # Dibujar área en cenital
+        cv2.addWeighted(overlay, 0.4, transformed_frame, 0.8, 0, transformed_frame) # Dibujar área en cenital
 
         # Invertir la perspectiva
         original_perpective_lane_image = cv2.warpPerspective(transformed_frame, self.inv_matrix, (640, 480))
