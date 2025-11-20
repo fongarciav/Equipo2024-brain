@@ -982,6 +982,22 @@
 
         <!-- Right Panel: Video Feeds -->
         <div class="right-panel">
+          <!-- Camera View Header (Always visible) -->
+          <div style="display: flex; justify-content: space-between; align-items: center; flex-shrink: 0; margin-bottom: 8px;">
+            <h2 class="section-title" style="margin: 0;">Camera View</h2>
+            <div style="display: flex; align-items: center; gap: 6px; flex-shrink: 0;">
+              <span style="font-size: 10px; color: #333; font-weight: bold; white-space: nowrap;">Debug Views</span>
+              <label class="toggle-switch" style="flex-shrink: 0;">
+                <input
+                  type="checkbox"
+                  id="debug-views-toggle"
+                  onchange="toggleDebugViews(this.checked)"
+                />
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+          </div>
+          
           <!-- Main Camera View (Default) -->
           <div
             class="section"
@@ -993,20 +1009,6 @@
               min-height: 0;
             "
           >
-            <div style="display: flex; justify-content: space-between; align-items: center; flex-shrink: 0; margin-bottom: 8px;">
-              <h2 class="section-title" style="margin: 0;">Camera View</h2>
-              <div style="display: flex; align-items: center; gap: 6px;">
-                <span style="font-size: 10px; color: #333; font-weight: bold;">Debug Views</span>
-                <label class="toggle-switch" style="margin: 0;">
-                  <input
-                    type="checkbox"
-                    id="debug-views-toggle"
-                    onchange="toggleDebugViews(this.checked)"
-                  />
-                  <span class="toggle-slider"></span>
-                </label>
-              </div>
-            </div>
             <div
               style="
                 flex: 1;
@@ -1036,11 +1038,9 @@
               display: flex;
               flex-direction: column;
               min-height: 0;
-              margin-top: 8px;
               display: none;
             "
           >
-            <h2 class="section-title" style="flex-shrink: 0">Debug Views</h2>
             <div
               style="
                 display: grid;
