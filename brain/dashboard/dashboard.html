@@ -871,6 +871,113 @@
               </div>
             </div>
           </div>
+
+          <!-- Sign Detection Section -->
+          <div class="section">
+            <h2 class="section-title">Sign Detection</h2>
+            <div class="autopilot-controls">
+              <div
+                style="
+                  background: #1a1a1a;
+                  border-radius: 5px;
+                  padding: 6px;
+                  font-size: 10px;
+                "
+              >
+                <div style="font-weight: bold; color: #fff; margin-bottom: 6px">
+                  Detection Settings
+                </div>
+                <div class="pid-control" style="margin-bottom: 8px">
+                  <label
+                    >Confidence:
+                    <span id="sign-confidence-value" class="pid-value"
+                      >0.60</span
+                    ></label
+                  >
+                  <input
+                    type="range"
+                    id="sign-confidence-slider"
+                    min="0"
+                    max="1"
+                    step="0.01"
+                    value="0.60"
+                    oninput="updateSignConfidence(this.value)"
+                  />
+                </div>
+
+                <div style="font-weight: bold; color: #fff; margin-bottom: 6px">
+                  Status
+                </div>
+                <div
+                  style="
+                    display: flex;
+                    justify-content: space-between;
+                    margin-bottom: 4px;
+                  "
+                >
+                  <span style="color: #fff; font-weight: bold">Status:</span>
+                  <span
+                    id="sign-detection-status"
+                    style="color: #ffc107; font-weight: bold"
+                    >Checking...</span
+                  >
+                </div>
+                <div
+                  style="
+                    display: flex;
+                    justify-content: space-between;
+                    margin-bottom: 4px;
+                  "
+                >
+                  <span style="color: #fff">Detections:</span>
+                  <span id="sign-detection-count" style="color: #fff">0</span>
+                </div>
+                <div
+                  style="
+                    display: flex;
+                    justify-content: space-between;
+                    margin-bottom: 4px;
+                  "
+                >
+                  <span style="color: #fff">Frames:</span>
+                  <span id="sign-frame-count" style="color: #fff">0</span>
+                </div>
+                <div
+                  style="
+                    display: flex;
+                    justify-content: space-between;
+                    margin-bottom: 8px;
+                  "
+                >
+                  <span style="color: #fff">Device:</span>
+                  <span id="sign-device" style="color: #fff">--</span>
+                </div>
+
+                <div
+                  style="
+                    display: grid;
+                    grid-template-columns: 1fr 1fr;
+                    gap: 4px;
+                  "
+                >
+                  <button
+                    class="btn btn-success"
+                    onclick="startSignDetection()"
+                    style="font-size: 10px; padding: 4px"
+                  >
+                    START
+                  </button>
+                  <button
+                    class="btn btn-danger"
+                    onclick="stopSignDetection()"
+                    style="font-size: 10px; padding: 4px"
+                  >
+                    STOP
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
 
         <!-- Right Panel: Video Feeds -->
@@ -915,6 +1022,34 @@
               <div class="video-container">
                 <img src="/debug/final_result" alt="Final Result" />
                 <div class="video-label">Final Result</div>
+              </div>
+            </div>
+          </div>
+          
+          <!-- Sign Detection View -->
+          <div
+            class="section"
+            style="
+              flex: 1;
+              display: flex;
+              flex-direction: column;
+              min-height: 0;
+              margin-top: 8px;
+            "
+          >
+            <h2 class="section-title" style="flex-shrink: 0">Sign Detection</h2>
+            <div
+              style="
+                flex: 1;
+                min-height: 0;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+              "
+            >
+              <div class="video-container" style="width: 100%; height: 100%">
+                <img src="/debug/sign_detections" alt="Sign Detections" style="width: 100%; height: auto" />
+                <div class="video-label">Sign Detections</div>
               </div>
             </div>
           </div>
@@ -1848,9 +1983,166 @@
         logPanel.classList.toggle("visible");
       }
 
+      // Sign Detection functions
+      async function startSignDetection() {
+        try {
+          const response = await fetch(`${getBaseURL()}/sign_detection/start`, {
+            method: "POST",
+          });
+
+          if (response.ok) {
+            const data = await response.json();
+            log(`Sign detection started: ${data.message || "OK"}`, "success");
+            updateSignDetectionStatus(); // Update status immediately
+          } else {
+            const errorData = await response
+              .json()
+              .catch(() => ({ error: "Unknown error" }));
+            log(
+              `Failed to start sign detection: ${
+                errorData.error || response.status
+              }`,
+              "error"
+            );
+          }
+        } catch (error) {
+          log(`Error starting sign detection: ${error.message}`, "error");
+        }
+      }
+
+      async function stopSignDetection() {
+        try {
+          const response = await fetch(`${getBaseURL()}/sign_detection/stop`, {
+            method: "POST",
+          });
+
+          if (response.ok) {
+            const data = await response.json();
+            log(`Sign detection stopped: ${data.message || "OK"}`, "success");
+            updateSignDetectionStatus(); // Update status immediately
+          } else {
+            const errorData = await response
+              .json()
+              .catch(() => ({ error: "Unknown error" }));
+            log(
+              `Failed to stop sign detection: ${
+                errorData.error || response.status
+              }`,
+              "error"
+            );
+          }
+        } catch (error) {
+          log(`Error stopping sign detection: ${error.message}`, "error");
+        }
+      }
+
+      async function updateSignDetectionStatus() {
+        try {
+          const response = await fetch(`${getBaseURL()}/sign_detection/status`, {
+            cache: "no-cache",
+          });
+
+          if (response.ok) {
+            const data = await response.json();
+
+            // Update status display
+            const statusEl = document.getElementById("sign-detection-status");
+            if (statusEl) {
+              statusEl.textContent = data.is_running ? "Running" : "Stopped";
+              statusEl.style.color = data.is_running ? "#28a745" : "#dc3545";
+            }
+
+            // Update detection count
+            const detectionCountEl = document.getElementById("sign-detection-count");
+            if (detectionCountEl) {
+              detectionCountEl.textContent = data.current_detections || 0;
+            }
+
+            // Update frame count
+            const frameCountEl = document.getElementById("sign-frame-count");
+            if (frameCountEl) {
+              frameCountEl.textContent = data.frame_count || 0;
+            }
+
+            // Update device
+            const deviceEl = document.getElementById("sign-device");
+            if (deviceEl) {
+              deviceEl.textContent = data.device || "--";
+            }
+
+            // Update confidence threshold display
+            if (data.confidence_threshold !== undefined) {
+              const confidenceValueEl = document.getElementById("sign-confidence-value");
+              const confidenceSliderEl = document.getElementById("sign-confidence-slider");
+              if (confidenceValueEl) {
+                confidenceValueEl.textContent = parseFloat(data.confidence_threshold).toFixed(2);
+              }
+              if (confidenceSliderEl) {
+                confidenceSliderEl.value = data.confidence_threshold;
+              }
+            }
+          } else {
+            // Sign detection not available or error
+            const statusEl = document.getElementById("sign-detection-status");
+            if (statusEl) {
+              statusEl.textContent = "Not Available";
+              statusEl.style.color = "#6c757d";
+            }
+          }
+        } catch (error) {
+          // Silently fail - sign detection status is not critical
+          const statusEl = document.getElementById("sign-detection-status");
+          if (statusEl) {
+            statusEl.textContent = "Error";
+            statusEl.style.color = "#dc3545";
+          }
+        }
+      }
+
+      let signConfidenceUpdateTimeout = null;
+
+      async function updateSignConfidence(value) {
+        // Update display immediately
+        const valueEl = document.getElementById("sign-confidence-value");
+        if (valueEl) {
+          valueEl.textContent = parseFloat(value).toFixed(2);
+        }
+
+        // Debounce API calls - wait 300ms after last change
+        clearTimeout(signConfidenceUpdateTimeout);
+        signConfidenceUpdateTimeout = setTimeout(async () => {
+          try {
+            const response = await fetch(`${getBaseURL()}/sign_detection/confidence`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ threshold: parseFloat(value) }),
+            });
+
+            if (response.ok) {
+              const data = await response.json();
+              log(`Sign detection confidence updated to ${value}`, "success");
+            } else {
+              const errorData = await response.json().catch(() => ({}));
+              log(
+                `Failed to update confidence: ${
+                  errorData.error || response.status
+                }`,
+                "error"
+              );
+            }
+          } catch (error) {
+            log(`Error updating confidence: ${error.message}`, "error");
+          }
+        }, 300);
+      }
+
       // Initialize auto-pilot status polling
       updateAutopilotStatus();
       setInterval(updateAutopilotStatus, 1000); // Update every second
+
+      // Initialize sign detection status polling
+      updateSignDetectionStatus();
+      setInterval(updateSignDetectionStatus, 1000); // Update every second
 
       // Load PID parameters on page load
       loadPIDParameters();

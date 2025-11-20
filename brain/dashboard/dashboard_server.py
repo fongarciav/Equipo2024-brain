@@ -30,6 +30,14 @@ except ImportError as e:
     AutoPilotController = None
     CommandSender = None
 
+# Import traffic vision modules
+try:
+    from traffic_vision.sign_detection_controller import SignDetectionController
+except ImportError as e:
+    print(f"Warning: Could not import traffic vision modules: {e}")
+    print("Traffic sign detection features will be disabled.")
+    SignDetectionController = None
+
 # Try to import serial
 try:
     import serial
@@ -79,6 +87,9 @@ system_state_lock = threading.Lock()
 video_streamer = None
 autopilot_controller = None
 command_sender = None
+
+# Traffic vision components
+sign_detection_controller = None
 
 app = Flask(__name__, static_folder=SCRIPT_DIR)
 CORS(app)  # Enable CORS for all routes
@@ -860,10 +871,166 @@ def autopilot_get_pid():
     return jsonify(pid_params)
 
 
+@app.route('/sign_detection/start', methods=['POST'])
+def sign_detection_start():
+    """Start the sign detection controller."""
+    global sign_detection_controller, video_streamer
+    
+    if SignDetectionController is None:
+        return jsonify({'error': 'Sign detection module not available'}), 503
+    
+    if video_streamer is None:
+        return jsonify({'error': 'Video streamer not initialized'}), 503
+    
+    # Initialize if not already initialized
+    if sign_detection_controller is None:
+        sign_detection_controller = SignDetectionController(
+            video_streamer=video_streamer,
+            confidence_threshold=0.6
+        )
+        if not sign_detection_controller.initialize():
+            sign_detection_controller = None
+            return jsonify({'error': 'Failed to initialize sign detection controller'}), 500
+    
+    success = sign_detection_controller.start()
+    if success:
+        return jsonify({'status': 'ok', 'message': 'Sign detection started'})
+    else:
+        return jsonify({'error': 'Sign detection already running'}), 400
+
+
+@app.route('/sign_detection/stop', methods=['POST'])
+def sign_detection_stop():
+    """Stop the sign detection controller."""
+    global sign_detection_controller
+    if sign_detection_controller is None:
+        return jsonify({'error': 'Sign detection controller not initialized'}), 503
+    
+    success = sign_detection_controller.stop()
+    if success:
+        return jsonify({'status': 'ok', 'message': 'Sign detection stopped'})
+    else:
+        return jsonify({'error': 'Sign detection not running'}), 400
+
+
+@app.route('/sign_detection/status', methods=['GET'])
+def sign_detection_status():
+    """Get sign detection controller status."""
+    global sign_detection_controller
+    if sign_detection_controller is None:
+        return jsonify({'error': 'Sign detection controller not initialized'}), 503
+    
+    status = sign_detection_controller.get_status()
+    detections = sign_detection_controller.get_detections()
+    status['detections'] = detections
+    return jsonify(status)
+
+
+@app.route('/sign_detection/confidence', methods=['POST'])
+def sign_detection_update_confidence():
+    """Update confidence threshold."""
+    global sign_detection_controller
+    if sign_detection_controller is None:
+        return jsonify({'error': 'Sign detection controller not initialized'}), 503
+    
+    data = request.get_json() or {}
+    threshold = data.get('threshold')
+    
+    if threshold is None or not isinstance(threshold, (int, float)) or not (0.0 <= threshold <= 1.0):
+        return jsonify({'error': 'Invalid threshold value (must be between 0.0 and 1.0)'}), 400
+    
+    sign_detection_controller.update_confidence_threshold(float(threshold))
+    status = sign_detection_controller.get_status()
+    return jsonify({
+        'status': 'ok',
+        'message': 'Confidence threshold updated',
+        'confidence_threshold': status['confidence_threshold']
+    })
+
+
+def generate_sign_detection_mjpeg():
+    """Generate MJPEG stream from sign detection images."""
+    import cv2
+    import time
+    import numpy as np
+    
+    global sign_detection_controller
+    
+    # Create a placeholder black image
+    placeholder = np.zeros((480, 640, 3), dtype=np.uint8)
+    cv2.putText(placeholder, 'Waiting for sign detection...', (50, 240), 
+                cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+    
+    while True:
+        if sign_detection_controller is None:
+            # Send placeholder if not initialized
+            ret, buffer = cv2.imencode('.jpg', placeholder, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            if ret:
+                yield (b'--frame\r\n'
+                       b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
+            time.sleep(0.1)
+            continue
+        
+        # Check if sign detection is running
+        status = sign_detection_controller.get_status()
+        if not status.get('is_running', False):
+            # Send placeholder if not running
+            placeholder_text = np.zeros((480, 640, 3), dtype=np.uint8)
+            cv2.putText(placeholder_text, 'Sign detection not running', (50, 240), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+            ret, buffer = cv2.imencode('.jpg', placeholder_text, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            if ret:
+                yield (b'--frame\r\n'
+                       b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
+            time.sleep(0.1)
+            continue
+        
+        detection_image = sign_detection_controller.get_detection_image()
+        if detection_image is not None:
+            try:
+                if detection_image.size > 0 and len(detection_image.shape) >= 2:
+                    ret, buffer = cv2.imencode('.jpg', detection_image, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                    if ret:
+                        yield (b'--frame\r\n'
+                               b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
+                    else:
+                        ret, buffer = cv2.imencode('.jpg', placeholder, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                        if ret:
+                            yield (b'--frame\r\n'
+                                   b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
+                else:
+                    ret, buffer = cv2.imencode('.jpg', placeholder, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                    if ret:
+                        yield (b'--frame\r\n'
+                               b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
+            except Exception as e:
+                print(f"[Sign Detection Stream] Error processing image: {e}")
+                ret, buffer = cv2.imencode('.jpg', placeholder, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                if ret:
+                    yield (b'--frame\r\n'
+                           b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
+        else:
+            ret, buffer = cv2.imencode('.jpg', placeholder, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            if ret:
+                yield (b'--frame\r\n'
+                       b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
+        
+        time.sleep(0.033)  # ~30 FPS
+
+
+@app.route('/debug/sign_detections')
+def debug_sign_detections():
+    """MJPEG stream for sign detections."""
+    return Response(
+        stream_with_context(generate_sign_detection_mjpeg()),
+        mimetype='multipart/x-mixed-replace; boundary=frame'
+    )
+
+
 @app.route('/health')
 def health():
     """Health check endpoint."""
-    global serial_conn, serial_reader_running, video_streamer, autopilot_controller
+    global serial_conn, serial_reader_running, video_streamer, autopilot_controller, sign_detection_controller
     port_name = None
     if serial_conn and serial_conn.is_open:
         port_name = serial_conn.port
@@ -871,6 +1038,10 @@ def health():
     autopilot_status_info = None
     if autopilot_controller is not None:
         autopilot_status_info = autopilot_controller.get_status()
+    
+    sign_detection_status_info = None
+    if sign_detection_controller is not None:
+        sign_detection_status_info = sign_detection_controller.get_status()
     
     return jsonify({
         'status': 'ok',
@@ -880,7 +1051,8 @@ def health():
         'serial_available': SERIAL_AVAILABLE,
         'serial_reader_running': serial_reader_running,
         'video_streamer_initialized': video_streamer is not None,
-        'autopilot_status': autopilot_status_info
+        'autopilot_status': autopilot_status_info,
+        'sign_detection_status': sign_detection_status_info
     })
 
 
@@ -1012,6 +1184,21 @@ if __name__ == '__main__':
         video_streamer = VideoStreamer()
         if video_streamer.initialize():
             print("✓ Video streamer initialized")
+            
+            # Initialize sign detection controller if available
+            if SignDetectionController is not None:
+                print("Initializing sign detection controller...")
+                sign_detection_controller = SignDetectionController(
+                    video_streamer=video_streamer,
+                    confidence_threshold=0.6
+                )
+                if sign_detection_controller.initialize():
+                    print("✓ Sign detection controller initialized (not started - use /sign_detection/start)")
+                else:
+                    print("⚠ Sign detection controller initialization failed")
+                    sign_detection_controller = None
+            else:
+                print("⚠ Sign detection controller not available - traffic vision modules not found")
         else:
             print("⚠ Video streamer initialization failed - video features disabled")
             video_streamer = None
@@ -1067,6 +1254,8 @@ if __name__ == '__main__':
         app.run(host=args.host, port=args.port, debug=args.debug)
     finally:
         # Cleanup on shutdown
+        if sign_detection_controller:
+            sign_detection_controller.stop()
         if autopilot_controller:
             autopilot_controller.stop()
         if video_streamer:
