@@ -1732,15 +1732,39 @@
             const errorData = await response
               .json()
               .catch(() => ({ error: "Unknown error" }));
-            log(
-              `Failed to stop auto-pilot: ${
-                errorData.error || response.status
-              }`,
-              "error"
-            );
+            
+            // Build error message with suggestions if available
+            let errorMessage = `Failed to stop auto-pilot: ${errorData.error || response.status}`;
+            if (errorData.suggestions && errorData.suggestions.length > 0) {
+              errorMessage += "\nSuggestions: " + errorData.suggestions.join(", ");
+            }
+            
+            log(errorMessage, "error");
+            
+            // Update status display to show error
+            const statusEl = document.getElementById("autopilot-status");
+            if (statusEl) {
+              if (response.status === 503) {
+                statusEl.textContent = "Not Initialized";
+                statusEl.style.color = "#ffc107";
+              } else {
+                statusEl.textContent = "Error";
+                statusEl.style.color = "#dc3545";
+              }
+            }
+            
+            // Update status immediately to reflect current state
+            updateAutopilotStatus();
           }
         } catch (error) {
           log(`Error stopping auto-pilot: ${error.message}`, "error");
+          
+          // Update status display to show error
+          const statusEl = document.getElementById("autopilot-status");
+          if (statusEl) {
+            statusEl.textContent = "Error";
+            statusEl.style.color = "#dc3545";
+          }
         }
       }
 
@@ -1806,8 +1830,16 @@
             if (data.pid_parameters) {
               updatePIDSliders(data.pid_parameters, false); // false = don't trigger update
             }
+          } else if (response.status === 503) {
+            // Controller not initialized (no UART connection)
+            const statusEl = document.getElementById("autopilot-status");
+            if (statusEl) {
+              statusEl.textContent = "Not Initialized";
+              statusEl.style.color = "#ffc107"; // Yellow/warning color
+            }
+            // Don't log error - this is expected when UART is not connected
           } else {
-            // Auto-pilot not available or error
+            // Other error
             const statusEl = document.getElementById("autopilot-status");
             if (statusEl) {
               statusEl.textContent = "Not Available";
@@ -1815,7 +1847,7 @@
             }
           }
         } catch (error) {
-          // Silently fail - auto-pilot status is not critical
+          // Network error or other exception
           const statusEl = document.getElementById("autopilot-status");
           if (statusEl) {
             statusEl.textContent = "Error";
@@ -2094,15 +2126,39 @@
             const errorData = await response
               .json()
               .catch(() => ({ error: "Unknown error" }));
-            log(
-              `Failed to stop sign detection: ${
-                errorData.error || response.status
-              }`,
-              "error"
-            );
+            
+            // Build error message with suggestions if available
+            let errorMessage = `Failed to stop sign detection: ${errorData.error || response.status}`;
+            if (errorData.suggestions && errorData.suggestions.length > 0) {
+              errorMessage += "\nSuggestions: " + errorData.suggestions.join(", ");
+            }
+            
+            log(errorMessage, "error");
+            
+            // Update status display to show error
+            const statusEl = document.getElementById("sign-detection-status");
+            if (statusEl) {
+              if (response.status === 503) {
+                statusEl.textContent = "Not Initialized";
+                statusEl.style.color = "#ffc107";
+              } else {
+                statusEl.textContent = "Error";
+                statusEl.style.color = "#dc3545";
+              }
+            }
+            
+            // Update status immediately to reflect current state
+            updateSignDetectionStatus();
           }
         } catch (error) {
           log(`Error stopping sign detection: ${error.message}`, "error");
+          
+          // Update status display to show error
+          const statusEl = document.getElementById("sign-detection-status");
+          if (statusEl) {
+            statusEl.textContent = "Error";
+            statusEl.style.color = "#dc3545";
+          }
         }
       }
 
@@ -2151,22 +2207,24 @@
                 confidenceSliderEl.value = data.confidence_threshold;
               }
             }
-          } else {
-            // Sign detection not available or error
+          } else if (response.status === 503) {
+            // Controller not initialized (no UART connection)
             const statusEl = document.getElementById("sign-detection-status");
             if (statusEl) {
-              // Check if it's a 503 (not initialized) vs other errors
-              if (response.status === 503) {
-                statusEl.textContent = "Not Initialized";
-                statusEl.style.color = "#ffc107"; // Yellow/warning color
-              } else {
-                statusEl.textContent = "Not Available";
-                statusEl.style.color = "#6c757d";
-              }
+              statusEl.textContent = "Not Initialized";
+              statusEl.style.color = "#ffc107"; // Yellow/warning color
+            }
+            // Don't log error - this is expected when UART is not connected
+          } else {
+            // Other error
+            const statusEl = document.getElementById("sign-detection-status");
+            if (statusEl) {
+              statusEl.textContent = "Not Available";
+              statusEl.style.color = "#6c757d";
             }
           }
         } catch (error) {
-          // Silently fail - sign detection status is not critical
+          // Network error or other exception
           const statusEl = document.getElementById("sign-detection-status");
           if (statusEl) {
             statusEl.textContent = "Error";
