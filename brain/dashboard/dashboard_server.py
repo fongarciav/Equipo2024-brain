@@ -623,6 +623,59 @@ def get_status():
 # Global debug mode flag
 debug_mode_enabled = False
 
+def generate_main_video_mjpeg():
+    """Generate MJPEG stream from main camera view (raw video)."""
+    import cv2
+    import time
+    import numpy as np
+    
+    global video_streamer
+    
+    # Create a placeholder black image
+    placeholder = np.zeros((480, 640, 3), dtype=np.uint8)
+    cv2.putText(placeholder, 'Camera not initialized', (50, 240), 
+                cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+    
+    while True:
+        if video_streamer is None:
+            # Send placeholder if video streamer not initialized
+            ret, buffer = cv2.imencode('.jpg', placeholder, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            if ret:
+                yield (b'--frame\r\n'
+                       b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
+            time.sleep(0.1)
+            continue
+        
+        # Get pre-encoded JPEG frame with short timeout to avoid blocking
+        jpeg_bytes = None
+        if video_streamer.lock.acquire(timeout=0.01):
+            try:
+                if hasattr(video_streamer, 'current_frame_jpeg') and video_streamer.current_frame_jpeg is not None:
+                    jpeg_bytes = video_streamer.current_frame_jpeg
+            finally:
+                video_streamer.lock.release()
+        
+        if jpeg_bytes is not None:
+            try:
+                yield (b'--frame\r\n'
+                       b'Content-Type: image/jpeg\r\n\r\n' + jpeg_bytes + b'\r\n')
+            except Exception as e:
+                print(f"[Main Video Stream] Error yielding frame: {e}")
+                ret, buffer = cv2.imencode('.jpg', placeholder, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                if ret:
+                    yield (b'--frame\r\n'
+                           b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
+        else:
+            # No frame available, send placeholder
+            ret, buffer = cv2.imencode('.jpg', placeholder, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            if ret:
+                yield (b'--frame\r\n'
+                       b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
+        
+        # Throttle to ~30 FPS
+        time.sleep(0.033)
+
+
 @app.route('/video_stream')
 def video_stream():
     """MJPEG video stream endpoint."""
@@ -632,7 +685,7 @@ def video_stream():
     
     try:
         return Response(
-            stream_with_context(video_streamer.generate_mjpeg()),
+            stream_with_context(generate_main_video_mjpeg()),
             mimetype='multipart/x-mixed-replace; boundary=frame'
         )
     except Exception as e:
