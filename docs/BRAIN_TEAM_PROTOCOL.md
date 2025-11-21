@@ -66,52 +66,6 @@ Establece el ángulo de dirección del servo.
 
 Si tu lane detector envía grados (ej: -45° a +45°), debes convertir así:
 
-```python
-# Servo range: 50 (izquierda) a 135 (derecha), centro = 105
-# Range total: 85 unidades
-SERVO_LEFT = 50
-SERVO_CENTER = 105
-SERVO_RIGHT = 135
-SERVO_RANGE = 85  # 135 - 50
-
-def degrees_to_servo(degrees, max_degrees=45):
-    """
-    Convierte grados de lane detector a valor de servo.
-    
-    Args:
-        degrees: Ángulo en grados (-max_degrees a +max_degrees)
-        max_degrees: Máximo ángulo permitido (default: 45°)
-    
-    Returns:
-        Valor de servo (50-135)
-    """
-    # Normalizar a -1.0 a +1.0
-    normalized = degrees / max_degrees
-    # Limitar al rango [-1, 1]
-    normalized = max(-1.0, min(1.0, normalized))
-    # Convertir a valor de servo
-    servo_value = SERVO_CENTER + (normalized * (SERVO_RANGE / 2))
-    return int(round(servo_value))
-
-# Ejemplos:
-# degrees_to_servo(0)    -> 105 (centro)
-# degrees_to_servo(-45) -> 50  (izquierda máxima)
-# degrees_to_servo(45)  -> 135 (derecha máxima)
-# degrees_to_servo(-20) -> ~82 (izquierda suave)
-```
-
-**Ejemplo completo con lane detector:**
-
-```python
-# En lugar de solo imprimir "turn left" o "turn right":
-lane_angle = -25  # grados desde tu detector
-
-# Convertir y enviar:
-servo_value = degrees_to_servo(lane_angle)
-command = f"C:SET_STEER:{servo_value}\n"
-ser.write(command.encode())
-```
-
 ### Canal EMERGENCY (`E`)
 
 #### `E:BRAKE_NOW:0`
@@ -119,10 +73,6 @@ Freno de emergencia inmediato. Detiene el motor instantáneamente (<1ms de respu
 
 - **Valor**: Siempre 0 (ignorado)
 - **Ejemplo**: `E:BRAKE_NOW:0`
-
-```python
-ser.write(b"E:BRAKE_NOW:0\n")
-```
 
 #### `E:STOP:0`
 Alias para freno de emergencia (mismo comportamiento que BRAKE_NOW).
@@ -157,84 +107,10 @@ Establece el modo del sistema.
 
 ### Ejemplo 1: Control Básico
 
-```python
-import serial
-
-ser = serial.Serial('/dev/ttyUSB0', baudrate=115200, timeout=1)
-
-# 1. Armar sistema (REQUERIDO)
-ser.write(b"M:SYS_ARM:0\n")
-time.sleep(0.1)
-
-# 2. Establecer modo AUTO (opcional, pero recomendado)
-ser.write(b"M:SYS_MODE:1\n")  # 1 = AUTO, 0 = MANUAL
-time.sleep(0.1)
-
-# 3. Ahora los comandos de control funcionarán
-ser.write(b"C:SET_SPEED:150\n")
-ser.write(b"C:SET_STEER:105\n")
-
-# Frenar de emergencia (funciona siempre, incluso sin ARM)
-ser.write(b"E:BRAKE_NOW:0\n")
-```
-
 ### Ejemplo 2: Lane Following
 
-```python
-import serial
-import time
-
-ser = serial.Serial('/dev/ttyUSB0', baudrate=115200, timeout=1)
-
-# INICIALIZACIÓN: Armar y configurar modo
-ser.write(b"M:SYS_ARM:0\n")
-time.sleep(0.1)
-ser.write(b"M:SYS_MODE:1\n")  # Modo AUTO
-time.sleep(0.1)
-
-def degrees_to_servo(degrees, max_degrees=45):
-    SERVO_CENTER = 105
-    SERVO_RANGE = 85
-    normalized = max(-1.0, min(1.0, degrees / max_degrees))
-    return int(round(SERVO_CENTER + (normalized * (SERVO_RANGE / 2))))
-
-# Loop de control
-while True:
-    # Obtener ángulo del lane detector
-    lane_angle = get_lane_angle()  # Tu función
-    
-    # Convertir y enviar comando de dirección
-    servo_value = degrees_to_servo(lane_angle)
-    command = f"C:SET_STEER:{servo_value}\n"
-    ser.write(command.encode())
-    
-    # Mantener velocidad constante (heartbeat implícito en cada comando)
-    ser.write(b"C:SET_SPEED:120\n")
-    
-    time.sleep(0.05)  # 20 Hz update rate
-```
 
 ### Ejemplo 3: Control con Velocidad Variable
-
-```python
-def control_vehicle(speed, steering_degrees):
-    """
-    Función helper para controlar el vehículo.
-    
-    Args:
-        speed: Velocidad 0-255
-        steering_degrees: Ángulo de dirección en grados (-45 a +45)
-    """
-    # Validar velocidad
-    speed = max(0, min(255, int(speed)))
-    
-    # Convertir dirección
-    servo_value = degrees_to_servo(steering_degrees)
-    
-    # Enviar comandos
-    ser.write(f"C:SET_SPEED:{speed}\n".encode())
-    ser.write(f"C:SET_STEER:{servo_value}\n".encode())
-```
 
 ## Consideraciones Importantes
 
@@ -251,12 +127,6 @@ El sistema usa patrón "last-writer-wins". Si envías múltiples comandos rápid
 ### Respuestas del ESP32
 El ESP32 puede enviar mensajes de debug por serial. Puedes leerlos para debugging:
 
-```python
-if ser.in_waiting > 0:
-    response = ser.readline().decode('utf-8', errors='ignore')
-    print(f"ESP32: {response}")
-```
-
 ### Manejo de Errores
 - Si el comando no se parsea correctamente, el ESP32 imprime: `[LinkRxTask] Failed to parse message: ...`
 - Verifica que el formato sea exacto: `CHANNEL:COMMAND:VALUE\n`
@@ -270,26 +140,4 @@ if ser.in_waiting > 0:
 - [ ] Manejar freno de emergencia en caso de detección de obstáculos
 - [ ] Implementar heartbeat/supervisión si es necesario
 - [ ] Probar con el simulador UART antes de integrar con lane detector
-
-## Simulador de Pruebas
-
-Puedes probar tus comandos con el simulador incluido:
-
-```bash
-cd embedded
-pip install -r test/python/requirements.txt
-python3 test/python/test_uart_simulator.py /dev/ttyUSB0 --baud 115200
-```
-
-Luego prueba comandos como:
-- `C:SET_SPEED:120`
-- `C:SET_STEER:105`
-- `E:BRAKE_NOW:0`
-
-## Soporte
-
-Si tienes dudas sobre el protocolo o encuentras problemas, consulta:
-- `embedded/src/link_rx_task.cpp` - Implementación del parser
-- `embedded/include/messages.h` - Definiciones de canales y comandos
-- `embedded/include/hardware.h` - Valores de servo (SERVO_CENTER, etc.)
 
