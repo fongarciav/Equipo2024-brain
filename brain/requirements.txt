@@ -1,0 +1,7 @@
+# Requirements for Dashboard Server
+Flask>=2.3.0
+flask-cors>=4.0.0
+pyserial>=3.5
+# we not using these libraries because jetson already have them installed, compiled with cuda, so we create the venv running python3 -m venv venv --system-site-packages 
+#opencv-python>=4.8.0
+#numpy>=1.24.0
