@@ -152,7 +152,7 @@ const char *webpage = R"html(
       // Steering wheel control
       const SERVO_CENTER = 105;
       const SERVO_LEFT = 50;
-      const SERVO_RIGHT = 135;
+      const SERVO_RIGHT = 160;
       const wheel = document.getElementById('steering-wheel');
       const angleDisplay = document.getElementById('steering-angle-display');
       let isDragging = false;
@@ -160,8 +160,8 @@ const char *webpage = R"html(
       let wheelRotation = 0;
       
       function angleToServo(angleDeg) {
-        // Convert wheel rotation (-180 to +180 degrees) to servo angle (50 to 135)
-        // Center (0°) = 105, Left (-90°) = 50, Right (+90°) = 135
+        // Convert wheel rotation (-180 to +180 degrees) to servo angle (50 to 160)
+        // Center (0°) = 105, Left (-90°) = 50, Right (+90°) = 160
         const normalized = Math.max(-90, Math.min(90, angleDeg));
         const servoAngle = SERVO_CENTER + Math.round(normalized * (SERVO_RIGHT - SERVO_CENTER) / 90);
         return Math.max(SERVO_LEFT, Math.min(SERVO_RIGHT, servoAngle));

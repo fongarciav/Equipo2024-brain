@@ -646,21 +646,24 @@ def generate_main_video_mjpeg():
             time.sleep(0.1)
             continue
         
-        # Get pre-encoded JPEG frame with short timeout to avoid blocking
-        jpeg_bytes = None
-        if video_streamer.lock.acquire(timeout=0.01):
-            try:
-                if hasattr(video_streamer, 'current_frame_jpeg') and video_streamer.current_frame_jpeg is not None:
-                    jpeg_bytes = video_streamer.current_frame_jpeg
-            finally:
-                video_streamer.lock.release()
+        # Get frame using proper API method (same as debug view) with short timeout to avoid blocking
+        frame = video_streamer.get_frame(timeout=0.01)
         
-        if jpeg_bytes is not None:
+        if frame is not None:
             try:
-                yield (b'--frame\r\n'
-                       b'Content-Type: image/jpeg\r\n\r\n' + jpeg_bytes + b'\r\n')
+                # Encode frame to JPEG
+                ret, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                if ret:
+                    yield (b'--frame\r\n'
+                           b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
+                else:
+                    # Encoding failed, send placeholder
+                    ret, buffer = cv2.imencode('.jpg', placeholder, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                    if ret:
+                        yield (b'--frame\r\n'
+                               b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
             except Exception as e:
-                print(f"[Main Video Stream] Error yielding frame: {e}")
+                print(f"[Main Video Stream] Error encoding frame: {e}")
                 ret, buffer = cv2.imencode('.jpg', placeholder, [cv2.IMWRITE_JPEG_QUALITY, 85])
                 if ret:
                     yield (b'--frame\r\n'

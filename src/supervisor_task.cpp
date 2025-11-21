@@ -89,6 +89,12 @@ void supervisor_task(void *pvParameters) {
                             system_mode_t new_mode = (value == MODE_AUTO) ? MODE_AUTO : MODE_MANUAL;
                             if (new_mode != current_mode) {
                                 current_mode = new_mode;
+                                // Reset heartbeat when switching to AUTO mode
+                                // This prevents immediate watchdog timeout if last_heartbeat_ms was old
+                                if (current_mode == MODE_AUTO) {
+                                    last_heartbeat_ms = 0;
+                                    Serial.println("[SupervisorTask] Heartbeat reset - waiting for first UART message");
+                                }
                                 Serial.print("EVENT:CMD_EXECUTED:SYS_MODE:");
                                 Serial.println(current_mode == MODE_AUTO ? "AUTO" : "MANUAL");
                                 Serial.flush();
