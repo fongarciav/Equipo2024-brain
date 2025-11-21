@@ -2053,9 +2053,21 @@
         const savedState = localStorage.getItem("dashboard_debug_views_enabled");
         const toggle = document.getElementById("debug-views-toggle");
         
-        if (savedState === "true" && toggle) {
-          toggle.checked = true;
-          toggleDebugViews();
+        if (toggle) {
+          // Default to debug views enabled if no saved state
+          if (savedState === null || savedState === undefined) {
+            // No saved state - enable debug views by default
+            toggle.checked = true;
+            toggleDebugViews(true);
+          } else if (savedState === "true") {
+            // Saved state says enabled
+            toggle.checked = true;
+            toggleDebugViews(true);
+          } else {
+            // Saved state says disabled
+            toggle.checked = false;
+            toggleDebugViews(false);
+          }
         }
       }
 
