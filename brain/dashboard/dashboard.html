@@ -1118,17 +1118,28 @@
         }
       }
 
-      function restoreSystemStatus() {
-        // Only restore if connected, otherwise show "--"
-        if (!isConnected) {
-          document.getElementById("status-mode").textContent = "--";
-          const stateEl = document.getElementById("status-state");
-          stateEl.textContent = "--";
-          stateEl.className = "status-value";
-          return;
+      async function restoreSystemStatus() {
+        // Get state from server (source of truth) instead of localStorage
+        // The server maintains the current state from ESP32
+        try {
+          const statusResponse = await fetch(`${getBaseURL()}/status`, {
+            cache: "no-cache",
+          });
+          if (statusResponse.ok) {
+            const statusData = await statusResponse.json();
+            // Update display with server state
+            updateStatusDisplay(
+              statusData.state || null,
+              statusData.mode || null
+            );
+            return;
+          }
+        } catch (error) {
+          // If server is not available, fall back to localStorage
+          console.log("[restoreSystemStatus] Server unavailable, using localStorage fallback");
         }
 
-        // Restore mode
+        // Fallback to localStorage if server is not available
         const savedMode = localStorage.getItem("dashboard_last_mode");
         const modeToggle = document.getElementById("mode-toggle");
         if (
@@ -1143,7 +1154,7 @@
           if (modeToggle) modeToggle.checked = false;
         }
 
-        // Restore state
+        // Restore state from localStorage fallback
         const savedState = localStorage.getItem("dashboard_last_state");
         const armToggle = document.getElementById("arm-toggle");
         if (
