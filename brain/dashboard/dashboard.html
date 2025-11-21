@@ -1108,18 +1108,8 @@
         }
       }
 
-      // Functions to save/restore Mode and State from localStorage
-      function saveSystemStatus(mode, state) {
-        if (mode !== null && mode !== undefined) {
-          localStorage.setItem("dashboard_last_mode", mode);
-        }
-        if (state !== null && state !== undefined) {
-          localStorage.setItem("dashboard_last_state", state);
-        }
-      }
-
       async function restoreSystemStatus() {
-        // Get state from server (source of truth) instead of localStorage
+        // Get state from server (source of truth)
         // The server maintains the current state from ESP32
         try {
           const statusResponse = await fetch(`${getBaseURL()}/status`, {
@@ -1135,48 +1125,20 @@
             return;
           }
         } catch (error) {
-          // If server is not available, fall back to localStorage
-          console.log("[restoreSystemStatus] Server unavailable, using localStorage fallback");
+          // If server is not available, show "--" (honest state)
+          console.log("[restoreSystemStatus] Server unavailable");
         }
 
-        // Fallback to localStorage if server is not available
-        const savedMode = localStorage.getItem("dashboard_last_mode");
+        // If server unavailable, show default/unknown state
+        document.getElementById("status-mode").textContent = "--";
         const modeToggle = document.getElementById("mode-toggle");
-        if (
-          savedMode !== null &&
-          (savedMode === "MANUAL" || savedMode === "AUTO")
-        ) {
-          document.getElementById("status-mode").textContent = savedMode;
-          if (modeToggle) modeToggle.checked = savedMode === "AUTO";
-        } else {
-          // Default to MANUAL if nothing saved
-          document.getElementById("status-mode").textContent = "MANUAL";
-          if (modeToggle) modeToggle.checked = false;
-        }
-
-        // Restore state from localStorage fallback
-        const savedState = localStorage.getItem("dashboard_last_state");
+        if (modeToggle) modeToggle.checked = false;
+        
+        const stateEl = document.getElementById("status-state");
+        stateEl.textContent = "--";
+        stateEl.className = "status-value";
         const armToggle = document.getElementById("arm-toggle");
-        if (
-          savedState !== null &&
-          (savedState === "DISARMED" ||
-            savedState === "ARMED" ||
-            savedState === "RUNNING" ||
-            savedState === "FAULT")
-        ) {
-          const stateEl = document.getElementById("status-state");
-          stateEl.textContent = savedState;
-          stateEl.className = "status-value " + savedState.toLowerCase();
-          if (armToggle)
-            armToggle.checked =
-              savedState === "ARMED" || savedState === "RUNNING";
-        } else {
-          // Default to ARMED if nothing saved (matching ESP32 default)
-          const stateEl = document.getElementById("status-state");
-          stateEl.textContent = "ARMED";
-          stateEl.className = "status-value armed";
-          if (armToggle) armToggle.checked = true;
-        }
+        if (armToggle) armToggle.checked = false;
       }
 
       function restoreSliderValues() {
@@ -1281,13 +1243,11 @@
             if (message.startsWith("EVENT:STATE_CHANGED:")) {
               const state = message.replace("EVENT:STATE_CHANGED:", "").trim();
               updateStatusDisplay(state, null);
-              // Save to localStorage for persistence across page reloads
-              saveSystemStatus(null, state);
+              // Server is source of truth, no need to save to localStorage
             } else if (message.startsWith("EVENT:MODE_CHANGED:")) {
               const mode = message.replace("EVENT:MODE_CHANGED:", "").trim();
               updateStatusDisplay(null, mode);
-              // Save to localStorage for persistence across page reloads
-              saveSystemStatus(mode, null);
+              // Server is source of truth, no need to save to localStorage
             } else if (message.startsWith("EVENT:CMD_EXECUTED:SET_SPEED:")) {
               // Update speed slider and display
               const speedStr = message
@@ -1428,8 +1388,7 @@
           if (armToggle) {
             armToggle.checked = state === "ARMED" || state === "RUNNING";
           }
-          // Save to localStorage for persistence across page reloads
-          saveSystemStatus(null, state);
+          // No need to save to localStorage - server is source of truth
         }
 
         // Update mode if provided
@@ -1440,8 +1399,7 @@
           if (modeToggle) {
             modeToggle.checked = mode === "AUTO";
           }
-          // Save to localStorage for persistence across page reloads
-          saveSystemStatus(mode, null);
+          // No need to save to localStorage - server is source of truth
         }
 
         // Always update timestamp when status changes
