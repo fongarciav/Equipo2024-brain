@@ -1182,6 +1182,10 @@ if __name__ == '__main__':
                         help='Automatically connect to a serial port on startup')
     parser.add_argument('--port-name', type=str, default=None,
                         help='Specific serial port to connect to (e.g., /dev/ttyUSB0)')
+    parser.add_argument('--lane-detection', action='store_true',
+                        help='Initialize lane detection (autopilot) controller on startup (requires --auto-connect or --port-name)')
+    parser.add_argument('--sign-detection', action='store_true',
+                        help='Initialize sign detection controller on startup (requires --auto-connect or --port-name)')
     parser.add_argument('--threshold', type=int, default=180,
                         help='Image processing threshold (default: 180)')
     parser.add_argument('--pid-kp', type=float, default=0.8380,
@@ -1213,6 +1217,7 @@ if __name__ == '__main__':
             print("⚠ CUDA no disponible: OpenCV no está instalado o no tiene soporte CUDA")
 
     # Handle serial port connection
+    uart_connected = False
     if args.port_name:
         # Connect to specific port
         if SERIAL_AVAILABLE:
@@ -1221,6 +1226,7 @@ if __name__ == '__main__':
                 time.sleep(0.1)
                 start_serial_reader()
                 print(f"Connected to serial port: {args.port_name}")
+                uart_connected = True
             except Exception as e:
                 print(f"Warning: Failed to connect to {args.port_name}: {e}")
                 print("You can connect manually from the dashboard.")
@@ -1236,6 +1242,7 @@ if __name__ == '__main__':
                     time.sleep(0.1)
                     start_serial_reader()
                     print(f"Connected to serial port: {selected_port}")
+                    uart_connected = True
                 except Exception as e:
                     print(
                         f"Warning: Failed to connect to {selected_port}: {e}")
@@ -1247,56 +1254,38 @@ if __name__ == '__main__':
     else:
         print("Serial port not connected. Use the dashboard to connect manually.")
         print("Tip: Use --auto-connect to select a port on startup, or --port-name to specify one.")
-
-    # Initialize video streamer
-    if VideoStreamer is not None:
-        print("=" * 60)
-        print("Initializing video streamer...")
-        video_streamer = VideoStreamer()
-        if video_streamer.initialize():
-            print("✓ Video streamer initialized")
-        else:
-            print("⚠ Video streamer initialization failed - video features disabled")
-            video_streamer = None
-    else:
-        print("⚠ Video streamer not available - autopilot modules not found")
-        video_streamer = None
-
-    # Initialize command sender (requires serial connection)
-    if CommandSender is not None and serial_conn and serial_conn.is_open:
-        command_sender = CommandSender(write_uart_command)
-        print("✓ Command sender initialized")
-        
-        # Initialize and auto-start auto-pilot controller
-        if AutoPilotController is not None:
-            print("Initializing auto-pilot controller...")
-            autopilot_controller = AutoPilotController(
-                video_streamer=video_streamer,
-                command_sender=command_sender,
-                threshold=args.threshold,
-                pid_kp=args.pid_kp,
-                pid_ki=args.pid_ki,
-                pid_kd=args.pid_kd,
-                max_angle=args.max_angle,
-                deadband=args.deadband
-            )
-            
-            if video_streamer is not None:
-                autopilot_controller.start()
-                print("✓ Auto-pilot controller started")
+    
+    # Initialize controllers if requested and UART is connected
+    if uart_connected:
+        if args.lane_detection:
+            print("Initializing lane detection (autopilot) controller...")
+            autopilot_initialized = initialize_autopilot_if_needed()
+            if autopilot_initialized:
+                print("✓ Lane detection controller initialized")
             else:
-                print("⚠ Auto-pilot controller not started - video streamer not available")
+                print("⚠ Lane detection controller not initialized - check camera connection and module availability")
+        elif args.sign_detection:
+            # Only initialize sign detection if lane detection not requested
+            pass
         else:
-            print("⚠ Auto-pilot controller not available")
-            autopilot_controller = None
+            print("Note: Controllers will be initialized when you connect from the dashboard or start them manually.")
+        
+        if args.sign_detection:
+            print("Initializing sign detection controller...")
+            sign_detection_initialized = initialize_sign_detection_if_needed()
+            if sign_detection_initialized:
+                print("✓ Sign detection controller initialized")
+            else:
+                print("⚠ Sign detection controller not initialized - check camera connection and module availability")
+        elif not args.lane_detection:
+            # Only show note if neither controller was requested
+            pass
     else:
-        if CommandSender is None:
-            print("⚠ Command sender not available - autopilot modules not found")
+        # No UART connected, controllers will be initialized when UART connects from dashboard
+        if VideoStreamer is None:
+            print("⚠ Video streamer not available - autopilot modules not found")
         else:
-            print("⚠ Command sender not initialized - serial port not connected")
-        print("⚠ Auto-pilot controller not initialized - serial port required")
-        command_sender = None
-        autopilot_controller = None
+            print("Note: Video streamer will be initialized when controllers are started.")
 
     print("=" * 60)
     print(f"Dashboard available at:")
