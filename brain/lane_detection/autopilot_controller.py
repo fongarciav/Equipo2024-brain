@@ -7,11 +7,11 @@ Following SRP: This module orchestrates the interaction between detector, conver
 import threading
 import time
 
-# Import lane following modules
-from lane_detection.lane_detector import LaneDetector
-from lane_detection.pid_controller import PIDController
-from lane_detection.angle_converter import AngleConverter
-# Import shared resources
+# Import lane following modules (relative imports since we're in lane_detection)
+from .lane_detector import LaneDetector
+from .pid_controller import PIDController
+from .angle_converter import AngleConverter
+# Import shared resources (absolute imports - parent dir is in sys.path)
 from command_sender import CommandSender
 from camera.video_streamer import VideoStreamer
 

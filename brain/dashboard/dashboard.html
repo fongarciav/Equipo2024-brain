@@ -1053,16 +1053,138 @@
       // Auto-detect server URL (same origin)
       let serverURL = window.location.origin;
       let isConnected = false;
-      let serialEventSource = null;
+      
+      // Unified Event Stream Logic
+      let eventSource = null;
 
-      // Functions to save/restore slider values from localStorage
-      function saveSliderValues(speed, steer) {
-        if (speed !== null && speed !== undefined) {
-          localStorage.setItem("dashboard_last_speed", speed.toString());
+      function initEventStream() {
+        if (eventSource) {
+          eventSource.close();
         }
-        if (steer !== null && steer !== undefined) {
-          localStorage.setItem("dashboard_last_steer", steer.toString());
+
+        // Connect to the unified /events endpoint
+        eventSource = new EventSource(`${getBaseURL()}/events`);
+
+        eventSource.onmessage = function (event) {
+          try {
+            // Skip heartbeats
+            if (event.data.includes(": heartbeat")) return;
+
+            const data = JSON.parse(event.data);
+
+            // Dispatch based on event type
+            if (data.type === 'serial') {
+              handleSerialMessage(data);
+            } else if (data.type === 'autopilot_status') {
+              updateAutopilotStatusUI(data);
+            } else if (data.type === 'sign_detection_status') {
+              updateSignDetectionStatusUI(data);
+            }
+          } catch (error) {
+            // Fallback for raw serial messages (backward compatibility)
+            if (!event.data.startsWith('{')) {
+               // handleSerialMessage({message: event.data});
+            }
+          }
+        };
+
+        eventSource.onerror = function (error) {
+          console.error("Event stream SSE error:", error);
+          // Retry connection after delay
+          setTimeout(() => {
+            if (eventSource && eventSource.readyState === EventSource.CLOSED) {
+              initEventStream();
+            }
+          }, 3000);
+        };
+      }
+
+      function handleSerialMessage(data) {
+          const message = data.message;
+          
+          if (message && message.trim().length > 0) {
+            log(`ESP32: ${message}`, "serial");
+
+            // Parse system events and update status in real-time
+            if (message.startsWith("EVENT:STATE_CHANGED:")) {
+              const state = message.replace("EVENT:STATE_CHANGED:", "").trim();
+              updateStatusDisplay(state, null);
+            } else if (message.startsWith("EVENT:MODE_CHANGED:")) {
+              const mode = message.replace("EVENT:MODE_CHANGED:", "").trim();
+              updateStatusDisplay(null, mode);
+            } else if (message.startsWith("EVENT:CMD_EXECUTED:SET_SPEED:")) {
+              // Update speed slider and display
+              const speedStr = message
+                .replace("EVENT:CMD_EXECUTED:SET_SPEED:", "")
+                .trim();
+              const speed = parseInt(speedStr);
+              if (!isNaN(speed)) {
+                const speedSlider = document.getElementById("speed-slider");
+                const speedValue = document.getElementById("speed-value");
+                const speedDisplay = document.getElementById("speed-display");
+
+                if (speedSlider && speedValue && speedDisplay) {
+                  speedSlider.value = speed;
+                  speedValue.textContent = speed;
+                  speedDisplay.textContent =
+                    speed === 0 ? "Stopped: 0" : `Speed: ${speed}`;
+                }
+              }
+            } else if (message.startsWith("EVENT:CMD_EXECUTED:SET_STEER:")) {
+              // Update steering slider and display
+              const angleStr = message
+                .replace("EVENT:CMD_EXECUTED:SET_STEER:", "")
+                .trim();
+              const angle = parseInt(angleStr);
+              if (!isNaN(angle)) {
+                const steerSlider = document.getElementById("steer-slider");
+                const steerValue = document.getElementById("steer-value");
+                const steerDisplay = document.getElementById("steer-display");
+
+                if (steerSlider && steerValue && steerDisplay) {
+                  steerSlider.value = angle;
+                  steerValue.textContent = `${angle}°`;
+
+                  const center = 105;
+                  // NOTE: Servo is inverted - 50 = right, 160 = left
+                  if (angle === center) {
+                    steerDisplay.textContent = "Center: 105°";
+                  } else if (angle < center) {
+                    // Lower value (50) = right turn
+                    steerDisplay.textContent = `Right: ${angle}°`;
+                  } else {
+                    // Higher value (160) = left turn
+                    steerDisplay.textContent = `Left: ${angle}°`;
+                  }
+                }
+              }
+            } else if (message === "EVENT:CMD_EXECUTED:SET_STEER_CENTER") {
+              // Center steering
+              const steerSlider = document.getElementById("steer-slider");
+              const steerValue = document.getElementById("steer-value");
+              const steerDisplay = document.getElementById("steer-display");
+
+              if (steerSlider && steerValue && steerDisplay) {
+                const center = 105;
+                steerSlider.value = center;
+                steerValue.textContent = `${center}°`;
+                steerDisplay.textContent = "Center: 105°";
+              }
+            }
+          }
+      }
+
+      function startSerialStream() {
+        // Legacy wrapper: Ensure event stream is running
+        if (!eventSource || eventSource.readyState === EventSource.CLOSED) {
+            initEventStream();
         }
+        log("Serial stream monitoring started", "info");
+      }
+
+      function stopSerialStream() {
+        // We don't stop the unified stream, just log
+        log("Serial monitoring stopped", "info");
       }
 
       async function restoreSystemStatus() {
@@ -1099,50 +1221,7 @@
       }
 
       function restoreSliderValues() {
-        // Restore speed
-        const savedSpeed = localStorage.getItem("dashboard_last_speed");
-        if (savedSpeed !== null) {
-          const speed = parseInt(savedSpeed);
-          if (!isNaN(speed) && speed >= 0 && speed <= 255) {
-            const speedSlider = document.getElementById("speed-slider");
-            const speedValue = document.getElementById("speed-value");
-            const speedDisplay = document.getElementById("speed-display");
-
-            if (speedSlider) speedSlider.value = speed;
-            if (speedValue) speedValue.textContent = speed;
-            if (speedDisplay) {
-              speedDisplay.textContent =
-                speed === 0 ? "Stopped: 0" : `Speed: ${speed}`;
-            }
-          }
-        }
-
-        // Restore steering
-        const savedSteer = localStorage.getItem("dashboard_last_steer");
-        if (savedSteer !== null) {
-          const steer = parseInt(savedSteer);
-          if (!isNaN(steer) && steer >= 50 && steer <= 160) {
-            const steerSlider = document.getElementById("steer-slider");
-            const steerValue = document.getElementById("steer-value");
-            const steerDisplay = document.getElementById("steer-display");
-
-            if (steerSlider) steerSlider.value = steer;
-            if (steerValue) steerValue.textContent = `${steer}°`;
-            if (steerDisplay) {
-              const center = 105;
-              // NOTE: Servo is inverted - 50 = right, 160 = left
-              if (steer === center) {
-                steerDisplay.textContent = "Center: 105°";
-              } else if (steer < center) {
-                // Lower value (50) = right turn
-                steerDisplay.textContent = `Right: ${steer}°`;
-              } else {
-                // Higher value (160) = left turn
-                steerDisplay.textContent = `Left: ${steer}°`;
-              }
-            }
-          }
-        }
+        // Slider values are restored from server events, no localStorage needed
       }
 
       function getBaseURL() {
@@ -1175,127 +1254,6 @@
         } else {
           statusEl.className = "connection-status disconnected";
           textEl.textContent = "Disconnected";
-        }
-      }
-
-      function startSerialStream() {
-        // Close existing stream if any
-        if (serialEventSource) {
-          serialEventSource.close();
-          serialEventSource = null;
-        }
-
-        // Start SSE stream for serial messages
-        const streamURL = `${getBaseURL()}/uart/stream`;
-        serialEventSource = new EventSource(streamURL);
-
-        serialEventSource.onmessage = function (event) {
-          // Messages from ESP32
-          const message = event.data;
-          console.log("SSE message received:", message);
-          if (message && message.trim().length > 0) {
-            log(`ESP32: ${message}`, "serial");
-
-            // Parse system events and update status in real-time
-            if (message.startsWith("EVENT:STATE_CHANGED:")) {
-              const state = message.replace("EVENT:STATE_CHANGED:", "").trim();
-              updateStatusDisplay(state, null);
-              // Server is source of truth, no need to save to localStorage
-            } else if (message.startsWith("EVENT:MODE_CHANGED:")) {
-              const mode = message.replace("EVENT:MODE_CHANGED:", "").trim();
-              updateStatusDisplay(null, mode);
-              // Server is source of truth, no need to save to localStorage
-            } else if (message.startsWith("EVENT:CMD_EXECUTED:SET_SPEED:")) {
-              // Update speed slider and display
-              const speedStr = message
-                .replace("EVENT:CMD_EXECUTED:SET_SPEED:", "")
-                .trim();
-              const speed = parseInt(speedStr);
-              if (!isNaN(speed)) {
-                const speedSlider = document.getElementById("speed-slider");
-                const speedValue = document.getElementById("speed-value");
-                const speedDisplay = document.getElementById("speed-display");
-
-                if (speedSlider && speedValue && speedDisplay) {
-                  speedSlider.value = speed;
-                  speedValue.textContent = speed;
-                  speedDisplay.textContent =
-                    speed === 0 ? "Stopped: 0" : `Speed: ${speed}`;
-
-                  // Save to localStorage for persistence across page reloads
-                  saveSliderValues(speed, null);
-                }
-              }
-            } else if (message.startsWith("EVENT:CMD_EXECUTED:SET_STEER:")) {
-              // Update steering slider and display
-              const angleStr = message
-                .replace("EVENT:CMD_EXECUTED:SET_STEER:", "")
-                .trim();
-              const angle = parseInt(angleStr);
-              if (!isNaN(angle)) {
-                const steerSlider = document.getElementById("steer-slider");
-                const steerValue = document.getElementById("steer-value");
-                const steerDisplay = document.getElementById("steer-display");
-
-                if (steerSlider && steerValue && steerDisplay) {
-                  steerSlider.value = angle;
-                  steerValue.textContent = `${angle}°`;
-
-                  const center = 105;
-                  // NOTE: Servo is inverted - 50 = right, 160 = left
-                  if (angle === center) {
-                    steerDisplay.textContent = "Center: 105°";
-                  } else if (angle < center) {
-                    // Lower value (50) = right turn
-                    steerDisplay.textContent = `Right: ${angle}°`;
-                  } else {
-                    // Higher value (160) = left turn
-                    steerDisplay.textContent = `Left: ${angle}°`;
-                  }
-
-                  // Save to localStorage for persistence across page reloads
-                  saveSliderValues(null, angle);
-                }
-              }
-            } else if (message === "EVENT:CMD_EXECUTED:SET_STEER_CENTER") {
-              // Center steering
-              const steerSlider = document.getElementById("steer-slider");
-              const steerValue = document.getElementById("steer-value");
-              const steerDisplay = document.getElementById("steer-display");
-
-              if (steerSlider && steerValue && steerDisplay) {
-                const center = 105;
-                steerSlider.value = center;
-                steerValue.textContent = `${center}°`;
-                steerDisplay.textContent = "Center: 105°";
-
-                // Save to localStorage for persistence across page reloads
-                saveSliderValues(null, center);
-              }
-            }
-          } else {
-            console.warn("Received empty SSE message");
-          }
-        };
-
-        serialEventSource.onerror = function (event) {
-          console.error("SSE stream error:", event);
-          // Try to reconnect after a delay
-          setTimeout(() => {
-            if (isConnected) {
-              startSerialStream();
-            }
-          }, 2000);
-        };
-
-        log("Serial stream started - listening for ESP32 messages", "info");
-      }
-
-      function stopSerialStream() {
-        if (serialEventSource) {
-          serialEventSource.close();
-          serialEventSource = null;
-          log("Serial stream stopped", "info");
         }
       }
 
@@ -1345,7 +1303,6 @@
           if (armToggle) {
             armToggle.checked = state === "ARMED" || state === "RUNNING";
           }
-          // No need to save to localStorage - server is source of truth
         }
 
         // Update mode if provided
@@ -1356,7 +1313,6 @@
           if (modeToggle) {
             modeToggle.checked = mode === "AUTO";
           }
-          // No need to save to localStorage - server is source of truth
         }
 
         // Always update timestamp when status changes
@@ -1632,7 +1588,7 @@
           if (response.ok) {
             const data = await response.json();
             log(`Auto-pilot started: ${data.message || "OK"}`, "success");
-            updateAutopilotStatus(); // Update status immediately
+            // Status will be updated automatically via SSE stream
           } else {
             const errorData = await response
               .json()
@@ -1656,9 +1612,7 @@
               }
               statusEl.style.color = "#dc3545";
             }
-            
-            // Update status immediately to reflect current state
-            updateAutopilotStatus();
+            // Status will be updated automatically via SSE stream
           }
         } catch (error) {
           log(`Error starting auto-pilot: ${error.message}`, "error");
@@ -1684,7 +1638,7 @@
           if (response.ok) {
             const data = await response.json();
             log(`Auto-pilot stopped: ${data.message || "OK"}`, "success");
-            updateAutopilotStatus(); // Update status immediately
+            // Status will be updated automatically via SSE stream
           } else {
             const errorData = await response
               .json()
@@ -1709,9 +1663,7 @@
                 statusEl.style.color = "#dc3545";
               }
             }
-            
-            // Update status immediately to reflect current state
-            updateAutopilotStatus();
+            // Status will be updated automatically via SSE stream
           }
         } catch (error) {
           log(`Error stopping auto-pilot: ${error.message}`, "error");
@@ -1725,91 +1677,66 @@
         }
       }
 
-      async function updateAutopilotStatus() {
-        try {
-          const response = await fetch(`${getBaseURL()}/autopilot/status`, {
-            cache: "no-cache",
-          });
-
-          if (response.ok) {
-            const data = await response.json();
-
-            // Update status display
-            const statusEl = document.getElementById("autopilot-status");
-            if (statusEl) {
-              statusEl.textContent = data.is_running ? "Running" : "Stopped";
-              statusEl.style.color = data.is_running ? "#28a745" : "#dc3545";
-            }
-
-            // Update steering angle
-            const pidAngleEl = document.getElementById("autopilot-pid-angle");
-            if (
-              pidAngleEl &&
-              data.last_steering_angle !== null &&
-              data.last_steering_angle !== undefined
-            ) {
-              pidAngleEl.textContent = `${data.last_steering_angle.toFixed(
-                2
-              )}°`;
-            } else if (pidAngleEl) {
-              pidAngleEl.textContent = "--";
-            }
-
-            // Update servo angle
-            const servoAngleEl = document.getElementById(
-              "autopilot-servo-angle"
-            );
-            if (
-              servoAngleEl &&
-              data.last_servo_angle !== null &&
-              data.last_servo_angle !== undefined
-            ) {
-              servoAngleEl.textContent = `${data.last_servo_angle}°`;
-            } else if (servoAngleEl) {
-              servoAngleEl.textContent = "--";
-            }
-
-            // Update command count
-            const commandCountEl = document.getElementById(
-              "autopilot-command-count"
-            );
-            if (
-              commandCountEl &&
-              data.command_count !== null &&
-              data.command_count !== undefined
-            ) {
-              commandCountEl.textContent = data.command_count.toString();
-            } else if (commandCountEl) {
-              commandCountEl.textContent = "0";
-            }
-
-            // Update PID parameters if available
-            if (data.pid_parameters) {
-              updatePIDSliders(data.pid_parameters, false); // false = don't trigger update
-            }
-          } else if (response.status === 503) {
-            // Controller not initialized (no UART connection)
-            const statusEl = document.getElementById("autopilot-status");
-            if (statusEl) {
-              statusEl.textContent = "Not Initialized";
-              statusEl.style.color = "#ffc107"; // Yellow/warning color
-            }
-            // Don't log error - this is expected when UART is not connected
-          } else {
-            // Other error
-            const statusEl = document.getElementById("autopilot-status");
-            if (statusEl) {
-              statusEl.textContent = "Not Available";
-              statusEl.style.color = "#6c757d";
-            }
-          }
-        } catch (error) {
-          // Network error or other exception
+      function updateAutopilotStatusUI(data) {
+        // Handle error case
+        if (data.error) {
           const statusEl = document.getElementById("autopilot-status");
           if (statusEl) {
-            statusEl.textContent = "Error";
-            statusEl.style.color = "#dc3545";
+            statusEl.textContent = "Not Initialized";
+            statusEl.style.color = "#ffc107"; // Yellow/warning color
           }
+          return;
+        }
+
+        const status = data.status || {};
+        const pidParams = data.pid_parameters || {};
+
+        // Update status display
+        const statusEl = document.getElementById("autopilot-status");
+        if (statusEl) {
+          statusEl.textContent = status.is_running ? "Running" : "Stopped";
+          statusEl.style.color = status.is_running ? "#28a745" : "#dc3545";
+        }
+
+        // Update steering angle
+        const pidAngleEl = document.getElementById("autopilot-pid-angle");
+        if (
+          pidAngleEl &&
+          status.last_steering_angle !== null &&
+          status.last_steering_angle !== undefined
+        ) {
+          pidAngleEl.textContent = `${status.last_steering_angle.toFixed(2)}°`;
+        } else if (pidAngleEl) {
+          pidAngleEl.textContent = "--";
+        }
+
+        // Update servo angle
+        const servoAngleEl = document.getElementById("autopilot-servo-angle");
+        if (
+          servoAngleEl &&
+          status.last_servo_angle !== null &&
+          status.last_servo_angle !== undefined
+        ) {
+          servoAngleEl.textContent = `${status.last_servo_angle}°`;
+        } else if (servoAngleEl) {
+          servoAngleEl.textContent = "--";
+        }
+
+        // Update command count
+        const commandCountEl = document.getElementById("autopilot-command-count");
+        if (
+          commandCountEl &&
+          status.command_count !== null &&
+          status.command_count !== undefined
+        ) {
+          commandCountEl.textContent = status.command_count.toString();
+        } else if (commandCountEl) {
+          commandCountEl.textContent = "0";
+        }
+
+        // Update PID parameters if available
+        if (pidParams && Object.keys(pidParams).length > 0) {
+          updatePIDSliders(pidParams, false); // false = don't trigger update
         }
       }
 
@@ -1819,7 +1746,7 @@
       document.getElementById("status-state").className = "status-value";
       document.getElementById("status-time").textContent = "--";
 
-      // Initialize - restore slider values and system status from localStorage
+      // Initialize - restore slider values and system status from server
       restoreSliderValues();
       restoreSystemStatus();
 
@@ -1993,7 +1920,7 @@
           if (response.ok) {
             const data = await response.json();
             log(`Sign detection started: ${data.message || "OK"}`, "success");
-            updateSignDetectionStatus(); // Update status immediately
+            // Status will be updated automatically via SSE stream
           } else {
             const errorData = await response
               .json()
@@ -2017,9 +1944,7 @@
               }
               statusEl.style.color = "#dc3545";
             }
-            
-            // Update status immediately to reflect current state
-            updateSignDetectionStatus();
+            // Status will be updated automatically via SSE stream
           }
         } catch (error) {
           log(`Error starting sign detection: ${error.message}`, "error");
@@ -2045,7 +1970,7 @@
           if (response.ok) {
             const data = await response.json();
             log(`Sign detection stopped: ${data.message || "OK"}`, "success");
-            updateSignDetectionStatus(); // Update status immediately
+            // Status will be updated automatically via SSE stream
           } else {
             const errorData = await response
               .json()
@@ -2070,9 +1995,7 @@
                 statusEl.style.color = "#dc3545";
               }
             }
-            
-            // Update status immediately to reflect current state
-            updateSignDetectionStatus();
+            // Status will be updated automatically via SSE stream
           }
         } catch (error) {
           log(`Error stopping sign detection: ${error.message}`, "error");
@@ -2086,73 +2009,53 @@
         }
       }
 
-      async function updateSignDetectionStatus() {
-        try {
-          const response = await fetch(`${getBaseURL()}/sign_detection/status`, {
-            cache: "no-cache",
-          });
-
-          if (response.ok) {
-            const data = await response.json();
-
-            // Update status display
-            const statusEl = document.getElementById("sign-detection-status");
-            if (statusEl) {
-              statusEl.textContent = data.is_running ? "Running" : "Stopped";
-              statusEl.style.color = data.is_running ? "#28a745" : "#dc3545";
-            }
-
-            // Update detection count
-            const detectionCountEl = document.getElementById("sign-detection-count");
-            if (detectionCountEl) {
-              detectionCountEl.textContent = data.current_detections || 0;
-            }
-
-            // Update frame count
-            const frameCountEl = document.getElementById("sign-frame-count");
-            if (frameCountEl) {
-              frameCountEl.textContent = data.frame_count || 0;
-            }
-
-            // Update device
-            const deviceEl = document.getElementById("sign-device");
-            if (deviceEl) {
-              deviceEl.textContent = data.device || "--";
-            }
-
-            // Update confidence threshold display
-            if (data.confidence_threshold !== undefined) {
-              const confidenceValueEl = document.getElementById("sign-confidence-value");
-              const confidenceSliderEl = document.getElementById("sign-confidence-slider");
-              if (confidenceValueEl) {
-                confidenceValueEl.textContent = parseFloat(data.confidence_threshold).toFixed(2);
-              }
-              if (confidenceSliderEl) {
-                confidenceSliderEl.value = data.confidence_threshold;
-              }
-            }
-          } else if (response.status === 503) {
-            // Controller not initialized (no UART connection)
-            const statusEl = document.getElementById("sign-detection-status");
-            if (statusEl) {
-              statusEl.textContent = "Not Initialized";
-              statusEl.style.color = "#ffc107"; // Yellow/warning color
-            }
-            // Don't log error - this is expected when UART is not connected
-          } else {
-            // Other error
-            const statusEl = document.getElementById("sign-detection-status");
-            if (statusEl) {
-              statusEl.textContent = "Not Available";
-              statusEl.style.color = "#6c757d";
-            }
-          }
-        } catch (error) {
-          // Network error or other exception
+      function updateSignDetectionStatusUI(data) {
+        // Handle error case
+        if (data.error) {
           const statusEl = document.getElementById("sign-detection-status");
           if (statusEl) {
-            statusEl.textContent = "Error";
-            statusEl.style.color = "#dc3545";
+            statusEl.textContent = "Not Initialized";
+            statusEl.style.color = "#ffc107"; // Yellow/warning color
+          }
+          return;
+        }
+
+        const status = data.status || {};
+
+        // Update status display
+        const statusEl = document.getElementById("sign-detection-status");
+        if (statusEl) {
+          statusEl.textContent = status.is_running ? "Running" : "Stopped";
+          statusEl.style.color = status.is_running ? "#28a745" : "#dc3545";
+        }
+
+        // Update detection count
+        const detectionCountEl = document.getElementById("sign-detection-count");
+        if (detectionCountEl) {
+          detectionCountEl.textContent = status.current_detections || 0;
+        }
+
+        // Update frame count
+        const frameCountEl = document.getElementById("sign-frame-count");
+        if (frameCountEl) {
+          frameCountEl.textContent = status.frame_count || 0;
+        }
+
+        // Update device
+        const deviceEl = document.getElementById("sign-device");
+        if (deviceEl) {
+          deviceEl.textContent = status.device || "--";
+        }
+
+        // Update confidence threshold display
+        if (status.confidence_threshold !== undefined) {
+          const confidenceValueEl = document.getElementById("sign-confidence-value");
+          const confidenceSliderEl = document.getElementById("sign-confidence-slider");
+          if (confidenceValueEl) {
+            confidenceValueEl.textContent = parseFloat(status.confidence_threshold).toFixed(2);
+          }
+          if (confidenceSliderEl) {
+            confidenceSliderEl.value = status.confidence_threshold;
           }
         }
       }
@@ -2194,13 +2097,8 @@
         }, 300);
       }
 
-      // Initialize auto-pilot status polling
-      updateAutopilotStatus();
-      setInterval(updateAutopilotStatus, 1000); // Update every second
-
-      // Initialize sign detection status polling
-      updateSignDetectionStatus();
-      setInterval(updateSignDetectionStatus, 1000); // Update every second
+      // Initialize unified event stream
+      initEventStream();
 
       // Load PID parameters on page load
       loadPIDParameters();

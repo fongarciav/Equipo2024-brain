@@ -12,6 +12,7 @@ import sys
 import threading
 import time
 import queue
+import json
 
 # Import auto-pilot modules
 import sys
@@ -31,7 +32,7 @@ except ImportError as e:
     import_errors['VideoStreamer'] = str(e)
 
 try:
-    from autopilot_controller import AutoPilotController
+    from lane_detection.autopilot_controller import AutoPilotController
 except ImportError as e:
     print(f"Warning: Could not import AutoPilotController: {e}")
     AutoPilotController = None
@@ -73,6 +74,17 @@ except Exception as e:
     SignDetector = None
     import_errors['SignDetector'] = str(e)
 
+try:
+    from sign_vision.sign_controller import SignController
+except ImportError as e:
+    print(f"Warning: Could not import SignController: {e}")
+    SignController = None
+    import_errors['SignController'] = str(e)
+except Exception as e:
+    print(f"Warning: Error importing SignController: {e}")
+    SignController = None
+    import_errors['SignController'] = str(e)
+
 # Try to import serial
 try:
     import serial
@@ -110,9 +122,22 @@ serial_reader_thread = None
 serial_reader_running = False
 serial_read_buffer = ""  # Buffer for incomplete serial lines
 
-# SSE client connections - list of queues, one per connected client
-sse_clients = []
-sse_clients_lock = threading.Lock()
+# Global event clients (combined stream)
+event_clients = []
+event_clients_lock = threading.Lock()
+
+# SSE clients for separate streams (maintained for backward compatibility if needed, but we will consolidate)
+# Note: We will route ALL events to event_clients as well
+
+# SSE clients for autopilot status streaming (Deprecated - mapped to event_clients)
+autopilot_status_broadcast_running = False
+autopilot_status_broadcast_thread = None
+
+# SSE clients for sign detection status streaming (Deprecated - mapped to event_clients)
+sign_detection_status_broadcast_running = False
+sign_detection_status_broadcast_thread = None
+
+# ...
 
 # System state tracking
 system_state = {'mode': 'MANUAL', 'state': 'ARMED'}
@@ -123,7 +148,8 @@ video_streamer = None
 autopilot_controller = None
 command_sender = None
 
-# Traffic vision components
+# Sign vision components
+sign_detector = None
 sign_detection_controller = None
 
 app = Flask(__name__, static_folder=SCRIPT_DIR)
@@ -350,7 +376,7 @@ def parse_system_events(line: str):
 
 def serial_reader_worker():
     """Background thread that reads from serial port."""
-    global serial_conn, serial_reader_running, sse_clients
+    global serial_conn, serial_reader_running, event_clients
 
     while serial_reader_running:
         if serial_conn and serial_conn.is_open:
@@ -367,16 +393,17 @@ def serial_reader_worker():
                             'message': line,
                             'timestamp': time.time()
                         }
-                        with sse_clients_lock:
+                        # Send to unified event clients
+                        with event_clients_lock:
                             # Send to all connected clients
                             # Copy list to avoid modification during iteration
-                            for client_queue in sse_clients[:]:
+                            for client_queue in event_clients[:]:
                                 try:
                                     client_queue.put(message_data, block=False)
                                 except queue.Full:
                                     # Client queue is full, remove it (client might be disconnected)
                                     try:
-                                        sse_clients.remove(client_queue)
+                                        event_clients.remove(client_queue)
                                     except ValueError:
                                         pass  # Already removed
                 if not lines:
@@ -408,6 +435,138 @@ def stop_serial_reader():
     if serial_reader_thread:
         serial_reader_thread.join(timeout=1.0)
         serial_reader_thread = None
+
+
+def autopilot_status_broadcast_worker():
+    """Background thread that broadcasts autopilot status to SSE clients."""
+    global autopilot_status_broadcast_running, autopilot_controller, event_clients
+    
+    while autopilot_status_broadcast_running:
+        try:
+            status_data = None
+            if autopilot_controller is not None:
+                status = autopilot_controller.get_status()
+                pid_params = autopilot_controller.get_pid_parameters()
+                status_data = {
+                    'type': 'autopilot_status',
+                    'status': status,
+                    'pid_parameters': pid_params,
+                    'timestamp': time.time()
+                }
+            else:
+                # Controller not initialized
+                status_data = {
+                    'type': 'autopilot_status',
+                    'error': 'Auto-pilot controller not initialized',
+                    'timestamp': time.time()
+                }
+            
+            # Broadcast to unified event clients
+            with event_clients_lock:
+                for client_queue in event_clients[:]:
+                    try:
+                        client_queue.put(status_data, block=False)
+                    except queue.Full:
+                        # Client queue is full, remove it (client might be disconnected)
+                        try:
+                            event_clients.remove(client_queue)
+                        except ValueError:
+                            pass  # Already removed
+            
+            # Update every 0.5 seconds
+            time.sleep(0.5)
+        except Exception as e:
+            if autopilot_status_broadcast_running:
+                print(f"[AutopilotStatusBroadcast] Error: {e}", file=sys.stderr)
+                time.sleep(0.5)
+
+
+def start_autopilot_status_broadcast():
+    """Start the autopilot status broadcast thread."""
+    global autopilot_status_broadcast_thread, autopilot_status_broadcast_running
+    
+    if autopilot_status_broadcast_thread is None or not autopilot_status_broadcast_thread.is_alive():
+        autopilot_status_broadcast_running = True
+        autopilot_status_broadcast_thread = threading.Thread(
+            target=autopilot_status_broadcast_worker, daemon=True)
+        autopilot_status_broadcast_thread.start()
+
+
+def stop_autopilot_status_broadcast():
+    """Stop the autopilot status broadcast thread."""
+    global autopilot_status_broadcast_running, autopilot_status_broadcast_thread
+    
+    autopilot_status_broadcast_running = False
+    if autopilot_status_broadcast_thread:
+        autopilot_status_broadcast_thread.join(timeout=1.0)
+        autopilot_status_broadcast_thread = None
+
+
+def sign_detection_status_broadcast_worker():
+    """Background thread that broadcasts sign detection status to SSE clients."""
+    global sign_detection_status_broadcast_running, sign_detection_controller, event_clients, sign_detector
+    
+    while sign_detection_status_broadcast_running:
+        try:
+            status_data = None
+            if sign_detection_controller is not None:
+                status = sign_detection_controller.get_status()
+                # Get detections from the DETECTOR, not the controller (controller doesn't expose them directly)
+                detections = sign_detector.get_detections() if sign_detector else []
+                
+                status_data = {
+                    'type': 'sign_detection_status',
+                    'status': status,
+                    'detections': detections,
+                    'timestamp': time.time()
+                }
+            else:
+                # Controller not initialized
+                status_data = {
+                    'type': 'sign_detection_status',
+                    'error': 'Sign detection controller not initialized',
+                    'timestamp': time.time()
+                }
+            
+            # Broadcast to unified event clients
+            with event_clients_lock:
+                for client_queue in event_clients[:]:
+                    try:
+                        client_queue.put(status_data, block=False)
+                    except queue.Full:
+                        # Client queue is full, remove it (client might be disconnected)
+                        try:
+                            event_clients.remove(client_queue)
+                        except ValueError:
+                            pass  # Already removed
+            
+            # Update every 0.5 seconds
+            time.sleep(0.5)
+        except Exception as e:
+            if sign_detection_status_broadcast_running:
+                print(f"[SignDetectionStatusBroadcast] Error: {e}", file=sys.stderr)
+                time.sleep(0.5)
+
+
+def start_sign_detection_status_broadcast():
+    """Start the sign detection status broadcast thread."""
+    global sign_detection_status_broadcast_thread, sign_detection_status_broadcast_running
+    
+    if sign_detection_status_broadcast_thread is None or not sign_detection_status_broadcast_thread.is_alive():
+        sign_detection_status_broadcast_running = True
+        sign_detection_status_broadcast_thread = threading.Thread(
+            target=sign_detection_status_broadcast_worker, daemon=True)
+        sign_detection_status_broadcast_thread.start()
+
+
+def stop_sign_detection_status_broadcast():
+    """Stop the sign detection status broadcast thread."""
+    global sign_detection_status_broadcast_running, sign_detection_status_broadcast_thread
+    
+    sign_detection_status_broadcast_running = False
+    if sign_detection_status_broadcast_thread:
+        sign_detection_status_broadcast_thread.join(timeout=1.0)
+        sign_detection_status_broadcast_thread = None
 
 
 @app.route('/uart/ports', methods=['GET'])
@@ -492,20 +651,25 @@ def initialize_autopilot_if_needed():
 
 def initialize_sign_detection_if_needed():
     """Initialize sign detection controller if conditions are met."""
-    global sign_detection_controller, video_streamer, serial_conn
+    global sign_detection_controller, sign_detector, video_streamer, serial_conn, command_sender
     
     # Only initialize if not already initialized
     if sign_detection_controller is not None:
         return True
     
     # Check if we have all required components
-    if SignDetector is None:
+    if SignDetector is None or SignController is None:
         print("Sign detection modules not available", file=sys.stderr)
         return False
     
     if not serial_conn or not serial_conn.is_open:
         print("Serial port not connected", file=sys.stderr)
         return False
+        
+    # Initialize command sender if needed
+    if command_sender is None:
+        command_sender = CommandSender(write_uart_command)
+        print("Command sender initialized", file=sys.stderr)
     
     # Initialize video streamer if not already done
     if video_streamer is None and VideoStreamer is not None:
@@ -517,17 +681,27 @@ def initialize_sign_detection_if_needed():
             return False
         print("Video streamer initialized", file=sys.stderr)
     
-        # Initialize sign detection controller
-        if video_streamer is not None:
-            print("Initializing sign detection controller...", file=sys.stderr)
-            sign_detection_controller = SignDetector(
+    # Create sign detection controller if video_streamer is available
+    if video_streamer is not None:
+        print("Initializing sign detection controller...", file=sys.stderr)
+        
+        # Initialize the detector (sensor)
+        if sign_detector is None:
+            sign_detector = SignDetector(
                 video_streamer=video_streamer,
                 confidence_threshold=0.6
             )
-        if not sign_detection_controller.initialize():
-            print("Sign detection controller initialization failed", file=sys.stderr)
-            sign_detection_controller = None
-            return False
+            if not sign_detector.initialize():
+                print("Sign detector initialization failed", file=sys.stderr)
+                sign_detector = None
+                return False
+                
+        # Initialize the controller (decision maker)
+        sign_detection_controller = SignController(
+            sign_detector=sign_detector,
+            command_sender=command_sender
+        )
+        
         print("Sign detection controller initialized (not started - use /sign_detection/start)", file=sys.stderr)
         return True
     else:
@@ -573,7 +747,7 @@ def uart_connect():
 @app.route('/uart/disconnect', methods=['POST'])
 def uart_disconnect():
     """Disconnect from ESP32."""
-    global serial_conn, serial_read_buffer, autopilot_controller, sign_detection_controller
+    global serial_conn, serial_read_buffer, autopilot_controller, sign_detection_controller, sign_detector
 
     stop_serial_reader()
     
@@ -584,6 +758,9 @@ def uart_disconnect():
     # Stop sign detection if running
     if sign_detection_controller:
         sign_detection_controller.stop()
+        # Also stop the detector (the thread)
+        if sign_detector:
+            sign_detector.stop()
 
     if serial_conn and serial_conn.is_open:
         serial_conn.close()
@@ -594,37 +771,59 @@ def uart_disconnect():
     return jsonify({'status': 'ok', 'message': 'Disconnected'})
 
 
-@app.route('/uart/stream')
-def uart_stream():
-    """Server-Sent Events stream for serial messages."""
+@app.route('/events')
+def events_stream():
+    """Unified Server-Sent Events stream for all system events."""
+    # Start all broadcast threads if not already running
+    start_serial_reader()
+    start_autopilot_status_broadcast()
+    start_sign_detection_status_broadcast()
+    
     def generate():
         # Create a dedicated queue for this client
         client_queue = queue.Queue(maxsize=100)
 
         # Register this client
-        with sse_clients_lock:
-            sse_clients.append(client_queue)
+        with event_clients_lock:
+            event_clients.append(client_queue)
 
         try:
             while True:
                 try:
                     # Get message from this client's queue
                     msg = client_queue.get(timeout=1.0)
-                    message = msg.get('message', '')
-                    if message and len(message.strip()) > 0:
-                        data = f"data: {message}\n\n"
-                        yield data
+                    
+                    # If message is a dict (status update), serialize it
+                    if isinstance(msg, dict):
+                        if msg.get('type') == 'serial':
+                            # Serial messages are raw strings in 'message' field
+                            message = msg.get('message', '')
+                            if message and len(message.strip()) > 0:
+                                # Compatibility: send raw serial line as 'data' for backward compatibility with serial listener
+                                # BUT we should wrap it in JSON ideally. 
+                                # For now, let's check what the client expects.
+                                # The new client will parse JSON.
+                                json_data = json.dumps(msg)
+                                yield f"data: {json_data}\n\n"
+                        else:
+                            # Status updates are dicts
+                            json_data = json.dumps(msg)
+                            yield f"data: {json_data}\n\n"
+                    else:
+                         # Fallback for string messages
+                         yield f"data: {msg}\n\n"
+
                 except queue.Empty:
                     yield ": heartbeat\n\n"
         except GeneratorExit:
             pass  # Client disconnected
         except Exception as e:
-            print(f"[SSE] Error: {e}", file=sys.stderr)
+            print(f"[EventsSSE] Error: {e}", file=sys.stderr)
         finally:
             # Unregister this client
-            with sse_clients_lock:
+            with event_clients_lock:
                 try:
-                    sse_clients.remove(client_queue)
+                    event_clients.remove(client_queue)
                 except ValueError:
                     pass  # Already removed
 
@@ -633,6 +832,25 @@ def uart_stream():
     response.headers['Cache-Control'] = 'no-cache'
     response.headers['X-Accel-Buffering'] = 'no'  # Disable buffering for nginx
     return response
+
+
+# Deprecated streams - kept for compatibility if user hasn't refreshed page
+# We redirect them to the unified logic or just keep them working but with reduced functionality
+
+@app.route('/uart/stream')
+def uart_stream_deprecated():
+    """Deprecated: Use /events instead."""
+    return events_stream()
+
+@app.route('/autopilot/status/stream')
+def autopilot_status_stream_deprecated():
+    """Deprecated: Use /events instead."""
+    return events_stream()
+
+@app.route('/sign_detection/status/stream')
+def sign_detection_status_stream_deprecated():
+    """Deprecated: Use /events instead."""
+    return events_stream()
 
 
 @app.route('/status')
@@ -646,44 +864,50 @@ def get_status():
         })
 
 
-def generate_debug_mjpeg(image_key):
-    """Generate MJPEG stream from debug images."""
+def generate_debug_mjpeg(image_key=None, controller=None, get_image_func=None, 
+                         waiting_text='Waiting...', not_running_text='Not running'):
+    """
+    Generate MJPEG stream from debug images.
+    
+    Args:
+        image_key: Key for autopilot debug images (e.g., 'bird_view_lines', 'sliding_windows', 'final_result')
+        controller: Controller instance (autopilot_controller or sign_detection_controller)
+        get_image_func: Function to get image from controller (takes controller and optional image_key)
+        waiting_text: Text to show when waiting
+        not_running_text: Text to show when controller is not running
+    """
     import cv2
     import time
     import numpy as np
     
-    global autopilot_controller, video_streamer
+    global autopilot_controller, sign_detection_controller, video_streamer
+    
+    # Default to autopilot if not specified and no image func provided
+    if controller is None and get_image_func is None:
+        controller = autopilot_controller
+    
+    # Default get_image function for autopilot
+    if get_image_func is None:
+        def default_get_image(ctrl, key):
+            if ctrl is None:
+                return None
+            return ctrl.get_debug_image(key)
+        get_image_func = default_get_image
     
     # Create a placeholder black image
     placeholder = np.zeros((480, 640, 3), dtype=np.uint8)
-    cv2.putText(placeholder, 'Waiting for auto-pilot...', (50, 240), 
+    cv2.putText(placeholder, waiting_text, (50, 240), 
                 cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
     
     while True:
-        if autopilot_controller is None:
-            # Send placeholder if autopilot not initialized
-            ret, buffer = cv2.imencode('.jpg', placeholder, [cv2.IMWRITE_JPEG_QUALITY, 85])
-            if ret:
-                yield (b'--frame\r\n'
-                       b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
-            time.sleep(0.1)
-            continue
-        
-        # Check if autopilot is running
-        status = autopilot_controller.get_status()
-        if not status.get('is_running', False):
-            # Send placeholder if autopilot not running
-            placeholder_text = np.zeros((480, 640, 3), dtype=np.uint8)
-            cv2.putText(placeholder_text, 'Auto-pilot not running', (50, 240), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-            ret, buffer = cv2.imencode('.jpg', placeholder_text, [cv2.IMWRITE_JPEG_QUALITY, 85])
-            if ret:
-                yield (b'--frame\r\n'
-                       b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
-            time.sleep(0.1)
-            continue
-        
-        debug_image = autopilot_controller.get_debug_image(image_key)
+        # Get image from controller (or global via lambda)
+        # We pass 'controller' here, but the lambda might ignore it and use a global instead
+        try:
+            debug_image = get_image_func(controller, image_key)
+        except Exception as e:
+            debug_image = None
+            # print(f"[Debug Stream] Error getting image: {e}")
+
         if debug_image is not None:
             # Make sure image is valid (not empty)
             try:
@@ -710,31 +934,47 @@ def generate_debug_mjpeg(image_key):
                                b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
             except Exception as e:
                 # Error processing image, send placeholder
-                print(f"[Debug Stream] Error processing {image_key}: {e}")
+                # print(f"[Debug Stream] Error processing image: {e}")
                 ret, buffer = cv2.imencode('.jpg', placeholder, [cv2.IMWRITE_JPEG_QUALITY, 85])
                 if ret:
                     yield (b'--frame\r\n'
                            b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
         else:
-            # No debug image available, try to show regular video frame as fallback
-            # Use short timeout to avoid blocking other requests
-            if video_streamer is not None:
-                frame = video_streamer.get_frame(timeout=0.01)  # Short timeout to avoid blocking
-                if frame is not None:
-                    ret, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
-                    if ret:
-                        yield (b'--frame\r\n'
-                               b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
-                else:
-                    ret, buffer = cv2.imencode('.jpg', placeholder, [cv2.IMWRITE_JPEG_QUALITY, 85])
-                    if ret:
-                        yield (b'--frame\r\n'
-                               b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
+            # No debug image available - check controller/detector status to show appropriate message
+            show_not_running = False
+            
+            # Check controller status if available
+            if controller is not None:
+                try:
+                    status = controller.get_status()
+                    if not status.get('is_running', False):
+                        show_not_running = True
+                except:
+                    # Controller doesn't have get_status or error occurred
+                    pass
             else:
-                ret, buffer = cv2.imencode('.jpg', placeholder, [cv2.IMWRITE_JPEG_QUALITY, 85])
-                if ret:
-                    yield (b'--frame\r\n'
-                           b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
+                # For sign detector case, check global sign_detector
+                # (This happens when controller=None but get_image_func uses global sign_detector)
+                global sign_detector
+                if sign_detector is not None:
+                    try:
+                        status = sign_detector.get_status()
+                        if not status.get('is_running', False):
+                            show_not_running = True
+                    except:
+                        pass
+            
+            # Create appropriate placeholder text
+            placeholder_text = not_running_text if show_not_running else waiting_text
+            placeholder_img = np.zeros((480, 640, 3), dtype=np.uint8)
+            cv2.putText(placeholder_img, placeholder_text, (50, 240), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+            
+            # Always show placeholder, never fallback to raw camera feed
+            ret, buffer = cv2.imencode('.jpg', placeholder_img, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            if ret:
+                yield (b'--frame\r\n'
+                       b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
         
         time.sleep(0.033)  # ~30 FPS
 
@@ -743,7 +983,7 @@ def generate_debug_mjpeg(image_key):
 def debug_bird_view_lines():
     """MJPEG stream for bird view with lines."""
     return Response(
-        stream_with_context(generate_debug_mjpeg('bird_view_lines')),
+        stream_with_context(generate_debug_mjpeg(controller=autopilot_controller, image_key='bird_view_lines', waiting_text='Waiting for lane detection...', not_running_text='Lane detection not running')),
         mimetype='multipart/x-mixed-replace; boundary=frame'
     )
 
@@ -752,7 +992,7 @@ def debug_bird_view_lines():
 def debug_sliding_windows():
     """MJPEG stream for sliding windows."""
     return Response(
-        stream_with_context(generate_debug_mjpeg('sliding_windows')),
+        stream_with_context(generate_debug_mjpeg(controller=autopilot_controller, image_key='sliding_windows', waiting_text='Waiting for lane detection...', not_running_text='Lane detection not running')),
         mimetype='multipart/x-mixed-replace; boundary=frame'
     )
 
@@ -761,7 +1001,7 @@ def debug_sliding_windows():
 def debug_final_result():
     """MJPEG stream for final result."""
     return Response(
-        stream_with_context(generate_debug_mjpeg('final_result')),
+        stream_with_context(generate_debug_mjpeg(controller=autopilot_controller, image_key='final_result', waiting_text='Waiting for lane detection...', not_running_text='Lane detection not running')),
         mimetype='multipart/x-mixed-replace; boundary=frame'
     )
 
@@ -840,74 +1080,34 @@ def autopilot_start():
     else:
         return jsonify({'error': 'Auto-pilot already running'}), 400
 
-
 @app.route('/autopilot/stop', methods=['POST'])
 def autopilot_stop():
     """Stop the auto-pilot controller."""
-    global autopilot_controller
+    global autopilot_controller, video_streamer, sign_detection_controller
     if autopilot_controller is None:
         return jsonify({'error': 'Auto-pilot controller not initialized'}), 503
     
     success = autopilot_controller.stop()
     if success:
+        # Check if video_streamer should be stopped (only if sign_detection is also not running)
+        if video_streamer is not None:
+            sign_detection_running = False
+            if sign_detection_controller is not None:
+                sign_status = sign_detection_controller.get_status()
+                sign_detection_running = sign_status.get('is_running', False)
+            
+            # If neither autopilot nor sign_detection is running, stop video_streamer
+            if not sign_detection_running:
+                print("Stopping video streamer (no controllers running)", file=sys.stderr)
+                video_streamer.stop()
+                video_streamer = None
+                # Also set autopilot_controller to None to force re-initialization
+                # This ensures video_streamer will be recreated when starting again
+                autopilot_controller = None
+        
         return jsonify({'status': 'ok', 'message': 'Auto-pilot stopped'})
     else:
         return jsonify({'error': 'Auto-pilot not running'}), 400
-
-
-@app.route('/autopilot/init-status', methods=['GET'])
-def autopilot_init_status():
-    """Get initialization status of autopilot components."""
-    global autopilot_controller, command_sender, video_streamer, serial_conn
-    
-    status = {
-        'autopilot_controller_initialized': autopilot_controller is not None,
-        'command_sender_initialized': command_sender is not None,
-        'video_streamer_initialized': video_streamer is not None,
-        'serial_connected': serial_conn is not None and serial_conn.is_open if serial_conn else False,
-        'modules_available': {
-            'CommandSender': CommandSender is not None,
-            'AutoPilotController': AutoPilotController is not None,
-            'VideoStreamer': VideoStreamer is not None,
-            'MarcosLaneDetector_Advanced': MarcosLaneDetector_Advanced is not None
-        }
-    }
-    
-    # Add import errors if available
-    if import_errors:
-        status['import_errors'] = import_errors
-    
-    # Add reasons if not initialized
-    if not status['autopilot_controller_initialized']:
-        reasons = []
-        if not status['modules_available']['AutoPilotController']:
-            reasons.append('AutopilotController module not imported')
-        if not status['modules_available']['MarcosLaneDetector_Advanced']:
-            reasons.append('MarcosLaneDetector_Advanced module not imported')
-        if not status['modules_available']['CommandSender']:
-            reasons.append('CommandSender module not imported')
-        if not status['serial_connected']:
-            reasons.append('Serial port not connected')
-        if not status['video_streamer_initialized']:
-            if not status['modules_available']['VideoStreamer']:
-                reasons.append('VideoStreamer module not imported')
-            else:
-                reasons.append('Video streamer initialization failed (check camera)')
-        status['initialization_issues'] = reasons
-    
-    return jsonify(status)
-
-@app.route('/autopilot/status', methods=['GET'])
-def autopilot_status():
-    """Get auto-pilot controller status."""
-    global autopilot_controller
-    if autopilot_controller is None:
-        return jsonify({'error': 'Auto-pilot controller not initialized'}), 503
-    
-    status = autopilot_controller.get_status()
-    pid_params = autopilot_controller.get_pid_parameters()
-    status['pid_parameters'] = pid_params
-    return jsonify(status)
 
 @app.route('/autopilot/pid', methods=['POST'])
 def autopilot_update_pid():
@@ -960,7 +1160,7 @@ def autopilot_get_pid():
 @app.route('/sign_detection/start', methods=['POST'])
 def sign_detection_start():
     """Start the sign detection controller."""
-    global sign_detection_controller
+    global sign_detection_controller, sign_detector
     
     # Try to initialize if not already initialized
     if sign_detection_controller is None:
@@ -972,6 +1172,7 @@ def sign_detection_start():
                 'details': {
                     'modules_available': {
                         'SignDetector': SignDetector is not None,
+                        'SignController': SignController is not None,
                         'VideoStreamer': VideoStreamer is not None
                     },
                     'serial_connected': serial_conn is not None and serial_conn.is_open if serial_conn else False,
@@ -996,44 +1197,52 @@ def sign_detection_start():
             
             return jsonify(status), 503
     
-    success = sign_detection_controller.start()
-    if success:
+    # Start both the detector (eye) and controller (brain)
+    detector_success = sign_detector.start()
+    controller_success = sign_detection_controller.start()
+    
+    if detector_success or controller_success:
         return jsonify({'status': 'ok', 'message': 'Sign detection started'})
     else:
         return jsonify({'error': 'Sign detection already running'}), 400
 
-
 @app.route('/sign_detection/stop', methods=['POST'])
 def sign_detection_stop():
     """Stop the sign detection controller."""
-    global sign_detection_controller
+    global sign_detection_controller, video_streamer, autopilot_controller, sign_detector
     if sign_detection_controller is None:
         return jsonify({'error': 'Sign detection controller not initialized'}), 503
     
-    success = sign_detection_controller.stop()
-    if success:
+    # Stop both
+    controller_success = sign_detection_controller.stop()
+    detector_success = sign_detector.stop()
+    
+    if controller_success or detector_success:
+        # Check if video_streamer should be stopped (only if autopilot is also not running)
+        if video_streamer is not None:
+            autopilot_running = False
+            if autopilot_controller is not None:
+                autopilot_status = autopilot_controller.get_status()
+                autopilot_running = autopilot_status.get('is_running', False)
+            
+            # If neither autopilot nor sign_detection is running, stop video_streamer
+            if not autopilot_running:
+                print("Stopping video streamer (no controllers running)", file=sys.stderr)
+                video_streamer.stop()
+                video_streamer = None
+                # Also set global variables to None to force re-initialization
+                # This ensures video_streamer will be recreated when starting again
+                sign_detection_controller = None
+                sign_detector = None
+        
         return jsonify({'status': 'ok', 'message': 'Sign detection stopped'})
     else:
         return jsonify({'error': 'Sign detection not running'}), 400
 
-
-@app.route('/sign_detection/status', methods=['GET'])
-def sign_detection_status():
-    """Get sign detection controller status."""
-    global sign_detection_controller
-    if sign_detection_controller is None:
-        return jsonify({'error': 'Sign detection controller not initialized'}), 503
-    
-    status = sign_detection_controller.get_status()
-    detections = sign_detection_controller.get_detections()
-    status['detections'] = detections
-    return jsonify(status)
-
-
 @app.route('/sign_detection/confidence', methods=['POST'])
 def sign_detection_update_confidence():
     """Update confidence threshold."""
-    global sign_detection_controller
+    global sign_detection_controller, sign_detector
     if sign_detection_controller is None:
         return jsonify({'error': 'Sign detection controller not initialized'}), 503
     
@@ -1043,90 +1252,41 @@ def sign_detection_update_confidence():
     if threshold is None or not isinstance(threshold, (int, float)) or not (0.0 <= threshold <= 1.0):
         return jsonify({'error': 'Invalid threshold value (must be between 0.0 and 1.0)'}), 400
     
-    sign_detection_controller.update_confidence_threshold(float(threshold))
-    status = sign_detection_controller.get_status()
-    return jsonify({
-        'status': 'ok',
-        'message': 'Confidence threshold updated',
-        'confidence_threshold': status['confidence_threshold']
-    })
-
-
-def generate_sign_detection_mjpeg():
-    """Generate MJPEG stream from sign detection images."""
-    import cv2
-    import time
-    import numpy as np
-    
-    global sign_detection_controller
-    
-    # Create a placeholder black image
-    placeholder = np.zeros((480, 640, 3), dtype=np.uint8)
-    cv2.putText(placeholder, 'Waiting for sign detection...', (50, 240), 
-                cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-    
-    while True:
-        if sign_detection_controller is None:
-            # Send placeholder if not initialized
-            ret, buffer = cv2.imencode('.jpg', placeholder, [cv2.IMWRITE_JPEG_QUALITY, 85])
-            if ret:
-                yield (b'--frame\r\n'
-                       b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
-            time.sleep(0.1)
-            continue
-        
-        # Check if sign detection is running
-        status = sign_detection_controller.get_status()
-        if not status.get('is_running', False):
-            # Send placeholder if not running
-            placeholder_text = np.zeros((480, 640, 3), dtype=np.uint8)
-            cv2.putText(placeholder_text, 'Sign detection not running', (50, 240), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-            ret, buffer = cv2.imencode('.jpg', placeholder_text, [cv2.IMWRITE_JPEG_QUALITY, 85])
-            if ret:
-                yield (b'--frame\r\n'
-                       b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
-            time.sleep(0.1)
-            continue
-        
-        detection_image = sign_detection_controller.get_detection_image()
-        if detection_image is not None:
-            try:
-                if detection_image.size > 0 and len(detection_image.shape) >= 2:
-                    ret, buffer = cv2.imencode('.jpg', detection_image, [cv2.IMWRITE_JPEG_QUALITY, 85])
-                    if ret:
-                        yield (b'--frame\r\n'
-                               b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
-                    else:
-                        ret, buffer = cv2.imencode('.jpg', placeholder, [cv2.IMWRITE_JPEG_QUALITY, 85])
-                        if ret:
-                            yield (b'--frame\r\n'
-                                   b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
-                else:
-                    ret, buffer = cv2.imencode('.jpg', placeholder, [cv2.IMWRITE_JPEG_QUALITY, 85])
-                    if ret:
-                        yield (b'--frame\r\n'
-                               b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
-            except Exception as e:
-                print(f"[Sign Detection Stream] Error processing image: {e}")
-                ret, buffer = cv2.imencode('.jpg', placeholder, [cv2.IMWRITE_JPEG_QUALITY, 85])
-                if ret:
-                    yield (b'--frame\r\n'
-                           b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
-        else:
-            ret, buffer = cv2.imencode('.jpg', placeholder, [cv2.IMWRITE_JPEG_QUALITY, 85])
-            if ret:
-                yield (b'--frame\r\n'
-                       b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
-        
-        time.sleep(0.033)  # ~30 FPS
+    # Update the DETECTOR directly
+    if sign_detector:
+        sign_detector.update_confidence_threshold(float(threshold))
+        status = sign_detector.get_status()
+        return jsonify({
+            'status': 'ok',
+            'message': 'Confidence threshold updated',
+            'confidence_threshold': status['confidence_threshold']
+        })
+    else:
+        return jsonify({'error': 'Sign detector not initialized'}), 500
 
 
 @app.route('/debug/sign_detections')
 def debug_sign_detections():
     """MJPEG stream for sign detections."""
+    # Use the DETECTOR to get the image, not the controller
+    # Use a lambda that captures the CURRENT global sign_detector variable
+    # This ensures that if sign_detector is initialized LATER, the stream will pick it up
+    
+    def get_detector_image(controller, key):
+        # Ignore the 'controller' argument passed by generate_debug_mjpeg (which might be None)
+        # Use the global sign_detector instead
+        global sign_detector
+        if sign_detector:
+            return sign_detector.get_detection_image()
+        return None
+
     return Response(
-        stream_with_context(generate_sign_detection_mjpeg()),
+        stream_with_context(generate_debug_mjpeg(
+            controller=None, # Pass None, we will use the global in the lambda
+            get_image_func=get_detector_image,
+            waiting_text='Waiting for sign detection...',
+            not_running_text='Sign detection not running'
+        )),
         mimetype='multipart/x-mixed-replace; boundary=frame'
     )
 
@@ -1239,16 +1399,6 @@ if __name__ == '__main__':
     print("=" * 60)
     print("ESP32 Car Control Dashboard Server")
     print("=" * 60)
-    
-    # Display CUDA status
-    if CUDA_AVAILABLE:
-        print(f"✓ CUDA habilitado: {CUDA_DEVICE_COUNT} dispositivo(s) disponible(s)")
-    else:
-        if CUDA_ERROR:
-            print(f"⚠ CUDA no disponible: {CUDA_ERROR}")
-        else:
-            print("⚠ CUDA no disponible: OpenCV no está instalado o no tiene soporte CUDA")
-
     # Handle serial port connection
     uart_connected = False
     if args.port_name:
@@ -1297,12 +1447,6 @@ if __name__ == '__main__':
                 print("✓ Lane detection controller initialized")
             else:
                 print("⚠ Lane detection controller not initialized - check camera connection and module availability")
-        elif args.sign_detection:
-            # Only initialize sign detection if lane detection not requested
-            pass
-        else:
-            print("Note: Controllers will be initialized when you connect from the dashboard or start them manually.")
-        
         if args.sign_detection:
             print("Initializing sign detection controller...")
             sign_detection_initialized = initialize_sign_detection_if_needed()
@@ -1310,9 +1454,6 @@ if __name__ == '__main__':
                 print("✓ Sign detection controller initialized")
             else:
                 print("⚠ Sign detection controller not initialized - check camera connection and module availability")
-        elif not args.lane_detection:
-            # Only show note if neither controller was requested
-            pass
     else:
         # No UART connected, controllers will be initialized when UART connects from dashboard
         if VideoStreamer is None:
@@ -1334,6 +1475,9 @@ if __name__ == '__main__':
         app.run(host=args.host, port=args.port, debug=args.debug, threaded=True)
     finally:
         # Cleanup on shutdown
+        stop_sign_detection_status_broadcast()
+        stop_autopilot_status_broadcast()
+        stop_serial_reader()
         if sign_detection_controller:
             sign_detection_controller.stop()
         if autopilot_controller:
