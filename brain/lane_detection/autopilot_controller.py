@@ -165,17 +165,27 @@ class AutoPilotController:
                 # Convert steering angle to servo angle
                 servo_angle = self.angle_converter.convert(steering_angle)
                 
-                # Send command to ESP32
-                success = self.command_sender.send_steering_command(servo_angle)
-                
-                # Update statistics
+                # Send command to ESP32 only if it changed (prevent UART spam)
+                should_send = False
                 with self.lock:
-                    self.last_steering_angle = steering_angle
-                    self.last_servo_angle = servo_angle
-                    if success:
-                        self.command_count += 1
-                    else:
-                        self.error_count += 1
+                    if self.last_servo_angle != servo_angle:
+                        should_send = True
+                
+                if should_send:
+                    success = self.command_sender.send_steering_command(servo_angle)
+                    
+                    # Update statistics
+                    with self.lock:
+                        self.last_steering_angle = steering_angle
+                        self.last_servo_angle = servo_angle
+                        if success:
+                            self.command_count += 1
+                        else:
+                            self.error_count += 1
+                else:
+                    # Just update steering angle for dashboard, even if we didn't send command
+                    with self.lock:
+                        self.last_steering_angle = steering_angle
                 
                 # Control loop rate (~30 FPS)
                 time.sleep(0.033)

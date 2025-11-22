@@ -21,16 +21,18 @@ from sign_vision.sign_detector import SignDetector
 class SignController:
     """Orchestrates sign detection and command sending."""
     
-    def __init__(self, sign_detector: SignDetector, command_sender: CommandSender):
+    def __init__(self, sign_detector: SignDetector, command_sender: CommandSender, event_callback=None):
         """
         Initialize the sign controller.
         
         Args:
             sign_detector: SignDetector instance for detecting signs
             command_sender: CommandSender instance for sending commands
+            event_callback: Optional callback function(event_type, data) for reporting events
         """
         self.sign_detector = sign_detector
         self.command_sender = command_sender
+        self.event_callback = event_callback
         
         self.is_running = False
         self.thread = None
@@ -40,6 +42,8 @@ class SignController:
         self.last_command = None
         self.command_count = 0
         self.error_count = 0
+        self.current_speed = 0
+        self.last_speed_before_stop = 0  # Right now, default speed from esp32 at boot is zero, so if not last speed before stop is set, it will be zero
         
         # Cooldowns (to prevent spamming commands)
         self.last_stop_time = 0
@@ -93,19 +97,101 @@ class SignController:
                     label = detection['class'].lower()
                     confidence = detection['confidence']
                     
-                    # Example Logic - CUSTOMIZE BASED ON YOUR MODEL LABELS
-                    if 'stop' in label and confidence > 0.7:
+                    # Use dynamic confidence threshold from detector
+                    threshold = self.sign_detector.confidence_threshold
+                    
+                    # --- LOGIC BASED ON PROVIDED CLASSES ---
+                    
+                    # Priority 1: STOP Signals (stop sign, red light, no entry)
+                    if label in ['stop', 'lightred', 'no_entry'] and confidence >= threshold:
                         current_time = time.time()
                         if current_time - self.last_stop_time > self.stop_cooldown:
-                            print(f"[SignController] STOP SIGN DETECTED! ({confidence:.2f})")
+                            msg = f"{label.upper()} DETECTED! ({confidence:.2f})"
+                            print(f"[SignController] {msg}")
+                            
+                            # Report event
+                            if self.event_callback:
+                                self.event_callback("sign_detected", {
+                                    "label": label, 
+                                    "confidence": float(confidence), 
+                                    "message": msg
+                                })
+                            
+                            # Save current speed before stopping
+                            with self.lock:
+                                if self.current_speed > 0:
+                                    self.last_speed_before_stop = self.current_speed
+                            
                             self.command_sender.send_speed_command(0)
                             self.last_stop_time = current_time
                             action_taken = True
                             break # Priority action taken
-                            
-                    elif '50' in label: # Speed Limit 50
-                        # self.command_sender.send_speed_command(50)
+                    
+                    # Priority 2: Caution / Slow Down (crosswalk, roundabout, yellow light)
+                    elif label in ['crosswalk', 'roundabout', 'lightyellow'] and confidence >= threshold:
+                        msg = f"{label.upper()} DETECTED! ({confidence:.2f})"
+                        print(f"[SignController] {msg}")
+                        
+                        # Report event
+                        if self.event_callback:
+                            self.event_callback("sign_detected", {
+                                "label": label, 
+                                "confidence": float(confidence), 
+                                "message": msg
+                            })
+                        
+                        # Placeholder: Implement slow down logic here
+                        # self.command_sender.send_speed_command(10) 
                         pass
+                        
+                    # Priority 3: Go / Resume (green light, priority)
+                    elif label in ['lightgreen', 'priority', 'highway_entry'] and confidence >= threshold:
+                        # Only resume if we are stopped (or very slow) AND we have a previous speed
+                        if self.current_speed == 0:
+                            with self.lock:
+                                target_speed = self.last_speed_before_stop
+                            
+                            # Only resume if we have a valid previous speed
+                            if target_speed > 0:
+                                msg = f"{label.upper()} DETECTED! Resuming to {target_speed} ({confidence:.2f})"
+                                print(f"[SignController] {msg}")
+                                
+                                # Report event
+                                if self.event_callback:
+                                    self.event_callback("sign_detected", {
+                                        "label": label, 
+                                        "confidence": float(confidence), 
+                                        "message": msg
+                                    })
+                                
+                                # Soft Resume: Start from (Target - 10) and ramp up
+                                start_speed = max(0, target_speed - 10)
+                                
+                                # Ramp up logic
+                                current = start_speed
+                                while current <= target_speed:
+                                    self.command_sender.send_speed_command(current)
+                                    current += 1
+                                    time.sleep(0.05) # 50ms delay between steps
+                                
+                                action_taken = True
+                                # We assume command works and update locally to prevent spamming (actual update comes from serial event)
+                                with self.lock:
+                                    self.current_speed = target_speed
+                            else:
+                                # No previous speed recorded, don't resume
+                                msg = f"{label.upper()} DETECTED! No previous speed to resume to ({confidence:.2f})"
+                                print(f"[SignController] {msg}")
+                                
+                                # Report event
+                                if self.event_callback:
+                                    self.event_callback("sign_detected", {
+                                        "label": label, 
+                                        "confidence": float(confidence), 
+                                        "message": msg
+                                    })
+                        
+                    # Other classes: parking, onewayroad, trafficlight, highway_exit
                         
                 if action_taken:
                     with self.lock:
@@ -127,6 +213,19 @@ class SignController:
                 'is_running': self.is_running,
                 'command_count': self.command_count,
                 'error_count': self.error_count,
-                'last_command': self.last_command
+                'last_command': self.last_command,
+                'current_speed': self.current_speed
             }
+
+    def update_current_speed(self, speed: int):
+        """
+        Update the current speed tracking from external events (e.g. dashboard, serial).
+        This allows the controller to know if the car is stopped or moving,
+        and what speed to resume to.
+        """
+        with self.lock:
+            self.current_speed = speed
+            # If we are moving (speed > 0), remember it for resume
+            if speed > 0:
+                self.last_speed_before_stop = speed
 

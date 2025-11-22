@@ -939,8 +939,8 @@
                     margin-bottom: 4px;
                   "
                 >
-                  <span style="color: #fff">Frames:</span>
-                  <span id="sign-frame-count" style="color: #fff">0</span>
+                  <span style="color: #fff">Device:</span>
+                  <span id="sign-device" style="color: #fff">--</span>
                 </div>
                 <div
                   style="
@@ -949,8 +949,8 @@
                     margin-bottom: 8px;
                   "
                 >
-                  <span style="color: #fff">Device:</span>
-                  <span id="sign-device" style="color: #fff">--</span>
+                  <span style="color: #fff">Commands:</span>
+                  <span id="sign-command-count" style="color: #fff">0</span>
                 </div>
 
                 <div
@@ -1075,6 +1075,8 @@
             // Dispatch based on event type
             if (data.type === 'serial') {
               handleSerialMessage(data);
+            } else if (data.type === 'server_log') {
+              log(data.message, "info");
             } else if (data.type === 'autopilot_status') {
               updateAutopilotStatusUI(data);
             } else if (data.type === 'sign_detection_status') {
@@ -2035,16 +2037,16 @@
           detectionCountEl.textContent = status.current_detections || 0;
         }
 
-        // Update frame count
-        const frameCountEl = document.getElementById("sign-frame-count");
-        if (frameCountEl) {
-          frameCountEl.textContent = status.frame_count || 0;
-        }
-
         // Update device
         const deviceEl = document.getElementById("sign-device");
         if (deviceEl) {
           deviceEl.textContent = status.device || "--";
+        }
+
+        // Update command count
+        const commandCountEl = document.getElementById("sign-command-count");
+        if (commandCountEl) {
+          commandCountEl.textContent = status.command_count !== undefined ? status.command_count : 0;
         }
 
         // Update confidence threshold display
