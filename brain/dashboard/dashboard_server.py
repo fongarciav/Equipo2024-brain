@@ -617,25 +617,17 @@ def initialize_autopilot_if_needed():
     # Initialize command sender
     if command_sender is None:
         command_sender = CommandSender(write_uart_command)
-        print("Command sender initialized", file=sys.stderr)
     
     # Initialize video streamer if not already done
     if video_streamer is None and VideoStreamer is not None:
-        print("Initializing video streamer...", file=sys.stderr)
         video_streamer = VideoStreamer()
         if not video_streamer.initialize():
-            print("Video streamer initialization failed", file=sys.stderr)
-            video_streamer = None
             return False
-        print("Video streamer initialized", file=sys.stderr)
     
     # Initialize autopilot controller
     if video_streamer is not None:
         if MarcosLaneDetector_Advanced is None:
-            print("Lane detector module not available", file=sys.stderr)
             return False
-        
-        print("Initializing autopilot controller...", file=sys.stderr)
         
         # Instantiate lane detector strategy
         lane_detector = MarcosLaneDetector_Advanced(threshold=180)
@@ -651,10 +643,8 @@ def initialize_autopilot_if_needed():
             max_angle=30.0,
             deadband=6.0
         )
-        print("Autopilot controller initialized (not started - use /autopilot/start)", file=sys.stderr)
         return True
     else:
-        print("Autopilot controller not initialized - video streamer not available", file=sys.stderr)
         return False
 
 def on_sign_controller_event(event_type, data):
@@ -700,22 +690,16 @@ def initialize_sign_detection_if_needed():
     # Initialize command sender if needed
     if command_sender is None:
         command_sender = CommandSender(write_uart_command)
-        print("Command sender initialized", file=sys.stderr)
     
     # Initialize video streamer if not already done
     if video_streamer is None and VideoStreamer is not None:
-        print("Initializing video streamer...", file=sys.stderr)
         video_streamer = VideoStreamer()
         if not video_streamer.initialize():
-            print("Video streamer initialization failed", file=sys.stderr)
             video_streamer = None
             return False
-        print("Video streamer initialized", file=sys.stderr)
     
     # Create sign detection controller if video_streamer is available
     if video_streamer is not None:
-        print("Initializing sign detection controller...", file=sys.stderr)
-        
         # Initialize the detector (sensor)
         if sign_detector is None:
             sign_detector = SignDetector(
@@ -723,7 +707,6 @@ def initialize_sign_detection_if_needed():
                 confidence_threshold=0.6
             )
             if not sign_detector.initialize():
-                print("Sign detector initialization failed", file=sys.stderr)
                 sign_detector = None
                 return False
                 
@@ -734,10 +717,8 @@ def initialize_sign_detection_if_needed():
             event_callback=on_sign_controller_event
         )
         
-        print("Sign detection controller initialized (not started - use /sign_detection/start)", file=sys.stderr)
         return True
     else:
-        print("Sign detection controller not initialized - video streamer not available", file=sys.stderr)
         return False
 
 @app.route('/uart/connect', methods=['POST'])
@@ -1413,82 +1394,108 @@ if __name__ == '__main__':
 
     local_ip = get_local_ip()
 
-    print("=" * 60)
-    print("ESP32 Car Control Dashboard Server")
-    print("=" * 60)
+    print("=" * 70)
+    print(" " * 15 + "ESP32 Car Control Dashboard Server")
+    print("=" * 70)
+    print()
+    
     # Handle serial port connection
     uart_connected = False
+    print("📡 Serial Port Connection")
+    print("-" * 70)
     if args.port_name:
         # Connect to specific port
         if SERIAL_AVAILABLE:
             try:
+                print(f"   Connecting to {args.port_name}...", end=" ")
                 serial_conn = open_serial(args.port_name, UART_BAUD_RATE)
                 time.sleep(0.1)
                 start_serial_reader()
-                print(f"Connected to serial port: {args.port_name}")
+                print(f"✓ Connected at {UART_BAUD_RATE} baud")
                 uart_connected = True
             except Exception as e:
-                print(f"Warning: Failed to connect to {args.port_name}: {e}")
-                print("You can connect manually from the dashboard.")
+                print(f"✗ Failed: {e}")
+                print("   You can connect manually from the dashboard.")
         else:
-            print("Warning: pyserial not installed. Cannot connect to serial port.")
+            print("   ✗ pyserial not installed. Cannot connect to serial port.")
     elif args.auto_connect:
         # Interactive port selection
         if SERIAL_AVAILABLE:
             selected_port = select_port_interactive()
             if selected_port:
                 try:
+                    print(f"   Connecting to {selected_port}...", end=" ")
                     serial_conn = open_serial(selected_port, UART_BAUD_RATE)
                     time.sleep(0.1)
                     start_serial_reader()
-                    print(f"Connected to serial port: {selected_port}")
+                    print(f"✓ Connected at {UART_BAUD_RATE} baud")
                     uart_connected = True
                 except Exception as e:
-                    print(
-                        f"Warning: Failed to connect to {selected_port}: {e}")
-                    print("You can connect manually from the dashboard.")
+                    print(f"✗ Failed: {e}")
+                    print("   You can connect manually from the dashboard.")
             else:
-                print("No port selected. You can connect manually from the dashboard.")
+                print("   ⚠ No port selected. You can connect manually from the dashboard.")
         else:
-            print("Warning: pyserial not installed. Cannot connect to serial port.")
+            print("   ✗ pyserial not installed. Cannot connect to serial port.")
     else:
-        print("Serial port not connected. Use the dashboard to connect manually.")
-        print("Tip: Use --auto-connect to select a port on startup, or --port-name to specify one.")
+        print("   ⚠ Not connected. Use the dashboard to connect manually.")
+        print("   Tip: Use --auto-connect to select a port on startup, or --port-name to specify one.")
+    print()
     
     # Initialize controllers if requested and UART is connected
     if uart_connected:
+        print("🚗 Controller Initialization")
+        print("-" * 70)
+        
         if args.lane_detection:
-            print("Initializing lane detection (autopilot) controller...")
+            print("   [1/2] Lane Detection (Autopilot)")
             initialized = initialize_autopilot_if_needed()
-            success = autopilot_controller.start()
-            if initialized and success:
-                print("✓ Lane detection controller initialized")
+            if initialized:
+                success = autopilot_controller.start()
+                if success:
+                    print("      ✓ Autopilot controller initialized and started")
+                else:
+                    print("      ✗ Failed to start autopilot controller")
             else:
-                print("⚠ Lane detection controller not initialized - check camera connection and module availability")
+                print("      ✗ Autopilot initialization failed - check camera and modules")
+        
         if args.sign_detection:
-            print("Initializing sign detection controller...")
+            print("   [2/2] Sign Detection")
             initialized = initialize_sign_detection_if_needed()
-            detector_success = sign_detector.start()
-            controller_success = sign_detection_controller.start()
-            success = detector_success and controller_success
-            if initialized and success:
-                print("✓ Sign detection controller initialized")
+            if initialized:
+                detector_success = sign_detector.start()
+                controller_success = sign_detection_controller.start()
+                if detector_success and controller_success:
+                    print("      ✓ Sign detection controller initialized and started")
+                else:
+                    print("      ✗ Failed to start sign detection (detector: {}, controller: {})".format(
+                        "✓" if detector_success else "✗",
+                        "✓" if controller_success else "✗"
+                    ))
             else:
-                print("⚠ Sign detection controller not initialized - check camera connection and module availability")
+                print("      ✗ Sign detection initialization failed - check camera and modules")
+        
+        if args.lane_detection or args.sign_detection:
+            print()
     else:
         # No UART connected, controllers will be initialized when UART connects from dashboard
+        print("🚗 Controller Initialization")
+        print("-" * 70)
         if VideoStreamer is None:
-            print("⚠ Video streamer not available - autopilot modules not found")
+            print("   ⚠ Video streamer not available - autopilot modules not found")
         else:
-            print("Note: Video streamer will be initialized when controllers are started.")
+            print("   ℹ Controllers will be initialized when started from the dashboard.")
+        print()
 
-    print("=" * 60)
-    print(f"Dashboard available at:")
-    print(f"  Local:   http://127.0.0.1:{args.port}")
-    print(f"  Network: http://{local_ip}:{args.port}")
-    print("=" * 60)
-    print("Press Ctrl+C to stop the server")
-    print("=" * 60)
+    print("=" * 70)
+    print("🌐 Dashboard Server")
+    print("-" * 70)
+    print(f"   Local:   http://127.0.0.1:{args.port}")
+    print(f"   Network: http://{local_ip}:{args.port}")
+    print()
+    print("   Press Ctrl+C to stop the server")
+    print("=" * 70)
+    print()
 
     try:
         # Use threaded=True to handle multiple requests concurrently
