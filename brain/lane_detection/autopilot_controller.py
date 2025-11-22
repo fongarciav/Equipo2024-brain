@@ -80,6 +80,7 @@ class AutoPilotController:
                 return False
             
             self.is_running = True
+            self.last_debug_images = None  # Clear stale images
             self.thread = threading.Thread(target=self._control_loop, daemon=True)
             self.thread.start()
             print("[AutoPilotController] Started")

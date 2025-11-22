@@ -132,6 +132,7 @@ class SignDetector:
                     return False
             
             self.is_running = True
+            self.last_detection_image = None  # Clear stale image
             self.thread = threading.Thread(target=self._detection_loop, daemon=True)
             self.thread.start()
             print("[SignDetector] Started")

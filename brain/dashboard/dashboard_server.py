@@ -511,8 +511,16 @@ def sign_detection_status_broadcast_worker():
             status_data = None
             if sign_detection_controller is not None:
                 status = sign_detection_controller.get_status()
-                # Get detections from the DETECTOR, not the controller (controller doesn't expose them directly)
-                detections = sign_detector.get_detections() if sign_detector else []
+                
+                # Get extra status from DETECTOR (frames, device, etc.)
+                detector_status = {}
+                detections = []
+                if sign_detector:
+                    detector_status = sign_detector.get_status()
+                    detections = sign_detector.get_detections()
+                
+                # Merge detector status into main status object so frontend can see frame_count, device, etc.
+                status.update(detector_status)
                 
                 status_data = {
                     'type': 'sign_detection_status',
@@ -864,15 +872,14 @@ def get_status():
         })
 
 
-def generate_debug_mjpeg(image_key=None, controller=None, get_image_func=None, 
+def generate_debug_mjpeg(image_key=None, mode='autopilot', 
                          waiting_text='Waiting...', not_running_text='Not running'):
     """
     Generate MJPEG stream from debug images.
     
     Args:
         image_key: Key for autopilot debug images (e.g., 'bird_view_lines', 'sliding_windows', 'final_result')
-        controller: Controller instance (autopilot_controller or sign_detection_controller)
-        get_image_func: Function to get image from controller (takes controller and optional image_key)
+        mode: 'autopilot' or 'sign_detector'
         waiting_text: Text to show when waiting
         not_running_text: Text to show when controller is not running
     """
@@ -880,34 +887,47 @@ def generate_debug_mjpeg(image_key=None, controller=None, get_image_func=None,
     import time
     import numpy as np
     
-    global autopilot_controller, sign_detection_controller, video_streamer
-    
-    # Default to autopilot if not specified and no image func provided
-    if controller is None and get_image_func is None:
-        controller = autopilot_controller
-    
-    # Default get_image function for autopilot
-    if get_image_func is None:
-        def default_get_image(ctrl, key):
-            if ctrl is None:
-                return None
-            return ctrl.get_debug_image(key)
-        get_image_func = default_get_image
+    # Declare globals explicitly
+    global autopilot_controller, sign_detector
     
     # Create a placeholder black image
-    placeholder = np.zeros((480, 640, 3), dtype=np.uint8)
-    cv2.putText(placeholder, waiting_text, (50, 240), 
-                cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+    placeholder_base = np.zeros((480, 640, 3), dtype=np.uint8)
     
     while True:
-        # Get image from controller (or global via lambda)
-        # We pass 'controller' here, but the lambda might ignore it and use a global instead
+        debug_image = None
+        is_running = False
+        
         try:
-            debug_image = get_image_func(controller, image_key)
+            if mode == 'autopilot':
+                if autopilot_controller is not None:
+                    # Check status
+                    try:
+                        status = autopilot_controller.get_status()
+                        is_running = status.get('is_running', False)
+                    except:
+                        is_running = False
+                        
+                    # Get image only if running
+                    if is_running:
+                        debug_image = autopilot_controller.get_debug_image(image_key)
+            
+            elif mode == 'sign_detector':
+                if sign_detector is not None:
+                    # Check status
+                    try:
+                        status = sign_detector.get_status()
+                        is_running = status.get('is_running', False)
+                    except:
+                        is_running = False
+                        
+                    # Get image only if running
+                    if is_running:
+                        debug_image = sign_detector.get_detection_image()
+                    
         except Exception as e:
+            # print(f"[Debug Stream] Error fetching data: {e}")
             debug_image = None
-            # print(f"[Debug Stream] Error getting image: {e}")
-
+            
         if debug_image is not None:
             # Make sure image is valid (not empty)
             try:
@@ -921,57 +941,25 @@ def generate_debug_mjpeg(image_key=None, controller=None, get_image_func=None,
                         yield (b'--frame\r\n'
                                b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
                     else:
-                        # Encoding failed, send placeholder
-                        ret, buffer = cv2.imencode('.jpg', placeholder, [cv2.IMWRITE_JPEG_QUALITY, 85])
-                        if ret:
-                            yield (b'--frame\r\n'
-                                   b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
+                        # Encoding failed
+                        debug_image = None
                 else:
-                    # Empty or invalid image, send placeholder
-                    ret, buffer = cv2.imencode('.jpg', placeholder, [cv2.IMWRITE_JPEG_QUALITY, 85])
-                    if ret:
-                        yield (b'--frame\r\n'
-                               b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
+                    # Invalid image
+                    debug_image = None
             except Exception as e:
-                # Error processing image, send placeholder
                 # print(f"[Debug Stream] Error processing image: {e}")
-                ret, buffer = cv2.imencode('.jpg', placeholder, [cv2.IMWRITE_JPEG_QUALITY, 85])
-                if ret:
-                    yield (b'--frame\r\n'
-                           b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
-        else:
-            # No debug image available - check controller/detector status to show appropriate message
-            show_not_running = False
-            
-            # Check controller status if available
-            if controller is not None:
-                try:
-                    status = controller.get_status()
-                    if not status.get('is_running', False):
-                        show_not_running = True
-                except:
-                    # Controller doesn't have get_status or error occurred
-                    pass
-            else:
-                # For sign detector case, check global sign_detector
-                # (This happens when controller=None but get_image_func uses global sign_detector)
-                global sign_detector
-                if sign_detector is not None:
-                    try:
-                        status = sign_detector.get_status()
-                        if not status.get('is_running', False):
-                            show_not_running = True
-                    except:
-                        pass
-            
+                debug_image = None
+        
+        # If we have no image (either fetch failed, or processing failed, or just not available)
+        if debug_image is None:
             # Create appropriate placeholder text
-            placeholder_text = not_running_text if show_not_running else waiting_text
-            placeholder_img = np.zeros((480, 640, 3), dtype=np.uint8)
-            cv2.putText(placeholder_img, placeholder_text, (50, 240), 
+            placeholder_text = not_running_text if not is_running else waiting_text
+            
+            placeholder = placeholder_base.copy()
+            cv2.putText(placeholder, placeholder_text, (50, 240), 
                         cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
             
-            # Always show placeholder, never fallback to raw camera feed
-            ret, buffer = cv2.imencode('.jpg', placeholder_img, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            ret, buffer = cv2.imencode('.jpg', placeholder, [cv2.IMWRITE_JPEG_QUALITY, 85])
             if ret:
                 yield (b'--frame\r\n'
                        b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
@@ -983,7 +971,7 @@ def generate_debug_mjpeg(image_key=None, controller=None, get_image_func=None,
 def debug_bird_view_lines():
     """MJPEG stream for bird view with lines."""
     return Response(
-        stream_with_context(generate_debug_mjpeg(controller=autopilot_controller, image_key='bird_view_lines', waiting_text='Waiting for lane detection...', not_running_text='Lane detection not running')),
+        stream_with_context(generate_debug_mjpeg(mode='autopilot', image_key='bird_view_lines', waiting_text='Waiting for lane detection...', not_running_text='Lane detection not running')),
         mimetype='multipart/x-mixed-replace; boundary=frame'
     )
 
@@ -992,7 +980,7 @@ def debug_bird_view_lines():
 def debug_sliding_windows():
     """MJPEG stream for sliding windows."""
     return Response(
-        stream_with_context(generate_debug_mjpeg(controller=autopilot_controller, image_key='sliding_windows', waiting_text='Waiting for lane detection...', not_running_text='Lane detection not running')),
+        stream_with_context(generate_debug_mjpeg(mode='autopilot', image_key='sliding_windows', waiting_text='Waiting for lane detection...', not_running_text='Lane detection not running')),
         mimetype='multipart/x-mixed-replace; boundary=frame'
     )
 
@@ -1001,7 +989,7 @@ def debug_sliding_windows():
 def debug_final_result():
     """MJPEG stream for final result."""
     return Response(
-        stream_with_context(generate_debug_mjpeg(controller=autopilot_controller, image_key='final_result', waiting_text='Waiting for lane detection...', not_running_text='Lane detection not running')),
+        stream_with_context(generate_debug_mjpeg(mode='autopilot', image_key='final_result', waiting_text='Waiting for lane detection...', not_running_text='Lane detection not running')),
         mimetype='multipart/x-mixed-replace; boundary=frame'
     )
 
@@ -1076,6 +1064,19 @@ def autopilot_start():
     
     success = autopilot_controller.start()
     if success:
+        # Restart sign detector if running to prevent stream freezing
+        # This handles the case where starting Autopilot might interfere with an existing SignDetector loop
+        if sign_detector is not None:
+            try:
+                status = sign_detector.get_status()
+                if status.get('is_running', False):
+                    print("Restarting SignDetector to prevent freeze...", file=sys.stderr)
+                    sign_detector.stop()
+                    time.sleep(0.1) # Brief pause to allow thread cleanup
+                    sign_detector.start()
+            except Exception as e:
+                print(f"Error restarting SignDetector: {e}", file=sys.stderr)
+
         return jsonify({'status': 'ok', 'message': 'Auto-pilot started'})
     else:
         return jsonify({'error': 'Auto-pilot already running'}), 400
@@ -1104,6 +1105,9 @@ def autopilot_stop():
                 # Also set autopilot_controller to None to force re-initialization
                 # This ensures video_streamer will be recreated when starting again
                 autopilot_controller = None
+                # IMPORTANT: Also clear sign detectors because they hold a reference to the now-stopped video_streamer
+                sign_detection_controller = None
+                sign_detector = None
         
         return jsonify({'status': 'ok', 'message': 'Auto-pilot stopped'})
     else:
@@ -1234,6 +1238,8 @@ def sign_detection_stop():
                 # This ensures video_streamer will be recreated when starting again
                 sign_detection_controller = None
                 sign_detector = None
+                # IMPORTANT: Also clear autopilot_controller because it holds a reference to the now-stopped video_streamer
+                autopilot_controller = None
         
         return jsonify({'status': 'ok', 'message': 'Sign detection stopped'})
     else:
@@ -1268,22 +1274,9 @@ def sign_detection_update_confidence():
 @app.route('/debug/sign_detections')
 def debug_sign_detections():
     """MJPEG stream for sign detections."""
-    # Use the DETECTOR to get the image, not the controller
-    # Use a lambda that captures the CURRENT global sign_detector variable
-    # This ensures that if sign_detector is initialized LATER, the stream will pick it up
-    
-    def get_detector_image(controller, key):
-        # Ignore the 'controller' argument passed by generate_debug_mjpeg (which might be None)
-        # Use the global sign_detector instead
-        global sign_detector
-        if sign_detector:
-            return sign_detector.get_detection_image()
-        return None
-
     return Response(
         stream_with_context(generate_debug_mjpeg(
-            controller=None, # Pass None, we will use the global in the lambda
-            get_image_func=get_detector_image,
+            mode='sign_detector',
             waiting_text='Waiting for sign detection...',
             not_running_text='Sign detection not running'
         )),
