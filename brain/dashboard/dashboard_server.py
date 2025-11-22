@@ -372,13 +372,6 @@ def parse_system_events(line: str):
         mode = line.replace('EVENT:MODE_CHANGED:', '').strip()
         with system_state_lock:
             system_state['mode'] = mode
-    elif line.startswith('EVENT:CMD_EXECUTED:SET_SPEED:'):
-        try:
-            speed = int(line.replace('EVENT:CMD_EXECUTED:SET_SPEED:', '').strip())
-            with system_state_lock:
-                system_state['speed'] = speed
-        except:
-            pass
 
 
 def serial_reader_worker():
@@ -393,15 +386,6 @@ def serial_reader_worker():
                     if line:
                         # Parse system events for state tracking
                         parse_system_events(line)
-                        
-                        # Track speed updates for SignController logic (resume speed feature)
-                        if line.startswith("EVENT:CMD_EXECUTED:SET_SPEED:") and sign_detection_controller:
-                            try:
-                                speed_str = line.replace("EVENT:CMD_EXECUTED:SET_SPEED:", "").strip()
-                                speed = int(speed_str)
-                                sign_detection_controller.update_current_speed(speed)
-                            except ValueError:
-                                pass
 
                         # Broadcast message to all connected SSE clients
                         message_data = {
@@ -749,11 +733,6 @@ def initialize_sign_detection_if_needed():
             command_sender=command_sender,
             event_callback=on_sign_controller_event
         )
-        
-        # Initialize with current system speed if available
-        with system_state_lock:
-            if 'speed' in system_state:
-                sign_detection_controller.update_current_speed(system_state['speed'])
         
         print("Sign detection controller initialized (not started - use /sign_detection/start)", file=sys.stderr)
         return True
@@ -1480,15 +1459,19 @@ if __name__ == '__main__':
     if uart_connected:
         if args.lane_detection:
             print("Initializing lane detection (autopilot) controller...")
-            autopilot_initialized = initialize_autopilot_if_needed()
-            if autopilot_initialized:
+            initialized = initialize_autopilot_if_needed()
+            success = autopilot_controller.start()
+            if initialized and success:
                 print("✓ Lane detection controller initialized")
             else:
                 print("⚠ Lane detection controller not initialized - check camera connection and module availability")
         if args.sign_detection:
             print("Initializing sign detection controller...")
-            sign_detection_initialized = initialize_sign_detection_if_needed()
-            if sign_detection_initialized:
+            initialized = initialize_sign_detection_if_needed()
+            detector_success = sign_detector.start()
+            controller_success = sign_detection_controller.start()
+            success = detector_success and controller_success
+            if initialized and success:
                 print("✓ Sign detection controller initialized")
             else:
                 print("⚠ Sign detection controller not initialized - check camera connection and module availability")
