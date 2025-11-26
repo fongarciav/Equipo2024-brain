@@ -11,7 +11,7 @@ SERVO_RIGHT = 50   # Right turn (lower value)
 SERVO_LEFT = 160   # Left turn (higher value)
 
 # Steering angle constants
-STRAIGHT_THRESHOLD = 6.0  # If angle is within ±6 degrees, go straight
+STRAIGHT_THRESHOLD = 2.0  # If angle is within ±2 degrees, go straight
 ANGLE_MIN = -30  # Minimum steering angle (degrees)
 ANGLE_MAX = 30   # Maximum steering angle (degrees)
 
@@ -30,12 +30,15 @@ class AngleConverter:
         # Negative angle (left turn) → higher servo value (160)
         self.conversion_factor = (SERVO_CENTER - SERVO_RIGHT) / ANGLE_MAX
     
-    def convert(self, steering_angle: float) -> int:
+    def convert(self, steering_angle: float, inverted: bool = False) -> int:
         """
         Convert steering angle to ESP32 servo angle.
         
         Args:
             steering_angle: Steering angle from curvature (-30 to +30 degrees, or 0 for straight)
+            inverted: If True, invert the steering direction (default: False)
+                     - False (default): Positive angle = right turn, Negative = left turn
+                     - True: Positive angle = left turn, Negative = right turn
             
         Returns:
             Servo angle (50-160, where 105 is center)
@@ -43,6 +46,10 @@ class AngleConverter:
         # Special case: angle close to 0 means "go straight" → servo center
         if abs(steering_angle) <= STRAIGHT_THRESHOLD:
             return SERVO_CENTER
+        
+        # Apply inversion if requested
+        if inverted:
+            steering_angle = -steering_angle
         
         # Convert steering angle to servo angle
         # NOTE: Servo is inverted: 50 = right, 160 = left
