@@ -374,7 +374,8 @@ class MarcosLaneDetector_Advanced(LaneDetector):
                 cv2.line(msk, (rx[i], ry[i]), (rx[i+1], ry[i+1]), (0, 255, 255), 1)  # Cyan trajectory
 
         # Add statistics overlay
-        stats_y = 30
+        # Ajustado Y +40px para no solapar con el indicador de Pausa/Frame
+        stats_y = 70
         cv2.putText(msk, f'Left points: {len(lx)}', (10, stats_y), 
                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
         stats_y += 30
@@ -686,7 +687,7 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         cv2.circle(bird_view_with_lines, (320, 480), 10, (0, 255, 0), -1)  # Círculo verde para el auto
         
         # Mostrar el MODO DE DETECCIÓN en la pantalla
-        cv2.putText(bird_view_with_lines, f"MODE: {detection_mode}", (10, 220), 
+        cv2.putText(bird_view_with_lines, f"MODE: {detection_mode}", (10, 260), 
                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
         
         # =========================================================
@@ -764,15 +765,16 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         result = cv2.addWeighted(original_frame, 1, original_perpective_lane_image, 0.5, 0)
         
         # Agregar texto a la vista aérea con líneas
-        cv2.putText(bird_view_with_lines, f'Result: {angle_desviacion_deg:.2f} deg', (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
-        cv2.putText(bird_view_with_lines, f'error_angle_deg: {error_angle_deg:.2f} deg', (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-        cv2.putText(bird_view_with_lines, f'curvature_angle_deg: {curvature_angle_deg:.2f} deg', (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 255), 2)
-        cv2.putText(bird_view_with_lines, f'Lane Center: {lane_center:.1f}', (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
-        cv2.putText(bird_view_with_lines, f'Car Position: {car_position_x}', (10, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        # Ajustado Y +40px para no solapar con el indicador de Pausa/Frame
+        cv2.putText(bird_view_with_lines, f'Result: {angle_desviacion_deg:.2f} deg', (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
+        cv2.putText(bird_view_with_lines, f'error_angle_deg: {error_angle_deg:.2f} deg', (10, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+        cv2.putText(bird_view_with_lines, f'curvature_angle_deg: {curvature_angle_deg:.2f} deg', (10, 130), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 255), 2)
+        cv2.putText(bird_view_with_lines, f'Lane Center: {lane_center:.1f}', (10, 160), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
+        cv2.putText(bird_view_with_lines, f'Car Position: {car_position_x}', (10, 190), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
         
         # Agregar leyenda visual en el lado derecho
         legend_x = 420
-        legend_y_start = 30
+        legend_y_start = 70  # Ajustado +40px para no solapar con el indicador de Pausa/Frame
         legend_spacing = 30
         font_scale = 0.5
         font_thickness = 1
