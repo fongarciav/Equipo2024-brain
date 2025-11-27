@@ -54,6 +54,14 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         self.SLIDING_WINDOW_WIDTH = 50  # Ancho a cada lado del centro de la ventana
         self.SLIDING_WINDOW_EXPANDED_WIDTH = 150  # Ancho expandido para búsqueda ampliada
         self.ENABLE_EXPANDED_SEARCH = False  # Habilitar/deshabilitar búsqueda expandida
+        
+        # --- Parámetros de Control ---
+        # La Ganancia o peso que le das a la anticipación.
+        # Función: Es una perilla de ajuste (tuning).
+        # Valor alto (ej: 1.0): El auto "corta" las curvas agresivamente.
+        # Valor bajo (ej: 0.2): El auto entra tarde a las curvas y depende más de corregir cuando ya se salió un poco.
+        # TODO: Ajustar este valor desde el web server.
+        self.curvature_factor = 0.5  # Factor para combinar curvatura (ajustable desde web server)
 
         # --- Puntos de perspectiva (de tu nuevo script) ---
         # Puntos Origen (SRC) - ROI
@@ -624,8 +632,7 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         
         # Combinar el error angular con el ángulo de curvatura
         # El error angular corrige la posición, el ángulo de curvatura anticipa la dirección
-        curvature_factor = 0.5  # Factor para combinar curvatura (ajustable)
-        angle_desviacion_deg = error_angle_deg + curvature_factor * curvature_angle_deg
+        angle_desviacion_deg = error_angle_deg + self.curvature_factor * curvature_angle_deg
         
         # Limitar el ángulo de desviación al rango válido
         angle_desviacion_deg = max(min(angle_desviacion_deg, 30), -30)
@@ -679,7 +686,7 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         cv2.circle(bird_view_with_lines, (320, 480), 10, (0, 255, 0), -1)  # Círculo verde para el auto
         
         # Mostrar el MODO DE DETECCIÓN en la pantalla
-        cv2.putText(bird_view_with_lines, f"MODE: {detection_mode}", (10, 200), 
+        cv2.putText(bird_view_with_lines, f"MODE: {detection_mode}", (10, 220), 
                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
         
         # =========================================================
@@ -701,29 +708,47 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         cv2.line(bird_view_with_lines, (x_current_int, y_car), (x_ahead_int, y_ahead_int), (255, 128, 0), 3)  # Línea azul claro
         
         # 4. Dibujar línea de error posicional (desde car_position_x hasta lane_center)
-        cv2.line(bird_view_with_lines, (car_position_x, y_car), (lane_center_int, y_car), (0, 0, 255), 2)  # Línea roja horizontal
+        cv2.line(bird_view_with_lines, (car_position_x, y_car), (lane_center_int, y_car), (0, 0, 255), 10)  # Línea roja horizontal
         
         # 5. Agregar flechas para indicar dirección
-        # Flecha en el punto de lookahead mostrando la dirección del carril
-        arrow_length = 30
-        arrow_angle = angle_rad  # Usar el ángulo calculado
-        arrow_end_x = int(x_ahead_int + arrow_length * math.sin(arrow_angle))
-        arrow_end_y = int(y_ahead_int - arrow_length * math.cos(arrow_angle))
-        cv2.arrowedLine(bird_view_with_lines, (x_ahead_int, y_ahead_int), (arrow_end_x, arrow_end_y), (255, 0, 255), 2, tipLength=0.3)
         
-        # 6. Visualizar el ángulo de desviación (angle_desviacion_deg) desde la posición del auto
+        # A. Flecha de CURVATURA (Anticipación) - Magenta
+        # Muestra hacia dónde va el carril en el futuro
+        arrow_length = 40
+        # Nota: curvature_angle_deg es en grados, angle_rad es en radianes
+        # Necesitamos convertir curvature_angle_deg a radianes para el cálculo de coordenadas
+        curv_rad = math.radians(curvature_angle_deg)
+        curv_end_x = int(x_ahead_int + arrow_length * math.sin(curv_rad))
+        curv_end_y = int(y_ahead_int - arrow_length * math.cos(curv_rad))
+        cv2.arrowedLine(bird_view_with_lines, (x_ahead_int, y_ahead_int), (curv_end_x, curv_end_y), (255, 0, 255), 2, tipLength=0.3)
+        # Mostrar valor de curvatura cerca de la flecha magenta
+        cv2.putText(bird_view_with_lines, f'{curvature_angle_deg:.1f} deg', (curv_end_x + 10, curv_end_y), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 1)
+
+        # B. Flecha de ERROR ANGULAR (Corrección de Posición) - Rojo
+        # Muestra cuánto debemos girar solo para corregir la posición actual (sin mirar adelante)
+        # La dibujamos desde el coche
+        err_rad = math.radians(error_angle_deg)
+        err_end_x = int(car_position_x + arrow_length * math.sin(err_rad))
+        err_end_y = int(y_car - arrow_length * math.cos(err_rad))
+        cv2.arrowedLine(bird_view_with_lines, (car_position_x, y_car), (err_end_x, err_end_y), (0, 0, 255), 2, tipLength=0.3)
+        # Mostrar el valor de error angular cerca de la flecha roja
+        cv2.putText(bird_view_with_lines, f'{error_angle_deg:.1f} deg', (err_end_x + 10, err_end_y), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
+        
+        # 6. Visualizar el ángulo de desviación FINAL (angle_desviacion_deg) desde la posición del auto
         # Esta es la dirección que el auto debe tomar
         deviation_arrow_length = 80
         deviation_angle_rad = math.radians(angle_desviacion_deg)
         deviation_arrow_end_x = int(car_position_x + deviation_arrow_length * math.sin(deviation_angle_rad))
         deviation_arrow_end_y = int(y_car - deviation_arrow_length * math.cos(deviation_angle_rad))
-        cv2.arrowedLine(bird_view_with_lines, (car_position_x, y_car - 15), (deviation_arrow_end_x, deviation_arrow_end_y), (0, 255, 0), 3, tipLength=0.25)
+        cv2.arrowedLine(bird_view_with_lines, (car_position_x, y_car - 15), (deviation_arrow_end_x, deviation_arrow_end_y), (0, 165, 255), 3, tipLength=0.25)
         
         # Agregar texto del ángulo cerca de la flecha
         text_offset_x = int(car_position_x + (deviation_arrow_length * 0.6) * math.sin(deviation_angle_rad))
         text_offset_y = int(y_car - 15 - (deviation_arrow_length * 0.6) * math.cos(deviation_angle_rad))
         cv2.putText(bird_view_with_lines, f'{angle_desviacion_deg:.1f}°', (text_offset_x + 10, text_offset_y), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 165, 255), 2)
         
         # Vista aérea con overlay verde (la original)
         overlay = transformed_frame.copy()
@@ -738,17 +763,12 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         original_perpective_lane_image = cv2.warpPerspective(transformed_frame, self.inv_matrix, (640, 480))
         result = cv2.addWeighted(original_frame, 1, original_perpective_lane_image, 0.5, 0)
         
-        # Mostrar información de depuración
-        cv2.putText(result, f'Deviation Angle: {angle_desviacion_deg:.2f} deg', (30, 70), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-        cv2.putText(result, f'Curvature: {curvature_angle_deg:.2f} deg', (30, 110), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 2)
-        cv2.putText(result, f'Error Pixels: {error_pixels:.1f}', (30, 150), cv2.FONT_HERSHEY_SIMPLEX, 1, (200, 200, 200), 2)
-        
         # Agregar texto a la vista aérea con líneas
-        cv2.putText(bird_view_with_lines, f'Deviation Angle: {angle_desviacion_deg:.2f} deg', (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-        cv2.putText(bird_view_with_lines, f'Curvature: {curvature_angle_deg:.2f} deg', (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
-        cv2.putText(bird_view_with_lines, f'Error Pixels: {error_pixels:.1f}', (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 2)
-        cv2.putText(bird_view_with_lines, f'Lane Center: {lane_center:.1f}', (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-        cv2.putText(bird_view_with_lines, f'Car Position: {car_position_x}', (10, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        cv2.putText(bird_view_with_lines, f'Result: {angle_desviacion_deg:.2f} deg', (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
+        cv2.putText(bird_view_with_lines, f'error_angle_deg: {error_angle_deg:.2f} deg', (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+        cv2.putText(bird_view_with_lines, f'curvature_angle_deg: {curvature_angle_deg:.2f} deg', (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 255), 2)
+        cv2.putText(bird_view_with_lines, f'Lane Center: {lane_center:.1f}', (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
+        cv2.putText(bird_view_with_lines, f'Car Position: {car_position_x}', (10, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
         
         # Agregar leyenda visual en el lado derecho
         legend_x = 420
@@ -782,8 +802,8 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         cv2.putText(bird_view_with_lines, 'Error (px)', (legend_x + 25, y_offset), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), font_thickness)
         
         y_offset += legend_spacing
-        cv2.arrowedLine(bird_view_with_lines, (legend_x + 5, y_offset - 5), (legend_x + 20, y_offset - 10), (0, 255, 0), 2, tipLength=0.4)
-        cv2.putText(bird_view_with_lines, 'Deviation', (legend_x + 25, y_offset), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), font_thickness)
+        cv2.arrowedLine(bird_view_with_lines, (legend_x + 5, y_offset - 5), (legend_x + 20, y_offset - 10), (0, 165, 255), 2, tipLength=0.4)
+        cv2.putText(bird_view_with_lines, 'Result (Stanley)', (legend_x + 25, y_offset), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), font_thickness)
 
         # Empaquetar imágenes de depuración para mostrarlas fuera
         debug_images = {
