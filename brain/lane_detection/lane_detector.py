@@ -4,35 +4,35 @@ import math
 from abc import ABC, abstractmethod
 
 # ======================================================================
-# --- LANE DETECTOR BASE CLASS ---
+# --- CLASE BASE PARA DETECTORES DE CARRIL ---
 # ======================================================================
 
 class LaneDetector(ABC):
-    """Abstract base class for lane detection strategies."""
+    """Clase base abstracta para estrategias de detección de carriles."""
     
     @abstractmethod
     def get_lane_metrics(self, frame):
         """
-        Detect lanes and return deviation angle.
+        Detectar carriles y retornar ángulo de desviación.
         
         Args:
-            frame: Input frame from camera (numpy array)
+            frame: Frame de entrada de la cámara (numpy array)
             
         Returns:
             tuple: (angle_deviation_deg, debug_images)
-                - angle_deviation_deg: Deviation angle in degrees (float or None)
-                - debug_images: Dictionary of debug images (dict or None)
+                - angle_deviation_deg: Ángulo de desviación en grados (float o None)
+                - debug_images: Diccionario de imágenes de depuración (dict o None)
         """
         pass
 
 # ======================================================================
-# --- LANE DETECTOR IMPLEMENTATIONS ---
+# --- IMPLEMENTACIONES DE DETECTORES DE CARRIL ---
 # ======================================================================
 
 class MarcosLaneDetector_Advanced(LaneDetector):
     """
-    Lane detector that only handles lane detection logic.
-    Returns angle_desviacion_deg (deviation angle) for PID control.
+    Detector de carriles que solo maneja la lógica de detección.
+    Retorna angle_desviacion_deg (ángulo de desviación) para control PID.
     """
     
     def __init__(self, threshold):
@@ -43,25 +43,34 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         self.MIN_POINTS_FOR_FIT = 3
         self.MIN_LANE_DISTANCE_PX = 100  # Distancia mínima entre líneas para evitar que se fusionen
         
+        # --- Parámetros de cálculo de ángulos ---
+        self.LOOKAHEAD_DISTANCE = 250  # Distancia hacia adelante para calcular dirección (px)
+        self.CURVATURE_THRESHOLD = 10.0  # Grados: menor a esto se considera recto
+        self.STRAIGHT_LANE_WIDTH_REDUCTION = 60  # Reducción de píxeles para rectas
+        
+        # --- Parámetros de ventanas deslizantes ---
+        self.SLIDING_WINDOW_START_Y = 472  # Posición Y inicial para sliding windows (desde abajo)
+        self.SLIDING_WINDOW_HEIGHT = 40  # Altura de cada ventana deslizante
+        self.SLIDING_WINDOW_WIDTH = 50  # Ancho a cada lado del centro de la ventana
+        self.SLIDING_WINDOW_EXPANDED_WIDTH = 150  # Ancho expandido para búsqueda ampliada
+        self.ENABLE_EXPANDED_SEARCH = False  # Habilitar/deshabilitar búsqueda expandida
+
         # --- Puntos de perspectiva (de tu nuevo script) ---
-        # Puntos Origen (SRC) en la imagen original - roi
+        # Puntos Origen (SRC) - ROI
         self.tl = (160, 180)
-        self.bl = (-150, 450)
+        self.bl = (0, 450)
         self.tr = (480, 180)
-        self.br = (790, 450)
+        self.br = (640, 450)
         self.pts1 = np.float32([self.tl, self.bl, self.tr, self.br])
         
-        # Puntos Destino (DST) para la vista cenital
+        # Puntos Destino (DST) - VISTA CENITAL
         self.pts2 = np.float32([[0, 0], [0, 480], [640, 0], [640, 480]])
         
         # Matrices de transformación
         self.matrix = cv2.getPerspectiveTransform(self.pts1, self.pts2)
         self.inv_matrix = cv2.getPerspectiveTransform(self.pts2, self.pts1)
 
-        # --- Valores de color HSV (reemplazo de Trackbars) ---
-        # ¡¡¡DEBES AJUSTAR ESTOS VALORES!!!
-        # Usa tu script de trackbars por separado para encontrar los 
-        # valores buenos y ponlos aquí.
+        # --- Valores de color HSV ---
         # El threshold controla el valor mínimo de brillo (V) en HSV
         self.hsv_lower = np.array([0, 0, threshold]) # L-H, L-S, L-V (threshold usado aquí)
         self.hsv_upper = np.array([255, 50, 255]) # U-H, U-S, U-V
@@ -80,173 +89,337 @@ class MarcosLaneDetector_Advanced(LaneDetector):
             If no lanes found, returns (0, debug_images)
         """
         
-        # --- 1. Redimensionar y aplicar Vista Cenital (de tu nuevo script) ---
+        # --- Redimensionar y aplicar Vista Cenital ---
         frame = cv2.resize(frame, (640, 480))
         original_frame = frame.copy() # Guardar el original para el final
         
+        # use cv2.cuda.warpPerspective
         transformed_frame = cv2.warpPerspective(frame, self.matrix, (640, 480))
         
-        # --- 2. Detección de color (reemplazo de Trackbars) ---
+        # --- Detección de color ---
         hsv_transformed_frame = cv2.cvtColor(transformed_frame, cv2.COLOR_BGR2HSV)
         mask = cv2.inRange(hsv_transformed_frame, self.hsv_lower, self.hsv_upper)
         
-        # --- 3. Histograma y Sliding Windows (de tu nuevo script) ---
+        # --- Histograma y Sliding Windows ---
         # Usar toda la ventana del birdview para el histograma
         histogram = np.sum(mask[mask.shape[0]//2:, :], axis=0)
         midpoint = int(histogram.shape[0]/2)
         
-        # 1. Calcular los picos brutos (brute force peak finding)
+        # Calcular los picos brutos (brute force peak finding)
         raw_left_base = np.argmax(histogram[:midpoint])
         raw_right_base = np.argmax(histogram[midpoint:]) + midpoint
 
         # =========================================================
         # --- VALIDACIÓN DE CONTENIDO BLANCO EN ZONA INFERIOR ---
         # =========================================================
+        def _validate_lane_base_has_content(mask, lane_base, bottom_zone_height=100, min_white_pixels=20, search_window_width=100):
+            """
+            Validar si una posición base de carril tiene suficientes píxeles blancos en la zona inferior.
+            
+            Args:
+                mask: Imagen de máscara binaria
+                lane_base: Posición X de la base del carril
+                bottom_zone_height: Altura de la zona inferior a verificar (píxeles desde abajo)
+                min_white_pixels: Mínimo de píxeles blancos requeridos
+                search_window_width: Ancho de la ventana de búsqueda alrededor de la base del carril
+                
+            Returns:
+                bool: True si es válido (suficientes píxeles blancos), False en caso contrario
+            """
+            if lane_base == -1:
+                return False
+                
+            # Extraer zona inferior de la máscara
+            bottom_zone = mask[mask.shape[0] - bottom_zone_height:, :]
+            
+            # Definir ventana de búsqueda alrededor de la base del carril
+            zone_x_start = max(0, lane_base - search_window_width // 2)
+            zone_x_end = min(bottom_zone.shape[1], lane_base + search_window_width // 2)
+            zone = bottom_zone[:, zone_x_start:zone_x_end]
+            
+            # Contar píxeles blancos
+            white_pixels = np.sum(zone > 0)
+            
+            return white_pixels >= min_white_pixels
+        
         # Verificar si hay suficiente contenido blanco en la zona inferior de cada lado
-        BOTTOM_ZONE_HEIGHT = 100  # Altura de la zona inferior a verificar (píxeles desde abajo)
-        MIN_WHITE_PIXELS = 20  # Mínimo de píxeles blancos requeridos en la zona inferior
-        SEARCH_WINDOW_WIDTH = 100  # Ancho de la ventana de búsqueda alrededor del pico
-        
-        # Zona inferior de la máscara (últimos BOTTOM_ZONE_HEIGHT píxeles)
-        bottom_zone = mask[mask.shape[0] - BOTTOM_ZONE_HEIGHT:, :]
-        
-        # Verificar carril izquierdo: buscar contenido blanco en zona inferior izquierda
-        left_zone_x_start = max(0, raw_left_base - SEARCH_WINDOW_WIDTH // 2)
-        left_zone_x_end = min(bottom_zone.shape[1], raw_left_base + SEARCH_WINDOW_WIDTH // 2)
-        left_bottom_zone = bottom_zone[:, left_zone_x_start:left_zone_x_end]
-        left_white_pixels = np.sum(left_bottom_zone > 0)
-        
-        # Verificar carril derecho: buscar contenido blanco en zona inferior derecha
-        right_zone_x_start = max(0, raw_right_base - SEARCH_WINDOW_WIDTH // 2)
-        right_zone_x_end = min(bottom_zone.shape[1], raw_right_base + SEARCH_WINDOW_WIDTH // 2)
-        right_bottom_zone = bottom_zone[:, right_zone_x_start:right_zone_x_end]
-        right_white_pixels = np.sum(right_bottom_zone > 0)
-        
-        # Descartar carriles sin suficiente contenido blanco en la zona inferior
-        if left_white_pixels < MIN_WHITE_PIXELS:
+        if not _validate_lane_base_has_content(mask, raw_left_base):
             raw_left_base = -1  # Descartar carril izquierdo
         
-        if right_white_pixels < MIN_WHITE_PIXELS:
+        if not _validate_lane_base_has_content(mask, raw_right_base):
             raw_right_base = -1  # Descartar carril derecho
         
         # =========================================================
         # --- CORRECCIÓN DE FUSIÓN (VALIDACIÓN DE DISTANCIA) ---
         # =========================================================
-        CONFIDENCE_THRESHOLD = 50  # Altura mínima del pico para considerarlo real
-        
-        # 2. Verificar si están demasiado cerca o solapadas (solo si ambos están válidos)
-        if raw_left_base != -1 and raw_right_base != -1 and raw_right_base - raw_left_base < self.MIN_LANE_DISTANCE_PX:
-            # 3. Si están muy cerca, determinar qué pico es más fuerte (confianza)
-            left_peak_height = histogram[raw_left_base]
-            right_peak_height = histogram[raw_right_base]
+        def _resolve_lane_fusion(raw_left_base, raw_right_base, histogram, min_distance, confidence_threshold=50):
+            """
+            Resolver fusión de carriles cuando dos carriles detectados están demasiado cerca.
             
-            # 4. PRIORIZACIÓN Y DESCARTE (priorizar carril derecho)
-            if right_peak_height > left_peak_height:
-                # El carril derecho es más fuerte: lo mantenemos.
-                left_base = -1 
-                right_base = raw_right_base
-            elif left_peak_height > right_peak_height:
-                # El carril izquierdo es más fuerte: lo mantenemos.
-                right_base = -1
-                left_base = raw_left_base
-            else:
-                # Si son iguales (o muy débiles), priorizar el derecho (como pediste)
-                # O si no tienen suficiente altura, descartar ambos.
-                if right_peak_height < CONFIDENCE_THRESHOLD:
-                    left_base = -1
-                    right_base = -1
+            Args:
+                raw_left_base: Posición X de la base del carril izquierdo (-1 si no detectado)
+                raw_right_base: Posición X de la base del carril derecho (-1 si no detectado)
+                histogram: Array de histograma para verificar alturas de picos
+                min_distance: Distancia mínima requerida entre carriles
+                confidence_threshold: Altura mínima del pico para considerar carril válido
+                
+            Returns:
+                tuple: (left_base, right_base) - posiciones de carriles resueltas (-1 si descartado)
+            """
+            # Si cualquier carril ya es inválido, retornar como está
+            if raw_left_base == -1 or raw_right_base == -1:
+                return raw_left_base, raw_right_base
+            
+            # Verificar si los carriles están demasiado cerca (fusionados)
+            if raw_right_base - raw_left_base < min_distance:
+                # Determinar qué pico es más fuerte
+                left_peak_height = histogram[raw_left_base]
+                right_peak_height = histogram[raw_right_base]
+                
+                # Priorizar carril derecho (como se solicitó)
+                if right_peak_height > left_peak_height:
+                    return -1, raw_right_base  # Mantener derecho, descartar izquierdo
+                elif left_peak_height > right_peak_height:
+                    return raw_left_base, -1  # Mantener izquierdo, descartar derecho
                 else:
-                    # Ambos son buenos, pero están fusionados, priorizamos derecha
-                    left_base = -1
-                    right_base = raw_right_base 
-        else:
-            # 5. Si están lo suficientemente separados, usar ambos picos (o el que esté disponible)
-            left_base = raw_left_base
-            right_base = raw_right_base
+                    # Fuerza igual: verificar si es suficientemente fuerte, sino descartar ambos
+                    if right_peak_height < confidence_threshold:
+                        return -1, -1  # Ambos demasiado débiles
+                    else:
+                        return -1, raw_right_base  # Priorizar derecho
+            else:
+                # Los carriles están suficientemente separados, mantener ambos
+                return raw_left_base, raw_right_base
+        
+        # Resolver fusión de carriles si los carriles detectados están demasiado cerca
+        left_base, right_base = _resolve_lane_fusion(
+            raw_left_base, raw_right_base, histogram, 
+            self.MIN_LANE_DISTANCE_PX, confidence_threshold=50
+        )
         
         # =========================================================
         
-        y = 472
+        y = self.SLIDING_WINDOW_START_Y
         lx, ly, rx, ry = [], [], [], []
-        msk = mask.copy() # Copia para dibujar las ventanas
+        msk = cv2.cvtColor(mask.copy(), cv2.COLOR_GRAY2BGR)  # Convert to BGR for colored visualization
+
+        # Store window search results for debugging
+        window_results = {'left': [], 'right': []}  # Store (found, expanded) tuples
+        window_index = 0
+
+        # Draw histogram visualization
+        histogram_viz = np.zeros((100, mask.shape[1], 3), dtype=np.uint8)
+        histogram_normalized = (histogram / histogram.max() * 100).astype(int) if histogram.max() > 0 else histogram
+        for i, h in enumerate(histogram_normalized):
+            if h > 0:
+                cv2.line(histogram_viz, (i, 100), (i, 100 - h), (255, 255, 255), 1)
+        # Mark midpoint and base positions
+        cv2.line(histogram_viz, (midpoint, 0), (midpoint, 100), (0, 255, 255), 2)  # Yellow midpoint
+        if left_base != -1:
+            cv2.circle(histogram_viz, (left_base, 50), 8, (0, 0, 255), -1)  # Red for left base
+        if right_base != -1:
+            cv2.circle(histogram_viz, (right_base, 50), 8, (255, 0, 0), -1)  # Blue for right base
 
         while y > 0:
             # --- VENTANA IZQUIERDA (Solo busca si left_base != -1) ---
+            found_left = False
+            used_expanded_left = False
+            
             if left_base != -1:
-                img = mask[y-40:y, left_base-50:left_base+50]
+                img = mask[y-self.SLIDING_WINDOW_HEIGHT:y, left_base-self.SLIDING_WINDOW_WIDTH:left_base+self.SLIDING_WINDOW_WIDTH]
                 contours, _ = cv2.findContours(img, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-                found_left = False
+                
                 for contour in contours:
                     M = cv2.moments(contour)
                     if M["m00"] != 0:
                         cx = int(M["m10"]/M["m00"])
                         cy = int(M["m01"]/M["m00"])
-                        lx.append(left_base-50 + cx)
-                        ly.append(y-40 + cy)
-                        left_base = left_base-50 + cx
+                        point_x = left_base-self.SLIDING_WINDOW_WIDTH + cx
+                        point_y = y-self.SLIDING_WINDOW_HEIGHT + cy
+                        lx.append(point_x)
+                        ly.append(point_y)
+                        left_base = point_x
                         found_left = True
+                        
+                        # Draw the detected centroid
+                        cv2.circle(msk, (point_x, point_y), 4, (0, 0, 255), -1)  # Red dot
                         break  # Solo tomar el primer contorno encontrado
                 
                 # Si no encontró nada, expandir la búsqueda en la ventana actual
-                if not found_left and y > 40:
+                if not found_left and y > self.SLIDING_WINDOW_HEIGHT and self.ENABLE_EXPANDED_SEARCH:
                     # Buscar en una ventana más ancha
-                    search_width = 150
-                    img_expanded = mask[y-40:y, max(0, left_base-search_width//2):min(mask.shape[1], left_base+search_width//2)]
+                    img_expanded = mask[y-self.SLIDING_WINDOW_HEIGHT:y, max(0, left_base-self.SLIDING_WINDOW_EXPANDED_WIDTH//2):min(mask.shape[1], left_base+self.SLIDING_WINDOW_EXPANDED_WIDTH//2)]
                     contours_expanded, _ = cv2.findContours(img_expanded, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
                     for contour in contours_expanded:
                         M = cv2.moments(contour)
                         if M["m00"] != 0:
                             cx = int(M["m10"]/M["m00"])
                             cy = int(M["m01"]/M["m00"])
-                            lx.append(max(0, left_base-search_width//2) + cx)
-                            ly.append(y-40 + cy)
-                            left_base = max(0, left_base-search_width//2) + cx
+                            point_x = max(0, left_base-self.SLIDING_WINDOW_EXPANDED_WIDTH//2) + cx
+                            point_y = y-self.SLIDING_WINDOW_HEIGHT + cy
+                            lx.append(point_x)
+                            ly.append(point_y)
+                            left_base = point_x
                             found_left = True
+                            used_expanded_left = True
+                            
+                            # Draw expanded search window in different color
+                            cv2.rectangle(msk, 
+                                        (max(0, left_base-self.SLIDING_WINDOW_EXPANDED_WIDTH//2), y),
+                                        (min(mask.shape[1], left_base+self.SLIDING_WINDOW_EXPANDED_WIDTH//2), y-self.SLIDING_WINDOW_HEIGHT),
+                                        (255, 165, 0), 1)  # Orange for expanded
+                            # Draw the detected centroid
+                            cv2.circle(msk, (point_x, point_y), 4, (255, 0, 255), -1)  # Magenta for expanded find
                             break
+            
+            window_results['left'].append((found_left, used_expanded_left))
             
             # --- VENTANA DERECHA (Solo busca si right_base != -1) ---
+            found_right = False
+            used_expanded_right = False
+            
             if right_base != -1:
-                img = mask[y-40:y, right_base-50:right_base+50]
+                img = mask[y-self.SLIDING_WINDOW_HEIGHT:y, right_base-self.SLIDING_WINDOW_WIDTH:right_base+self.SLIDING_WINDOW_WIDTH]
                 contours, _ = cv2.findContours(img, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-                found_right = False
+                
                 for contour in contours:
                     M = cv2.moments(contour)
                     if M["m00"] != 0:
                         cx = int(M["m10"]/M["m00"])
                         cy = int(M["m01"]/M["m00"])
-                        rx.append(right_base-50 + cx)
-                        ry.append(y-40 + cy)
-                        right_base = right_base-50 + cx
+                        point_x = right_base-self.SLIDING_WINDOW_WIDTH + cx
+                        point_y = y-self.SLIDING_WINDOW_HEIGHT + cy
+                        rx.append(point_x)
+                        ry.append(point_y)
+                        right_base = point_x
                         found_right = True
+                        
+                        # Draw the detected centroid
+                        cv2.circle(msk, (point_x, point_y), 4, (255, 0, 0), -1)  # Blue dot
                         break  # Solo tomar el primer contorno encontrado
                 
                 # Si no encontró nada, expandir la búsqueda en la ventana actual
-                if not found_right and y > 40:
+                if not found_right and y > self.SLIDING_WINDOW_HEIGHT and self.ENABLE_EXPANDED_SEARCH:
                     # Buscar en una ventana más ancha
-                    search_width = 150
-                    img_expanded = mask[y-40:y, max(0, right_base-search_width//2):min(mask.shape[1], right_base+search_width//2)]
+                    img_expanded = mask[y-self.SLIDING_WINDOW_HEIGHT:y, max(0, right_base-self.SLIDING_WINDOW_EXPANDED_WIDTH//2):min(mask.shape[1], right_base+self.SLIDING_WINDOW_EXPANDED_WIDTH//2)]
                     contours_expanded, _ = cv2.findContours(img_expanded, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
                     for contour in contours_expanded:
                         M = cv2.moments(contour)
                         if M["m00"] != 0:
                             cx = int(M["m10"]/M["m00"])
                             cy = int(M["m01"]/M["m00"])
-                            rx.append(max(0, right_base-search_width//2) + cx)
-                            ry.append(y-40 + cy)
-                            right_base = max(0, right_base-search_width//2) + cx
+                            point_x = max(0, right_base-self.SLIDING_WINDOW_EXPANDED_WIDTH//2) + cx
+                            point_y = y-self.SLIDING_WINDOW_HEIGHT + cy
+                            rx.append(point_x)
+                            ry.append(point_y)
+                            right_base = point_x
                             found_right = True
+                            used_expanded_right = True
+                            
+                            # Draw expanded search window in different color
+                            cv2.rectangle(msk,
+                                        (max(0, right_base-self.SLIDING_WINDOW_EXPANDED_WIDTH//2), y),
+                                        (min(mask.shape[1], right_base+self.SLIDING_WINDOW_EXPANDED_WIDTH//2), y-self.SLIDING_WINDOW_HEIGHT),
+                                        (255, 165, 0), 1)  # Orange for expanded
+                            # Draw the detected centroid
+                            cv2.circle(msk, (point_x, point_y), 4, (255, 0, 255), -1)  # Magenta for expanded find
                             break
             
-            # DIBUJO DE RECTÁNGULOS (Solo si no están deshabilitados)
-            if left_base != -1:
-                cv2.rectangle(msk, (left_base-50,y), (left_base+50,y-40), (255,255,255), 2)
-            if right_base != -1:
-                cv2.rectangle(msk, (right_base-50,y), (right_base+50,y-40), (255,255,255), 2)
-            y -= 40
+            window_results['right'].append((found_right, used_expanded_right))
             
-        # --- 4. Polyfit y Lógica de Estimación (de tu nuevo script) ---
+            # DIBUJO DE RECTÁNGULOS con color según resultado
+            if left_base != -1:
+                # Color based on search result: Green if found, Red if not found, Orange if expanded
+                if found_left:
+                    color = (0, 255, 0) if not used_expanded_left else (255, 165, 0)
+                else:
+                    color = (0, 0, 255)
+                cv2.rectangle(msk, (left_base-self.SLIDING_WINDOW_WIDTH,y), 
+                             (left_base+self.SLIDING_WINDOW_WIDTH,y-self.SLIDING_WINDOW_HEIGHT), 
+                             color, 2)
+                # Add window number
+                cv2.putText(msk, f'L{window_index}', (left_base-self.SLIDING_WINDOW_WIDTH+5, y-5),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+            
+            if right_base != -1:
+                # Color based on search result
+                if found_right:
+                    color = (0, 255, 0) if not used_expanded_right else (255, 165, 0)
+                else:
+                    color = (0, 0, 255)
+                cv2.rectangle(msk, (right_base-self.SLIDING_WINDOW_WIDTH,y), 
+                             (right_base+self.SLIDING_WINDOW_WIDTH,y-self.SLIDING_WINDOW_HEIGHT), 
+                             color, 2)
+                # Add window number
+                cv2.putText(msk, f'R{window_index}', (right_base+self.SLIDING_WINDOW_WIDTH-25, y-5),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+            
+            y -= self.SLIDING_WINDOW_HEIGHT
+            window_index += 1
+        
+        # Draw connecting lines between detected points to show trajectory
+        if len(lx) > 1:
+            for i in range(len(lx)-1):
+                cv2.line(msk, (lx[i], ly[i]), (lx[i+1], ly[i+1]), (0, 255, 255), 1)  # Cyan trajectory
+        if len(rx) > 1:
+            for i in range(len(rx)-1):
+                cv2.line(msk, (rx[i], ry[i]), (rx[i+1], ry[i+1]), (0, 255, 255), 1)  # Cyan trajectory
+
+        # Add statistics overlay
+        stats_y = 30
+        cv2.putText(msk, f'Left points: {len(lx)}', (10, stats_y), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        stats_y += 30
+        cv2.putText(msk, f'Right points: {len(rx)}', (10, stats_y), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        stats_y += 30
+        left_expanded_count = sum(1 for _, exp in window_results['left'] if exp)
+        right_expanded_count = sum(1 for _, exp in window_results['right'] if exp)
+        cv2.putText(msk, f'Expanded searches: L={left_expanded_count} R={right_expanded_count}', 
+                   (10, stats_y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 165, 0), 2)
+        stats_y += 30
+
+        # Validation status
+        left_status = "VALID" if raw_left_base != -1 and left_base != -1 else "INVALID"
+        right_status = "VALID" if raw_right_base != -1 and right_base != -1 else "INVALID"
+        cv2.putText(msk, f'Validation: L={left_status} R={right_status}', 
+                   (10, stats_y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, 
+                   (0, 255, 0) if left_status == "VALID" and right_status == "VALID" else (0, 255, 255), 2)
+
+    # --- Polyfit y Lógica de Estimación ---
         left_fit_current = None
         right_fit_current = None
+        
+        # ==============================================================================
+        # --- FILTRO DE SANIDAD DE PUNTOS CRUDOS (HARD PARTITION) ---
+        # ==============================================================================
+        # Antes de calcular nada, eliminamos puntos que cruzaron la frontera central.
+        # Esto impide que la ventana Derecha "robe" puntos de la línea Izquierda.
+        
+        MIDPOINT_X = 320  # Mitad de la imagen (640 / 2)
+
+        # 1. Filtrar puntos Izquierdos (Deben estar a la IZQUIERDA del centro)
+        if len(lx) > 0:
+            # Usamos zip para filtrar X e Y simultáneamente
+            valid_l = [(x, y) for x, y in zip(lx, ly) if x < MIDPOINT_X]
+            if len(valid_l) > 0:
+                lx, ly = zip(*valid_l)
+                lx, ly = list(lx), list(ly)
+            else:
+                lx, ly = [], [] # Todos eran inválidos
+
+        # 2. Filtrar puntos Derechos (Deben estar a la DERECHA del centro)
+        if len(rx) > 0:
+            # Esta es la línea que arreglará tu foto:
+            # Elimina los puntos R8, R9, R10 que están en el lado izquierdo
+            valid_r = [(x, y) for x, y in zip(rx, ry) if x > MIDPOINT_X]
+            if len(valid_r) > 0:
+                rx, ry = zip(*valid_r)
+                rx, ry = list(rx), list(ry)
+            else:
+                rx, ry = [], [] # Todos eran inválidos (Probablemente tu caso actual)
+
+        # ==============================================================================
         
         if len(lx) >= self.MIN_POINTS_FOR_FIT:
             try: left_fit_current = np.polyfit(ly, lx, 2)
@@ -255,113 +428,174 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         if len(ry) >= self.MIN_POINTS_FOR_FIT:
             try: right_fit_current = np.polyfit(ry, rx, 2)
             except np.linalg.LinAlgError: pass
+        
+        if len(ry) >= self.MIN_POINTS_FOR_FIT:
+            try: right_fit_current = np.polyfit(ry, rx, 2)
+            except np.linalg.LinAlgError: pass
 
-        # Helper function to calculate distance between two lines at a reference y position
-        def get_line_distance(fit1, fit2, y_ref=480):
-            """Calculate horizontal distance between two polynomial fits at y_ref"""
+        # ==============================================================================
+        # [NUEVO] FILTRO DE POSICIÓN (ZONA DE EXCLUSIÓN)
+        # ==============================================================================
+        # Esto evita que puntos a la izquierda sean identificados como carril derecho
+        
+        MIDPOINT_X = 320  # Mitad de tu imagen (640 / 2)
+        
+        # 1. Validar Carril Izquierdo
+        if left_fit_current is not None:
+            # Calculamos dónde toca el suelo la línea (y=480)
+            lx_base = left_fit_current[0]*480**2 + left_fit_current[1]*480 + left_fit_current[2]
+            
+            # Si la base está a la derecha de la mitad... es un impostor.
+            if lx_base > MIDPOINT_X: 
+                print(f"🚫 RECHAZADO: Falso Izquierdo en zona derecha (x={int(lx_base)})")
+                left_fit_current = None  # Lo descartamos
+
+        # 2. Validar Carril Derecho
+        if right_fit_current is not None:
+            # Calculamos dónde toca el suelo la línea (y=480)
+            rx_base = right_fit_current[0]*480**2 + right_fit_current[1]*480 + right_fit_current[2]
+            
+            # Si la base está a la izquierda de la mitad... es un impostor (TU ERROR ACTUAL).
+            if rx_base < MIDPOINT_X:
+                print(f"🚫 RECHAZADO: Falso Derecho en zona izquierda (x={int(rx_base)})")
+                right_fit_current = None  # Lo descartamos
+
+        # Función auxiliar para calcular distancia entre dos líneas en la posición y=480
+        def get_line_distance(fit1, fit2):
+            """Calcular distancia horizontal entre dos ajustes polinomiales en y=480"""
+            y_ref = 480
             x1 = fit1[0]*y_ref**2 + fit1[1]*y_ref + fit1[2]
             x2 = fit2[0]*y_ref**2 + fit2[1]*y_ref + fit2[2]
             return abs(x2 - x1)
         
-        # Helper function to calculate curvature angle from a single line fit
-        def calculate_curvature_angle(fit, y_ref=480, lookahead=100):
-            """Calculate curvature angle from a single line fit"""
-            y_current = y_ref
-            y_ahead = max(0, y_ref - lookahead)
-            
+        # Función auxiliar para calcular ángulo de curvatura inline
+        def get_curvature_angle(fit):
+            """Calcular ángulo de curvatura desde ajuste polinomial"""
+            y_current = 480
+            y_ahead = max(0, 480 - self.LOOKAHEAD_DISTANCE)
             x_current = fit[0] * y_current**2 + fit[1] * y_current + fit[2]
             x_ahead = fit[0] * y_ahead**2 + fit[1] * y_ahead + fit[2]
-            
             dx = x_ahead - x_current
             dy = y_ahead - y_current
-            
             angle_rad = math.atan2(dx, -dy)
             return math.degrees(angle_rad)
-
-        # Decidir qué líneas usar (priorizando el carril derecho primero)
-        # Determinar ancho adaptativo basado en curvatura
-        CURVATURE_THRESHOLD = 7.0  # Grados: menor a esto se considera recto
-        STRAIGHT_LANE_WIDTH_REDUCTION = 60  # Reducción de píxeles para rectas
         
-        # CASO 1: Ambas líneas detectadas - verificar distancia mínima
+        # Función de Sanity Check para intersección de líneas
+        def lines_intersect(fit1, fit2, y_start=0, y_end=480):
+            """Verifica si dos polinomios cuadráticos se cruzan en el rango [y_start, y_end]"""
+            # Diferencia de polinomios: f1(y) - f2(y) = (a1-a2)y^2 + (b1-b2)y + (c1-c2) = 0
+            a = fit1[0] - fit2[0]
+            b = fit1[1] - fit2[1]
+            c = fit1[2] - fit2[2]
+            
+            if abs(a) < 1e-6: # Casi lineales
+                if abs(b) < 1e-6: return False # Paralelas
+                y_intersect = -c / b
+                return y_start <= y_intersect <= y_end
+            
+            # Ecuación cuadrática
+            delta = b**2 - 4*a*c
+            if delta < 0: return False # No hay intersección real
+            
+            sqrt_delta = math.sqrt(delta)
+            y1 = (-b + sqrt_delta) / (2*a)
+            y2 = (-b - sqrt_delta) / (2*a)
+            
+            return (y_start <= y1 <= y_end) or (y_start <= y2 <= y_end)
+
+        # =========================================================
+        # --- LÓGICA DE DECISIÓN (ÁRBOL JERÁRQUICO) ---
+        # =========================================================
+        
+        detection_mode = "NONE"
+        final_left_fit = None
+        final_right_fit = None
+        
+        # --- NIVEL 1: ESTEREO (Ambas líneas detectadas y válidas) ---
         if left_fit_current is not None and right_fit_current is not None:
             distance = get_line_distance(left_fit_current, right_fit_current)
-            if distance >= self.MIN_LANE_DISTANCE_PX:
-                # Distancia válida, usar ambas líneas
-                left_fit = left_fit_current
-                right_fit = right_fit_current
-                self.prev_left_fit = left_fit
-                self.prev_right_fit = right_fit
+            intersect = lines_intersect(left_fit_current, right_fit_current)
+            
+            if distance >= self.MIN_LANE_DISTANCE_PX and not intersect:
+                detection_mode = "STEREO"
+                final_left_fit = left_fit_current
+                final_right_fit = right_fit_current
+                # Actualizar memoria
+                self.prev_left_fit = final_left_fit
+                self.prev_right_fit = final_right_fit
+
+        # --- NIVEL 2: MONO_DERECHA (Si falló Nivel 1, intentar solo con derecha) ---
+        if detection_mode == "NONE" and right_fit_current is not None:
+            detection_mode = "MONO_RIGHT"
+            final_right_fit = right_fit_current
+            
+            # Reconstruir izquierda
+            curvature = abs(get_curvature_angle(final_right_fit))
+            lane_width = self.LANE_WIDTH_PX if curvature >= self.CURVATURE_THRESHOLD else (self.LANE_WIDTH_PX - self.STRAIGHT_LANE_WIDTH_REDUCTION)
+            final_left_fit = final_right_fit - [0, 0, lane_width]
+            
+            # Actualizar memoria (forzamos porque es nuestra mejor estimación actual)
+            self.prev_left_fit = final_left_fit
+            self.prev_right_fit = final_right_fit
+
+        # --- NIVEL 3: MONO_IZQUIERDA (Si falló Nivel 2, intentar solo con izquierda) ---
+        if detection_mode == "NONE" and left_fit_current is not None:
+            detection_mode = "MONO_LEFT"
+            final_left_fit = left_fit_current
+            
+            # Reconstruir derecha
+            curvature = abs(get_curvature_angle(final_left_fit))
+            lane_width = self.LANE_WIDTH_PX if curvature >= self.CURVATURE_THRESHOLD else (self.LANE_WIDTH_PX - self.STRAIGHT_LANE_WIDTH_REDUCTION)
+            final_right_fit = final_left_fit + [0, 0, lane_width]
+            
+            # Actualizar memoria
+            self.prev_left_fit = final_left_fit
+            self.prev_right_fit = final_right_fit
+
+        # --- NIVEL 4: MEMORIA (Si falló todo, usar memoria si existe) ---
+        if detection_mode == "NONE":
+            if self.prev_left_fit is not None and self.prev_right_fit is not None:
+                detection_mode = "MEMORY"
+                final_left_fit = self.prev_left_fit
+                final_right_fit = self.prev_right_fit
             else:
-                # Líneas demasiado cercanas - priorizar carril derecho
-                # Calcular curvatura para determinar ancho
-                curvature = abs(calculate_curvature_angle(right_fit_current))
-                lane_width = self.LANE_WIDTH_PX if curvature >= CURVATURE_THRESHOLD else (self.LANE_WIDTH_PX - STRAIGHT_LANE_WIDTH_REDUCTION)
+                # FALLO TOTAL: No hay nada que hacer
+                bird_view_with_lines = transformed_frame.copy()
+                cv2.putText(bird_view_with_lines, "NO LANE DETECTED", (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
                 
-                right_fit = right_fit_current
-                left_fit = right_fit - [0, 0, lane_width]
-                self.prev_left_fit = left_fit
-                self.prev_right_fit = right_fit
-        # CASO 2: Solo carril derecho detectado (prioridad)
-        elif right_fit_current is not None:
-            # Calcular curvatura para determinar ancho
-            curvature = abs(calculate_curvature_angle(right_fit_current))
-            lane_width = self.LANE_WIDTH_PX if curvature >= CURVATURE_THRESHOLD else (self.LANE_WIDTH_PX - STRAIGHT_LANE_WIDTH_REDUCTION)
-            
-            right_fit = right_fit_current
-            left_fit = right_fit - [0, 0, lane_width]
-            self.prev_left_fit = left_fit
-            self.prev_right_fit = right_fit
-        # CASO 3: Solo carril izquierdo detectado
-        elif left_fit_current is not None:
-            # Calcular curvatura para determinar ancho
-            curvature = abs(calculate_curvature_angle(left_fit_current))
-            lane_width = self.LANE_WIDTH_PX if curvature >= CURVATURE_THRESHOLD else (self.LANE_WIDTH_PX - STRAIGHT_LANE_WIDTH_REDUCTION)
-            
-            left_fit = left_fit_current
-            right_fit = left_fit + [0, 0, lane_width]
-            self.prev_left_fit = left_fit
-            self.prev_right_fit = right_fit
-        # CASO 4: Usar líneas previas si están disponibles
-        elif self.prev_left_fit is not None and self.prev_right_fit is not None:
-            left_fit = self.prev_left_fit
-            right_fit = self.prev_right_fit
-        else:
-            # No se ve nada y no hay memoria
-            # Crear vista aérea sin líneas para mantener consistencia
-            bird_view_with_lines = transformed_frame.copy()
-            cv2.putText(bird_view_with_lines, "No lane detected", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-            cv2.circle(bird_view_with_lines, (320, 480), 10, (0, 255, 0), -1)  # Círculo verde para el auto
-            
-            debug_images = {
-                "original": original_frame,
-                "bird_view_raw": transformed_frame.copy(),
-                "bird_view_lines": bird_view_with_lines,
-                "cenital": transformed_frame,
-                "mask": mask,
-                "sliding_windows": msk,
-                "final_result": original_frame
-            }
-            return None, debug_images  # Return None to indicate no lanes detected
+                debug_images = {
+                    "original": original_frame,
+                    "bird_view_raw": transformed_frame.copy(),
+                    "bird_view_lines": bird_view_with_lines,
+                    "cenital": transformed_frame,
+                    "mask": mask,
+                    "histogram": histogram_viz,
+                    "sliding_windows": msk,
+                    "final_result": original_frame
+                }
+                return None, debug_images
+
+        # Asignar los fits finales para el resto del cálculo
+        left_fit = final_left_fit
+        right_fit = final_right_fit
         
-        # --- 5. CÁLCULO DEL ÁNGULO DE DESVIACIÓN ---
+        # --- CÁLCULO DEL ÁNGULO DE DESVIACIÓN ---
         # Calculamos el centro del carril como la línea amarilla
         center_fit = [(left_fit[0] + right_fit[0]) / 2, 
                       (left_fit[1] + right_fit[1]) / 2, 
                       (left_fit[2] + right_fit[2]) / 2]
         
-        # Evaluar en la posición del carro (y = 480, parte inferior de la imagen)
+        # Posición del carro
         y_car = 480
-        car_position_x = 320  # Centro del auto (ancho/2)
+        car_position_x = 320
         
         # Calcular el error posicional: diferencia entre el centro del carril y la posición del auto
         lane_center = center_fit[0]*y_car**2 + center_fit[1]*y_car + center_fit[2]
         error_pixels = lane_center - car_position_x
         
-        # Calcular el ángulo de curvatura usando arctan
-        lookahead_distance = 100  # Distancia hacia adelante en píxeles para calcular la dirección
+        # Calcular el ángulo de curvatura del carril (dirección hacia adelante)
         y_current = y_car
-        y_ahead = max(0, y_car - lookahead_distance)  # Hacia arriba en la imagen (dirección del vehículo)
+        y_ahead = max(0, y_car - self.LOOKAHEAD_DISTANCE)  # Hacia arriba en la imagen (dirección del vehículo)
         
         # Calcular las posiciones x en ambos puntos
         x_current = center_fit[0] * y_current**2 + center_fit[1] * y_current + center_fit[2]
@@ -385,7 +619,7 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         # Convertir el error posicional (píxeles) a error angular usando arctan
         # Error positivo = carril a la derecha del auto → ángulo positivo
         # Error negativo = carril a la izquierda del auto → ángulo negativo
-        error_angle_rad = math.atan2(-error_pixels, lookahead_distance)
+        error_angle_rad = math.atan2(error_pixels, self.LOOKAHEAD_DISTANCE)
         error_angle_deg = math.degrees(error_angle_rad)
         
         # Combinar el error angular con el ángulo de curvatura
@@ -406,16 +640,32 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         plot_x_left = left_fit[0]*plot_y**2 + left_fit[1]*plot_y + left_fit[2]
         plot_x_right = right_fit[0]*plot_y**2 + right_fit[1]*plot_y + right_fit[2]
         
+        # --- Definir colores según el modo de detección ---
+        color_left = (0, 0, 255)   # Rojo por defecto (Real)
+        color_right = (255, 0, 0)  # Azul por defecto (Real)
+        color_reconstructed = (150, 150, 150) # Gris para líneas reconstruidas/virtuales
+        color_memory = (0, 255, 255) # Amarillo para memoria
+        
+        if detection_mode == "STEREO":
+            color_left = (0, 0, 255)   # Real
+            color_right = (255, 0, 0)  # Real
+        elif detection_mode == "MONO_RIGHT":
+            color_left = color_reconstructed # Reconstruida
+            color_right = (255, 0, 0)  # Real
+        elif detection_mode == "MONO_LEFT":
+            color_left = (0, 0, 255)   # Real
+            color_right = color_reconstructed # Reconstruida
+        elif detection_mode == "MEMORY":
+            color_left = color_memory
+            color_right = color_memory
+            
         # Dibujar las líneas del carril en la vista aérea
-        for i in range(len(plot_y)-1):
-            cv2.line(bird_view_with_lines, 
-                    (int(plot_x_left[i]), int(plot_y[i])), 
-                    (int(plot_x_left[i+1]), int(plot_y[i+1])), 
-                    (0, 0, 255), 3)  # Línea roja para el carril izquierdo
-            cv2.line(bird_view_with_lines, 
-                    (int(plot_x_right[i]), int(plot_y[i])), 
-                    (int(plot_x_right[i+1]), int(plot_y[i+1])), 
-                    (255, 0, 0), 3)  # Línea azul para el carril derecho
+        # Convertir puntos a formato polylines (int32)
+        pts_left = np.vstack((plot_x_left, plot_y)).astype(np.int32).T
+        pts_right = np.vstack((plot_x_right, plot_y)).astype(np.int32).T
+        
+        cv2.polylines(bird_view_with_lines, [pts_left], False, color_left, 3)
+        cv2.polylines(bird_view_with_lines, [pts_right], False, color_right, 3)
         
         # Dibujar el centro del carril
         center_line_x = (plot_x_left + plot_x_right) / 2
@@ -427,6 +677,53 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         
         # Dibujar la posición del auto (centro de la imagen)
         cv2.circle(bird_view_with_lines, (320, 480), 10, (0, 255, 0), -1)  # Círculo verde para el auto
+        
+        # Mostrar el MODO DE DETECCIÓN en la pantalla
+        cv2.putText(bird_view_with_lines, f"MODE: {detection_mode}", (10, 200), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+        
+        # =========================================================
+        
+        # =========================================================
+        # --- VISUALIZACION ---
+        # =========================================================
+        # 1. Dibujar el centro del carril en la posición del auto
+        lane_center_int = int(lane_center)
+        cv2.circle(bird_view_with_lines, (lane_center_int, y_car), 8, (255, 255, 0), -1)  # Círculo cyan para lane center
+        
+        # 2. Dibujar el punto de lookahead en el centro del carril
+        x_ahead_int = int(x_ahead)
+        y_ahead_int = int(y_ahead)
+        cv2.circle(bird_view_with_lines, (x_ahead_int, y_ahead_int), 8, (255, 0, 255), -1)  # Círculo magenta para lookahead
+        
+        # 3. Dibujar línea de dirección desde posición actual hasta lookahead
+        x_current_int = int(x_current)
+        cv2.line(bird_view_with_lines, (x_current_int, y_car), (x_ahead_int, y_ahead_int), (255, 128, 0), 3)  # Línea azul claro
+        
+        # 4. Dibujar línea de error posicional (desde car_position_x hasta lane_center)
+        cv2.line(bird_view_with_lines, (car_position_x, y_car), (lane_center_int, y_car), (0, 0, 255), 2)  # Línea roja horizontal
+        
+        # 5. Agregar flechas para indicar dirección
+        # Flecha en el punto de lookahead mostrando la dirección del carril
+        arrow_length = 30
+        arrow_angle = angle_rad  # Usar el ángulo calculado
+        arrow_end_x = int(x_ahead_int + arrow_length * math.sin(arrow_angle))
+        arrow_end_y = int(y_ahead_int - arrow_length * math.cos(arrow_angle))
+        cv2.arrowedLine(bird_view_with_lines, (x_ahead_int, y_ahead_int), (arrow_end_x, arrow_end_y), (255, 0, 255), 2, tipLength=0.3)
+        
+        # 6. Visualizar el ángulo de desviación (angle_desviacion_deg) desde la posición del auto
+        # Esta es la dirección que el auto debe tomar
+        deviation_arrow_length = 80
+        deviation_angle_rad = math.radians(angle_desviacion_deg)
+        deviation_arrow_end_x = int(car_position_x + deviation_arrow_length * math.sin(deviation_angle_rad))
+        deviation_arrow_end_y = int(y_car - deviation_arrow_length * math.cos(deviation_angle_rad))
+        cv2.arrowedLine(bird_view_with_lines, (car_position_x, y_car - 15), (deviation_arrow_end_x, deviation_arrow_end_y), (0, 255, 0), 3, tipLength=0.25)
+        
+        # Agregar texto del ángulo cerca de la flecha
+        text_offset_x = int(car_position_x + (deviation_arrow_length * 0.6) * math.sin(deviation_angle_rad))
+        text_offset_y = int(y_car - 15 - (deviation_arrow_length * 0.6) * math.cos(deviation_angle_rad))
+        cv2.putText(bird_view_with_lines, f'{angle_desviacion_deg:.1f}°', (text_offset_x + 10, text_offset_y), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
         
         # Vista aérea con overlay verde (la original)
         overlay = transformed_frame.copy()
@@ -452,6 +749,41 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         cv2.putText(bird_view_with_lines, f'Error Pixels: {error_pixels:.1f}', (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 2)
         cv2.putText(bird_view_with_lines, f'Lane Center: {lane_center:.1f}', (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
         cv2.putText(bird_view_with_lines, f'Car Position: {car_position_x}', (10, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        
+        # Agregar leyenda visual en el lado derecho
+        legend_x = 420
+        legend_y_start = 30
+        legend_spacing = 30
+        font_scale = 0.5
+        font_thickness = 1
+        
+        # Título de la leyenda
+        cv2.putText(bird_view_with_lines, 'Legend:', (legend_x, legend_y_start), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        
+        # Elementos de la leyenda
+        y_offset = legend_y_start + legend_spacing
+        cv2.circle(bird_view_with_lines, (legend_x + 10, y_offset - 5), 5, (0, 255, 0), -1)
+        cv2.putText(bird_view_with_lines, 'Car Position', (legend_x + 25, y_offset), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), font_thickness)
+        
+        y_offset += legend_spacing
+        cv2.circle(bird_view_with_lines, (legend_x + 10, y_offset - 5), 5, (255, 255, 0), -1)
+        cv2.putText(bird_view_with_lines, 'Lane Center', (legend_x + 25, y_offset), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), font_thickness)
+        
+        y_offset += legend_spacing
+        cv2.circle(bird_view_with_lines, (legend_x + 10, y_offset - 5), 5, (255, 0, 255), -1)
+        cv2.putText(bird_view_with_lines, 'Lookahead Pt', (legend_x + 25, y_offset), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), font_thickness)
+        
+        y_offset += legend_spacing
+        cv2.line(bird_view_with_lines, (legend_x + 5, y_offset - 5), (legend_x + 20, y_offset - 5), (255, 128, 0), 2)
+        cv2.putText(bird_view_with_lines, 'Direction', (legend_x + 25, y_offset), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), font_thickness)
+        
+        y_offset += legend_spacing
+        cv2.line(bird_view_with_lines, (legend_x + 5, y_offset - 5), (legend_x + 20, y_offset - 5), (0, 0, 255), 2)
+        cv2.putText(bird_view_with_lines, 'Error (px)', (legend_x + 25, y_offset), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), font_thickness)
+        
+        y_offset += legend_spacing
+        cv2.arrowedLine(bird_view_with_lines, (legend_x + 5, y_offset - 5), (legend_x + 20, y_offset - 10), (0, 255, 0), 2, tipLength=0.4)
+        cv2.putText(bird_view_with_lines, 'Deviation', (legend_x + 25, y_offset), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), font_thickness)
 
         # Empaquetar imágenes de depuración para mostrarlas fuera
         debug_images = {
@@ -460,6 +792,7 @@ class MarcosLaneDetector_Advanced(LaneDetector):
             "bird_view_lines": bird_view_with_lines,  # Vista aérea con líneas dibujadas
             "cenital": transformed_frame, # Muestra el overlay verde
             "mask": mask,
+            "histogram": histogram_viz,  # Histogram visualization
             "sliding_windows": msk,
             "final_result": result
         }

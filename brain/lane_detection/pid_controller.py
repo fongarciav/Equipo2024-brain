@@ -9,7 +9,7 @@ class PIDController:
     """
     PID Controller responsible only for PID calculation, max angle limits, and deadband.
     """
-    def __init__(self, Kp: float, Ki: float, Kd: float, max_angle: float = 30.0, deadband: float = 6.0):
+    def __init__(self, Kp: float, Ki: float, Kd: float, max_angle: float = 30.0, deadband: float = 1.0):
         """
         Initialize the PID controller.
         
@@ -18,7 +18,7 @@ class PIDController:
             Ki: Integral gain
             Kd: Derivative gain
             max_angle: Maximum output angle in degrees (default: 30.0)
-            deadband: Deadband angle in degrees - if output < deadband, return 0 (default: 6.0)
+            deadband: Deadband angle in degrees - if output < deadband, return 0 (default: 1.0)
         """
         self.Kp = Kp
         self.Ki = Ki
@@ -34,35 +34,32 @@ class PIDController:
         self.prev_error = 0.0
         self.integral = 0.0
         self.prev_derivative = 0.0
+        self.prev_output = 0.0  # For output smoothing
         
         # Derivative filter (low-pass filter to reduce noise)
         self.derivative_alpha = 0.7  # Filter coefficient (0-1, higher = less filtering)
+        
+        # Output smoothing factor (Exponential Moving Average)
+        # 1.0 = no smoothing, 0.1 = heavy smoothing
+        self.output_alpha = 0.8 
         
         # Anti-windup: limit integral accumulation
         self.integral_max = 200.0  # Maximum integral value to prevent windup
         
         # Minimum dt to avoid division by zero
         self.min_dt = 0.001
-        
-        # Reset counter for periodic integral reset
-        self.iteration_count = 0
-        self.integral_reset_interval = 20  # Reset integral every N iterations
 
-    def compute(self, error: float, dt: float, integral_reset_interval: int = None) -> float:
+    def compute(self, error: float, dt: float) -> float:
         """
         Compute PID control output.
         
         Args:
             error: Current error (degrees - angular error)
             dt: Time delta since last call (seconds)
-            integral_reset_interval: Optional override for reset interval
             
         Returns:
             Control signal (angle in degrees, clamped to max_angle, or 0.0 if within deadband)
         """
-        if integral_reset_interval is not None:
-            self.integral_reset_interval = integral_reset_interval
-        
         # Ensure dt is valid
         if dt <= 0:
             dt = self.min_dt
@@ -76,11 +73,6 @@ class PIDController:
         # Clamp integral to prevent windup
         self.integral = max(min(self.integral, self.integral_max), -self.integral_max)
         
-        # Periodic integral reset to prevent long-term drift
-        self.iteration_count += 1
-        if self.iteration_count % self.integral_reset_interval == 0:
-            self.integral = 0.0
-        
         # Derivative term with filtering to reduce noise sensitivity
         raw_derivative = (error - self.prev_error) / dt
         
@@ -89,7 +81,11 @@ class PIDController:
         self.prev_derivative = derivative
         
         # Compute PID output
-        control_signal = self.Kp * proportional + self.Ki * self.integral + self.Kd * derivative
+        raw_output = self.Kp * proportional + self.Ki * self.integral + self.Kd * derivative
+        
+        # Apply output smoothing (EMA) to prevent sudden jumps
+        control_signal = self.output_alpha * raw_output + (1 - self.output_alpha) * self.prev_output
+        self.prev_output = control_signal
         
         # Clamp output to valid range (max_angle)
         control_signal = max(min(control_signal, self.max_output), self.min_output)
@@ -97,8 +93,7 @@ class PIDController:
         # Apply deadband: if output is within deadband, return 0
         if abs(control_signal) < self.deadband:
             control_signal = 0.0
-            # Reset integral when in deadband to prevent accumulation
-            self.integral = 0.0
+            # We do NOT reset integral here anymore to avoid "sticking" when error grows slowly
         
         # Update previous error
         self.prev_error = error
@@ -110,7 +105,7 @@ class PIDController:
         self.prev_error = 0.0
         self.integral = 0.0
         self.prev_derivative = 0.0
-        self.iteration_count = 0
+        self.prev_output = 0.0
     
     def get_parameters(self) -> dict:
         """Get current PID parameters."""
