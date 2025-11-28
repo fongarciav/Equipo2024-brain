@@ -10,6 +10,7 @@ import time
 # Import lane following modules (relative imports since we're in lane_detection)
 from .lane_detector import LaneDetector
 from .pid_controller import PIDController
+from .filter_controller import FilterController
 from .angle_converter import AngleConverter
 # Import shared resources (absolute imports - parent dir is in sys.path)
 from command_sender import CommandSender
@@ -22,7 +23,8 @@ class AutoPilotController:
     def __init__(self, video_streamer: VideoStreamer, command_sender: CommandSender,
                  lane_detector: LaneDetector,
                  pid_kp: float = 0.06, pid_ki: float = 0.002, 
-                 pid_kd: float = 0.02, max_angle: float = 30.0, deadband: float = 6.0):
+                 pid_kd: float = 0.02, max_angle: float = 30.0, deadband: float = 6.0,
+                 max_change: float = 20.0):
         """
         Initialize the auto-pilot controller.
         
@@ -35,11 +37,13 @@ class AutoPilotController:
             pid_kd: PID derivative gain
             max_angle: Maximum steering angle in degrees (default: 30.0)
             deadband: Deadband angle in degrees (default: 6.0)
+            max_change: Maximum allowed change in angle deviation between frames (default: 20.0)
         """
         self.video_streamer = video_streamer
         self.command_sender = command_sender
         self.lane_detector = lane_detector
         self.angle_converter = AngleConverter()
+        self.filter_controller = FilterController(max_change=max_change)
         
         # Initialize PID controller
         self.pid_controller = PIDController(
@@ -137,8 +141,18 @@ class AutoPilotController:
                 # Handle no lanes detected
                 if angle_deviation_deg is None:
                     self.pid_controller.reset()
+                    self.filter_controller.reset()
                     time.sleep(0.033)
                     continue
+                
+                # Filter outliers
+                filtered_angle = self.filter_controller.filter(angle_deviation_deg)
+                if filtered_angle is None:
+                    print(f"[Filter] Rejected outlier: {angle_deviation_deg}")
+                    time.sleep(0.033)
+                    continue
+                    
+                angle_deviation_deg = filtered_angle
                 
                 # Calculate dt for PID
                 current_time = time.time()
