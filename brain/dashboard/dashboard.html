@@ -779,19 +779,19 @@
                   </div>
                   <div class="pid-control">
                     <label
-                      >Tol:
-                      <span id="pid-tolerance-value" class="pid-value"
+                      >Deadband:
+                      <span id="pid-deadband-value" class="pid-value"
                         >3.0</span
                       ></label
                     >
                     <input
                       type="range"
-                      id="pid-tolerance-slider"
+                      id="pid-deadband-slider"
                       min="0"
                       max="10"
                       step="0.1"
                       value="3.0"
-                      oninput="updatePIDParameter('tolerance', this.value)"
+                      oninput="updatePIDParameter('deadband', this.value)"
                     />
                   </div>
                 </div>
@@ -1759,7 +1759,7 @@
         // Update display immediately
         const valueEl = document.getElementById(`pid-${param}-value`);
         if (valueEl) {
-          if (param === "tolerance") {
+          if (param === "deadband") {
             valueEl.textContent = parseFloat(value).toFixed(1);
           } else {
             valueEl.textContent = parseFloat(value).toFixed(4);
@@ -1857,15 +1857,15 @@
           }
         }
 
-        // Update Tolerance
-        if (params.tolerance !== undefined) {
-          const toleranceSlider = document.getElementById(
-            "pid-tolerance-slider"
+        // Update Deadband
+        if (params.deadband !== undefined) {
+          const deadbandSlider = document.getElementById(
+            "pid-deadband-slider"
           );
-          const toleranceValue = document.getElementById("pid-tolerance-value");
-          if (toleranceSlider && toleranceValue) {
-            toleranceSlider.value = params.tolerance;
-            toleranceValue.textContent = parseFloat(params.tolerance).toFixed(
+          const deadbandValue = document.getElementById("pid-deadband-value");
+          if (deadbandSlider && deadbandValue) {
+            deadbandSlider.value = params.deadband;
+            deadbandValue.textContent = parseFloat(params.deadband).toFixed(
               1
             );
           }

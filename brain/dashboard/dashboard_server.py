@@ -1130,7 +1130,10 @@ def autopilot_update_pid():
     ki = data.get('ki')
     kd = data.get('kd')
     max_angle = data.get('max_angle')
+    # Handle both 'deadband' and 'tolerance' (dashboard sends 'tolerance')
     deadband = data.get('deadband')
+    if deadband is None:
+        deadband = data.get('tolerance')
     
     # Validate parameters
     if kp is not None and (not isinstance(kp, (int, float)) or kp < 0):
