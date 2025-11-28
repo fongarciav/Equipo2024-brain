@@ -156,6 +156,7 @@ class AutoPilotController:
                 # Positive deviation (lane to right) → positive steering (turn right)
                 pid_error = -angle_deviation_deg
                 steering_angle = self.pid_controller.compute(pid_error, dt)
+                print(f"PID Controller: Steering angle: {steering_angle}")
                 
                 # Check again before sending command (stop might have been called)
                 with self.lock:
