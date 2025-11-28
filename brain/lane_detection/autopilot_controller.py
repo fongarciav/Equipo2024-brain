@@ -155,6 +155,7 @@ class AutoPilotController:
                 # Compute PID output (negate deviation for PID error)
                 # Positive deviation (lane to right) → positive steering (turn right)
                 pid_error = -angle_deviation_deg
+                print(f"Original angle deviation: {angle_deviation_deg}")
                 steering_angle = self.pid_controller.compute(pid_error, dt)
                 print(f"PID Controller: Steering angle: {steering_angle}")
                 
