@@ -93,6 +93,7 @@ class PIDController:
         # Apply deadband: if output is within deadband, return 0
         if abs(control_signal) < self.deadband:
             control_signal = 0.0
+            print(f"Deadband: {self.deadband}")
             # We do NOT reset integral here anymore to avoid "sticking" when error grows slowly
         
         # Update previous error
