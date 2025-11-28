@@ -165,6 +165,7 @@ class AutoPilotController:
                 
                 # Convert steering angle to servo angle
                 servo_angle = self.angle_converter.convert(steering_angle, inverted=True)
+                print(f"Angle Converter: Servo angle: {servo_angle}")
                 
                 # Send command to ESP32 only if it changed (prevent UART spam)
                 should_send = False

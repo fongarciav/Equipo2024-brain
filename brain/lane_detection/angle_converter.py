@@ -11,7 +11,6 @@ SERVO_RIGHT = 50   # Right turn (lower value)
 SERVO_LEFT = 160   # Left turn (higher value)
 
 # Steering angle constants
-STRAIGHT_THRESHOLD = 2.0  # If angle is within ±2 degrees, go straight
 ANGLE_MIN = -30  # Minimum steering angle (degrees)
 ANGLE_MAX = 30   # Maximum steering angle (degrees)
 
@@ -43,10 +42,6 @@ class AngleConverter:
         Returns:
             Servo angle (50-160, where 105 is center)
         """
-        # Special case: angle close to 0 means "go straight" → servo center
-        if abs(steering_angle) <= STRAIGHT_THRESHOLD:
-            return SERVO_CENTER
-        
         # Apply inversion if requested
         if inverted:
             steering_angle = -steering_angle
@@ -69,7 +64,6 @@ class AngleConverter:
             'servo_center': SERVO_CENTER,
             'servo_left': SERVO_LEFT,
             'servo_right': SERVO_RIGHT,
-            'straight_threshold': STRAIGHT_THRESHOLD,
             'angle_min': ANGLE_MIN,
             'angle_max': ANGLE_MAX,
             'conversion_factor': self.conversion_factor
