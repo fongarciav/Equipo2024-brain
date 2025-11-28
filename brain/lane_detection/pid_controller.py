@@ -25,7 +25,11 @@ class PIDController:
         self.Kd = Kd
         self.max_angle = max_angle
         self.deadband = deadband
-        
+        print(f"Kp: {self.Kp}")
+        print(f"Ki: {self.Ki}")
+        print(f"Deadband: {self.deadband}")
+        print(f"Kd: {self.Kd}")
+        print(f"Max angle: {self.max_angle}")
         # Output limits (symmetric around 0)
         self.max_output = max_angle
         self.min_output = -max_angle
@@ -93,7 +97,6 @@ class PIDController:
         # Apply deadband: if output is within deadband, return 0
         if abs(control_signal) < self.deadband:
             control_signal = 0.0
-            print(f"Deadband: {self.deadband}")
             # We do NOT reset integral here anymore to avoid "sticking" when error grows slowly
         
         # Update previous error
