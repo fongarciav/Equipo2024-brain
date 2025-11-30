@@ -32,6 +32,13 @@ except ImportError as e:
     import_errors['VideoStreamer'] = str(e)
 
 try:
+    from camera.realsense_streamer import RealSenseStreamer
+except ImportError as e:
+    print(f"Warning: Could not import RealSenseStreamer: {e}")
+    RealSenseStreamer = None
+    import_errors['RealSenseStreamer'] = str(e)
+
+try:
     from lane_detection.autopilot_controller import AutoPilotController
 except ImportError as e:
     print(f"Warning: Could not import AutoPilotController: {e}")
@@ -619,10 +626,24 @@ def initialize_autopilot_if_needed():
         command_sender = CommandSender(write_uart_command)
     
     # Initialize video streamer if not already done
-    if video_streamer is None and VideoStreamer is not None:
-        video_streamer = VideoStreamer()
-        if not video_streamer.initialize():
-            return False
+    if video_streamer is None:
+        # Try RealSense first if available
+        if RealSenseStreamer is not None:
+            print(f"[Dashboard] Attempting to initialize RealSense camera using: {RealSenseStreamer}")
+            rs_streamer = RealSenseStreamer()
+            if rs_streamer.initialize():
+                video_streamer = rs_streamer
+                print("[Dashboard] RealSense camera initialized successfully.")
+            else:
+                print("[Dashboard] RealSense initialization failed, falling back to standard VideoStreamer.")
+        else:
+            print("[Dashboard] RealSenseStreamer class not available (import failed).")
+        
+        # Fallback to standard VideoStreamer if RealSense failed or not available
+        if video_streamer is None and VideoStreamer is not None:
+            video_streamer = VideoStreamer()
+            if not video_streamer.initialize():
+                return False
     
     # Initialize autopilot controller
     if video_streamer is not None:
@@ -643,6 +664,13 @@ def initialize_autopilot_if_needed():
             max_angle=30.0,
             deadband=6.0
         )
+        
+        # If sign controller exists, update its reference to autopilot
+        global sign_detection_controller
+        if sign_detection_controller is not None:
+             sign_detection_controller.autopilot_controller = autopilot_controller
+             print("[Dashboard] Linked AutopilotController to SignController")
+             
         return True
     else:
         return False
@@ -672,7 +700,7 @@ def on_sign_controller_event(event_type, data):
 
 def initialize_sign_detection_if_needed():
     """Initialize sign detection controller if conditions are met."""
-    global sign_detection_controller, sign_detector, video_streamer, serial_conn, command_sender
+    global sign_detection_controller, sign_detector, video_streamer, serial_conn, command_sender, autopilot_controller
     
     # Only initialize if not already initialized
     if sign_detection_controller is not None:
@@ -692,11 +720,25 @@ def initialize_sign_detection_if_needed():
         command_sender = CommandSender(write_uart_command)
     
     # Initialize video streamer if not already done
-    if video_streamer is None and VideoStreamer is not None:
-        video_streamer = VideoStreamer()
-        if not video_streamer.initialize():
-            video_streamer = None
-            return False
+    if video_streamer is None:
+        # Try RealSense first if available
+        if RealSenseStreamer is not None:
+            print(f"[Dashboard] Attempting to initialize RealSense camera using: {RealSenseStreamer}")
+            rs_streamer = RealSenseStreamer()
+            if rs_streamer.initialize():
+                video_streamer = rs_streamer
+                print("[Dashboard] RealSense camera initialized successfully.")
+            else:
+                print("[Dashboard] RealSense initialization failed, falling back to standard VideoStreamer.")
+        else:
+            print("[Dashboard] RealSenseStreamer class not available (import failed).")
+        
+        # Fallback to standard VideoStreamer if RealSense failed or not available
+        if video_streamer is None and VideoStreamer is not None:
+            video_streamer = VideoStreamer()
+            if not video_streamer.initialize():
+                video_streamer = None
+                return False
     
     # Create sign detection controller if video_streamer is available
     if video_streamer is not None:
@@ -714,7 +756,8 @@ def initialize_sign_detection_if_needed():
         sign_detection_controller = SignController(
             sign_detector=sign_detector,
             command_sender=command_sender,
-            event_callback=on_sign_controller_event
+            event_callback=on_sign_controller_event,
+            autopilot_controller=autopilot_controller
         )
         
         return True

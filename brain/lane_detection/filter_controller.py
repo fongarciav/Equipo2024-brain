@@ -7,6 +7,7 @@ Following SRP: This module only handles filtering logic for lane detection data.
 from collections import deque
 import statistics
 
+# TODO: chequear esto, creo que no esta funcionando, solo me tira rejeted outlier todos seguido. 
 class FilterController:
     """
     Filter Controller responsible for rejecting sudden large changes in steering angle.

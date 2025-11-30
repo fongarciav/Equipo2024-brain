@@ -61,8 +61,8 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         # Valor alto (ej: 1.0): El auto "corta" las curvas agresivamente.
         # Valor bajo (ej: 0.2): El auto entra tarde a las curvas y depende más de corregir cuando ya se salió un poco.
         # TODO: Ajustar este valor desde el web server.
-        self.curvature_factor = 0.5  # Factor para combinar curvatura (ajustable desde web server)
-        self.error_factor = 0.3  # Factor para combinar error posicional (ajustable desde web server)
+        self.curvature_factor = 0.5  # Factor para combinar curvatura
+        self.error_factor = 0.3  # Factor para combinar error posicional
         
         # --- Puntos de perspectiva (de tu nuevo script) ---
         # Puntos Origen (SRC) - ROI

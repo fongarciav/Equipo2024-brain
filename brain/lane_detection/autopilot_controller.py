@@ -65,6 +65,7 @@ class AutoPilotController:
         self.last_time = time.time()
         
         self.is_running = False
+        self.is_paused = False
         self.thread = None
         self.lock = threading.Lock()
         
@@ -109,6 +110,21 @@ class AutoPilotController:
         
         return True
     
+    def pause(self):
+        """Pause the auto-pilot controller (stop processing but keep thread alive)."""
+        with self.lock:
+            self.is_paused = True
+            print("[AutoPilotController] Paused")
+
+    def resume(self):
+        """Resume the auto-pilot controller."""
+        with self.lock:
+            self.is_paused = False
+            # Reset controllers to avoid jumps
+            self.pid_controller.reset()
+            self.filter_controller.reset()
+            print("[AutoPilotController] Resumed")
+
     def _control_loop(self):
         """Main control loop running in background thread."""
         while True:
@@ -129,14 +145,26 @@ class AutoPilotController:
                 if frame is None:
                     time.sleep(0.033)  # Wait ~30ms if no frame
                     continue
-                
+
                 # Get lane metrics from detector strategy
+                # We run this even if paused to keep debug images active
                 angle_deviation_deg, debug_images = self.lane_detector.get_lane_metrics(frame)
                 
                 # Store debug images for streaming
                 with self.lock:
                     if debug_images is not None:
                         self.last_debug_images = debug_images
+                
+                # Check if paused
+                is_paused = False
+                with self.lock:
+                    is_paused = self.is_paused
+
+                if is_paused:
+                    time.sleep(0.033)
+                    continue
+                
+                # Handle no lanes detected
                 
                 # Handle no lanes detected
                 if angle_deviation_deg is None:
@@ -169,9 +197,9 @@ class AutoPilotController:
                 # Compute PID output (negate deviation for PID error)
                 # Positive deviation (lane to right) → positive steering (turn right)
                 pid_error = -angle_deviation_deg
-                print(f"Original angle deviation: {angle_deviation_deg}")
+                #print(f"Original angle deviation: {angle_deviation_deg}")
                 steering_angle = self.pid_controller.compute(pid_error, dt)
-                print(f"PID Controller: Steering angle: {steering_angle}")
+                #print(f"PID Controller: Steering angle: {steering_angle}")
                 
                 # Check again before sending command (stop might have been called)
                 with self.lock:
@@ -180,7 +208,7 @@ class AutoPilotController:
                 
                 # Convert steering angle to servo angle
                 servo_angle = self.angle_converter.convert(steering_angle, inverted=True)
-                print(f"Angle Converter: Servo angle: {servo_angle}")
+                #print(f"Angle Converter: Servo angle: {servo_angle}")
                 
                 # Send command to ESP32 only if it changed (prevent UART spam)
                 should_send = False

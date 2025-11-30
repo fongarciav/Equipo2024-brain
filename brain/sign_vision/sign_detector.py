@@ -23,7 +23,8 @@ class SignDetector:
     
     def __init__(self, video_streamer: VideoStreamer, 
                  model_path: str = None, 
-                 confidence_threshold: float = 0.6):
+                 confidence_threshold: float = 0.6,
+                 source: str = None):
         """
         Initialize the sign detection controller.
         
@@ -31,9 +32,13 @@ class SignDetector:
             video_streamer: VideoStreamer instance for getting frames
             model_path: Path to YOLO model file (default: sign_vision/weights/best.pt)
             confidence_threshold: Minimum confidence for detections (default: 0.6)
+            source: Optional source ID (camera index or video path) to use a dedicated camera.
+                    If None, uses the shared video_streamer.
         """
         self.video_streamer = video_streamer
         self.confidence_threshold = confidence_threshold
+        self.source = source
+        self.cap = None
         
         # Determine model path
         if model_path is None:
@@ -145,15 +150,54 @@ class SignDetector:
                 return False
             
             self.is_running = False
+            
+            # Release dedicated camera if used
+            if self.cap is not None:
+                self.cap.release()
+                self.cap = None
+                
             print("[SignDetector] Stopped")
             return True
     
     def _detection_loop(self):
         """Main detection loop running in background thread."""
+        
+        # If using dedicated source, open it
+        if self.source is not None:
+            try:
+                # Try to convert to int if it's a number (camera index)
+                source_id = int(self.source)
+            except ValueError:
+                source_id = self.source
+                
+            print(f"[SignDetector] Opening dedicated video source: {source_id}")
+            self.cap = cv2.VideoCapture(source_id)
+            if not self.cap.isOpened():
+                print(f"[SignDetector] Error: Could not open video source {source_id}")
+                # Fallback to shared streamer? Or stop?
+                # For now, we'll just loop and try to reopen or fail
+        
         while self.is_running:
             try:
-                # Get frame from video streamer
-                frame = self.video_streamer.get_frame()
+                frame = None
+                
+                # Get frame from dedicated source if configured
+                if self.cap is not None and self.cap.isOpened():
+                    ret, frame = self.cap.read()
+                    if not ret:
+                        # End of video or camera disconnected
+                        print("[SignDetector] dedicated source ended or disconnected. Reopening...")
+                        self.cap.release()
+                        time.sleep(1.0)
+                        try:
+                            source_id = int(self.source) if str(self.source).isdigit() else self.source
+                            self.cap = cv2.VideoCapture(source_id)
+                        except:
+                            pass
+                        continue
+                else:
+                    # Use shared streamer
+                    frame = self.video_streamer.get_frame()
                 
                 if frame is None:
                     time.sleep(0.033)  # Wait ~30ms if no frame
@@ -181,16 +225,30 @@ class SignDetector:
                             cx = int((x1 + x2) / 2)
                             cy = int((y1 + y2) / 2)
                             
+                            # Get distance if available (from RealSense)
+                            distance = None
+                            if hasattr(self.video_streamer, 'get_distance') and self.source is None:
+                                distance = self.video_streamer.get_distance(cx, cy)
+                                # if distance is None:
+                                #     print(f"[SignDetector] Warning: get_distance returned None for ({cx}, {cy})")
+                            # else:
+                            #     print("[SignDetector] Video streamer does not support get_distance")
+                            
                             cls = int(boxes.cls[i])
                             class_name = self.model.names[cls]
                             
                             # Store detection info
-                            detections.append({
+                            detection_info = {
                                 'class': class_name,
                                 'confidence': confidence,
                                 'bbox': [x1, y1, x2, y2],
                                 'center': (cx, cy)
-                            })
+                            }
+                            
+                            if distance is not None:
+                                detection_info['distance'] = distance
+                                
+                            detections.append(detection_info)
                             
                             # Draw bounding box
                             cv2.rectangle(detection_image, (x1, y1), (x2, y2), (0, 255, 0), 2)
@@ -200,6 +258,9 @@ class SignDetector:
                             
                             # Draw label with background and position
                             label = f"{class_name} {confidence:.1%} ({cx}, {cy})"
+                            if distance is not None:
+                                label += f" {distance:.2f}m"
+                                
                             label_size, _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
                             label_y = y1 - 10 if y1 - 10 > 10 else y1 + 20
                             cv2.rectangle(detection_image, (x1, label_y - label_size[1] - 5), 
