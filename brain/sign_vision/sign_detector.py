@@ -176,6 +176,11 @@ class SignDetector:
                             # Get bounding box coordinates
                             box = boxes.xyxy[i].cpu().numpy()  # [x1, y1, x2, y2]
                             x1, y1, x2, y2 = int(box[0]), int(box[1]), int(box[2]), int(box[3])
+                            
+                            # Calculate center position
+                            cx = int((x1 + x2) / 2)
+                            cy = int((y1 + y2) / 2)
+                            
                             cls = int(boxes.cls[i])
                             class_name = self.model.names[cls]
                             
@@ -183,14 +188,18 @@ class SignDetector:
                             detections.append({
                                 'class': class_name,
                                 'confidence': confidence,
-                                'bbox': [x1, y1, x2, y2]
+                                'bbox': [x1, y1, x2, y2],
+                                'center': (cx, cy)
                             })
                             
                             # Draw bounding box
                             cv2.rectangle(detection_image, (x1, y1), (x2, y2), (0, 255, 0), 2)
                             
-                            # Draw label with background
-                            label = f"{class_name} {confidence:.1%}"
+                            # Draw center point
+                            cv2.circle(detection_image, (cx, cy), 5, (0, 0, 255), -1)
+                            
+                            # Draw label with background and position
+                            label = f"{class_name} {confidence:.1%} ({cx}, {cy})"
                             label_size, _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
                             label_y = y1 - 10 if y1 - 10 > 10 else y1 + 20
                             cv2.rectangle(detection_image, (x1, label_y - label_size[1] - 5), 
