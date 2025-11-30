@@ -18,7 +18,7 @@ La arquitectura actual se basa en **Controladores Paralelos con Dependencia Dire
 
 * **Multithreading:** La detección de carriles y la detección de señales corren en hilos separados para maximizar el uso de los núcleos de la CPU/GPU.
 * **Inyección de Dependencias:** El servidor del Dashboard actúa como fábrica, instanciando los controladores y pasando referencias entre ellos.
-* **Control Jerárquico Directo:** El subsistema de Señalización tiene autoridad para interrumpir y controlar al subsistema de Navegación (Autopiloto).
+* **Control Jerárquico Directo:** El subsistema de Señalización tiene autoridad para interrumpir y controlar al subsistema de Navegación (Autopilot).
 
 ---
 
@@ -30,21 +30,29 @@ El sistema se organiza en módulos funcionales que abstraen la visión, la lógi
 
 ```text
 brain/
-├── dashboard/           # Capa de Presentación y Orquestación de Inicio
-│   ├── dashboard_server.py  (Entry Point & Dependency Injector)
-│   └── templates/           (Frontend HTML/JS)
-├── lane_detection/      # Subsistema de Mantenimiento de Carril
-│   ├── autopilot_controller.py (Bucle de Control PID)
-│   ├── lane_detector.py        (Procesamiento de Imagen OpenCV)
-│   └── pid_controller.py       (Cálculo matemático de dirección)
-├── sign_vision/         # Subsistema de Reconocimiento de Objetos
-│   ├── sign_controller.py      (Bucle de Detección YOLO)
-│   ├── strategies/             (Patrón Strategy para Maniobras)
-│   │   ├── stop_strategy.py
-│   │   └── intersection_strategy.py
-└── camera/              # Capa de Abstracción de Hardware (HAL)
-    ├── video_streamer.py       (Webcams estándar)
-    └── realsense_streamer.py   (Cámaras de Profundidad Intel)
+├── dashboard/                       # Servidor Web y UI de control
+│   ├── static/                      # Archivos estáticos (CSS, JS, Iconos)
+│   ├── templates/                   # Plantillas HTML (dashboard.html)
+│   └── dashboard_server.py          # ENTRY POINT: Inicializa controladores y servidor Flask
+├── lane_detection/                  # Subsistema de Navegación Autónoma
+│   ├── angle_converter.py           # Conversión de ángulo de dirección a valores PWM servo
+│   ├── autopilot_controller.py      # Controlador principal (Hilo de control PID)
+│   ├── filter_controller.py         # Filtro de media móvil para suavizar dirección
+│   ├── lane_detector.py             # Procesamiento de imagen OpenCV (líneas, bird-view)
+│   └── pid_controller.py            # Implementación del algoritmo PID
+├── sign_vision/                     # Subsistema de Detección de Señales
+│   ├── strategies/                  # Implementación del Patrón Strategy
+│   │   ├── base_strategy.py         # Clase abstracta con lógica de validación (distancia/confianza)
+│   │   ├── intersection_strategy.py # Maniobra manual para intersecciones
+│   │   └── stop_strategy.py         # Maniobra de parada y espera
+│   ├── weights/                     # Archivos de modelos YOLO (.pt, .engine)
+│   ├── sign_controller.py           # Controlador de lógica de señales (Hilo de decisión)
+│   └── sign_detector.py             # Inferencia YOLO y cálculo de distancias
+├── camera/                          # Módulo de abstracción de hardware de cámara
+│   ├── camera_config.py             # Utilidades para selección de cámara según SO
+│   ├── realsense_streamer.py        # Driver para Intel RealSense (RGB + Depth)
+│   └── video_streamer.py            # Driver genérico para Webcam y streaming MJPEG
+├── command_sender.py                # Interfaz de bajo nivel para comunicación Serial (UART) con ESP32
 ```
 
 ### 2.2 Diagrama de Clases y Relaciones
@@ -148,7 +156,7 @@ El módulo Dashboard actúa como el **"Centro de Mando"** y punto de entrada (En
 
 ### 3.1 Responsabilidades Críticas
 1.  **Bootstrapping (Arranque):** Al iniciar, detecta y conecta automáticamente el hardware disponible (Cámara RealSense o WebCam, Puerto Serial ESP32).
-2.  **Inyección de Dependencias:** Instancia los controladores (`AutoPilot` y `SignController`) y vincula las referencias cruzadas necesarias para que las maniobras funcionen.
+2.  **Inyección de Dependencias:** Instancia los controladores (`AutoPilotController` y `SignController`) y vincula las referencias cruzadas necesarias para que las maniobras funcionen.
 3.  **Telemetría en Tiempo Real:** Utiliza **Server-Sent Events (SSE)** para enviar datos de sensores (velocidad, ángulo, logs) al navegador sin recargas.
 
 ### 3.2 Componentes del Servidor (`dashboard_server.py`)
@@ -187,19 +195,36 @@ El vehículo opera en modo autónomo estándar.
 
 ```mermaid
 sequenceDiagram
-    participant Cam as Camera
-    participant Auto as AutoPilot
+    participant Cam as VideoStreamer
+    participant Auto as AutoPilotController
+    participant Lane as LaneDetector
+    participant Filter as FilterController
     participant PID as PIDController
+    participant Conv as AngleConverter
     participant Serial as CommandSender
 
-    Cam->>Auto: Get Frame
-    Auto->>Auto: LaneDetector.detect()
-    Auto->>PID: calculate(error)
-    PID-->>Auto: steering_angle
-    
-    opt Si no está pausado
-        Auto->>Serial: send("STEER: <angle>")
-        Auto->>Serial: send("SPEED: <val>")
+    loop Control Loop (30 FPS)
+        Cam->>Auto: get_frame()
+        activate Auto
+        
+        Auto->>Lane: get_lane_metrics(frame)
+        Lane-->>Auto: angle_deviation
+        
+        Auto->>Filter: filter(angle_deviation)
+        Filter-->>Auto: filtered_angle
+        
+        Auto->>PID: compute(error, dt)
+        PID-->>Auto: steering_angle (degrees)
+        
+        Auto->>Conv: convert(steering_angle)
+        Conv-->>Auto: servo_value (50-160)
+        
+        opt Si el valor cambió
+            Auto->>Serial: send_steering_command(servo_value)
+        end
+        
+        deactivate Auto
+        Note right of Auto: Sleep ~33ms
     end
 ```
 
@@ -210,32 +235,42 @@ Cuando se detecta una señal compleja, el sistema de visión toma el control.
 sequenceDiagram
     autonumber
     participant Sign as SignController
-    participant Strat as IntersectionStrategy
+    participant Strat as EnterIntersectionStrategy
     participant Auto as AutoPilotController
     participant Serial as CommandSender
 
-    Note over Sign: Detección: INTERSECTION<br/>Distancia: 1.2m
+    Note over Sign: Detección: INTERSECTION<br/>Distancia < activation_distance
 
-    Sign->>Sign: Instanciar IntersectionStrategy
-    Sign->>Strat: execute()
+    Sign->>Sign: Select strategies['intersection']
+    Sign->>Strat: execute(detection)
+    activate Strat
     
     rect rgb(60, 20, 20)
         note right of Strat: 1. Pausa de Seguridad
         Strat->>Auto: pause()
-        Note over Auto: Deja de enviar comandos UART
+        Note over Auto: Loop continúa pero omite<br/>cálculo PID y envío UART
     end
 
     rect rgb(20, 60, 20)
-        note right of Strat: 2. Maniobra Ciega (Open Loop)
-        Strat->>Serial: send("SPEED: 0")
-        Strat->>Serial: send("STEER: 150") (Giro)
-        Strat->>Serial: send("SPEED: 150") (Avanzar)
+        note right of Strat: 2. Maniobra Ciega (Time-Based)
+        %% Fase 1: Entrar recto
+        Strat->>Serial: send_steering(105) (Recto)
+        Strat->>Serial: send_speed(15)
+        Note right of Strat: Sleep 1.5s
+        
+        %% Fase 2: Girar
+        Strat->>Serial: send_steering(60) (Derecha)
+        Note right of Strat: Sleep 3.5s
     end
 
     rect rgb(20, 20, 60)
         note right of Strat: 3. Retorno de Control
         Strat->>Auto: resume()
+        Note over Auto: Reset PID & Filter<br/>Reactiva envío UART
     end
+    
+    deactivate Strat
+    Sign->>Sign: Cooldown check (start timer)
 ```
 
 ---
