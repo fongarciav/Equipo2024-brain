@@ -2,7 +2,7 @@
 
 **Subsistema:** High-Level Computer Vision & Control ("The Brain")  
 **Plataforma:** NVIDIA Jetson Orin Nano / Linux  
-**Versión:** 1.0.0 (Current Implementation)  
+**Versión:** 1.0.0  
 **Fecha:** Noviembre 2025  
 
 ---
@@ -13,12 +13,12 @@ El módulo **Brain** es el componente de alto nivel encargado de la percepción 
 
 A diferencia del controlador de bajo nivel (ESP32), este sistema gestiona lógica compleja, visión artificial y la orquestación de maniobras temporales.
 
-### 1.1 Principios de Diseño (v1.0)
+### 1.1 Principios de Diseño
 La arquitectura actual se basa en **Controladores Paralelos con Dependencia Directa**.
 
 * **Multithreading:** La detección de carriles y la detección de señales corren en hilos separados para maximizar el uso de los núcleos de la CPU/GPU.
 * **Inyección de Dependencias:** El servidor del Dashboard actúa como fábrica, instanciando los controladores y pasando referencias entre ellos.
-* **Control Jerárquico Directo:** El subsistema de Señalización tiene autoridad para interrumpir y controlar al subsistema de Navegación (Autopiloto).
+* **Control Jerárquico Directo:** El subsistema de Señalización tiene autoridad para interrumpir y controlar al subsistema de Navegación (Autopilot).
 
 ---
 
@@ -41,7 +41,6 @@ brain/
 ├── sign_vision/         # Subsistema de Reconocimiento de Objetos
 │   ├── sign_controller.py      (Bucle de Detección YOLO)
 │   ├── strategies/             (Patrón Strategy para Maniobras)
-│   │   ├── stop_strategy.py
 │   │   └── intersection_strategy.py
 └── camera/              # Capa de Abstracción de Hardware (HAL)
     ├── video_streamer.py       (Webcams estándar)
@@ -49,8 +48,6 @@ brain/
 ```
 
 ### 2.2 Diagrama de Clases y Relaciones
-
-Observe la relación directa donde `SignController` posee una referencia a `AutoPilotController`.
 
 ```mermaid
 classDiagram
@@ -134,14 +131,14 @@ sequenceDiagram
     Auto->>PID: calculate(error)
     PID-->>Auto: steering_angle
     
-    opt Si no está pauo
+    opt Si no está pausado
         Auto->>Serial: send("STEER: <angle>")
         Auto->>Serial: send("SPEED: <val>")
     end
 ```
 
 ### 4.2 Flujo de Interrupción: Detección de Señal (Patrón Strategy)
-Este es el flujo crítico de la arquitectura v1.0. Cuando se detecta una señal compleja (ej. Intersección), el sistema de visión "secuestra" el control.
+Cuando se detecta una señal compleja (ej. Intersección), el sistema de visión se queda con el control.
 
 ```mermaid
 sequenceDiagram
@@ -182,7 +179,7 @@ sequenceDiagram
 ## 5. Interfaces y Abstracciones
 
 ### 5.1 Abstracción de Hardware (HAL)
-* **Cámaras:** Se utiliza una clase base `VideoStreamer`. La implementación `RealSenseStreamer` extiende esto alineando los cuadros de profundidad con los RGB para obtener la coordenada Z (distancia) precisa de cada píxel detectado por YOLO.
+* **Cámaras:** Se utiliza una clase base `VideoStreamer`. La implementación `RealSenseStreamer` extiende esto alineando los cuadros de profundidad con los RGB para obtener la distancia de las señales detectadas.
 * **Comunicación:** `CommandSender` implementa el protocolo ASCII definido en el SAD del ESP32 (`CHANNEL:CMD:VALUE`).
 
 ### 5.2 Configuración
@@ -193,17 +190,20 @@ El comportamiento se define en `config.py` o variables de entorno:
 
 ---
 
-## 6. Evaluación de Arquitectura y Roadmap
+## 6. Evolución de la Arquitectura (Roadmap)
 
-### 6.1 Puntos Fuertes
-* **Modularidad Funcional:** Los algoritmos de visión están bien encapsulados.
-* **Extensibilidad:** Añadir nuevas señales es fácil gracias al Patrón Strategy.
-* **Dashboard Integrado:** Facilita la depuración en tiempo real viendo lo que "ve" el robot.
+La arquitectura actual (v1.0) ha demostrado ser eficaz para la validación de algoritmos de visión y la implementación rápida de nuevas maniobras. Proporciona una base funcional sólida para el desarrollo actual. Sin embargo, para escalar hacia comportamientos autónomos más complejos, se ha trazado una ruta de evolución hacia la versión 2.0.
 
-### 6.2 Deuda Técnica (Motivación para v2.0)
-Actualmente, el sistema presenta un acoplamiento estrecho (**Tight Coupling**) en el flujo de control:
-1.  **Dependencia Circular:** `SignController` necesita manipular el estado interno de `AutoPilotController`.
-2.  **Responsabilidad Difusa:** El subsistema de detección de señales es responsable de la lógica de movimiento durante las maniobras, lo cual viola el principio de responsabilidad única.
-3.  **Gestión de Estados:** No existe una máquina de estados centralizada; el estado del vehículo está implícito en si el Autopiloto está pausado o no.
+### 6.1 Fortalezas del Diseño Actual
+* **Encapsulamiento de Visión:** Los algoritmos de detección (Carriles y Señales) operan en módulos aislados, facilitando su mantenimiento individual.
+* **Flexibilidad en Maniobras:** La implementación del **Patrón Strategy** permite agregar nuevas lógicas de intersección sin modificar el código base del controlador.
+* **Observabilidad:** El Dashboard integrado ofrece una ventana transparente al estado interno del robot, crucial para la depuración en campo.
 
-> **Nota:** Se ha redactado la propuesta **`REFACTOR_PROPOSAL.md`** para migrar hacia una arquitectura de **Orquestador Central (VehicleController)** en la versión 2.0.0.
+### 6.2 Oportunidades de Optimización
+Para mejorar la escalabilidad y robustez del sistema, se han identificado las siguientes áreas de mejora estructural:
+
+1.  **Desacoplamiento de Flujo de Control:** Actualmente existe una interacción directa (*Peer-to-Peer*) donde el subsistema de señales gestiona al autopiloto. Una arquitectura jerárquica eliminaría esta dependencia circular.
+2.  **Centralización de Autoridad:** Mover la responsabilidad de la ejecución de maniobras desde el subsistema de detección hacia un orquestador central mejoraría la adherencia al *Principio de Responsabilidad Única*.
+3.  **Formalización del Estado:** La transición de un estado implícito (basado en pausas) a una **Máquina de Estados Finita** explícita y centralizada proporcionará mayor determinismo en situaciones de conflicto.
+
+> **Nota:** Se ha redactado la propuesta **`REFACTOR_PROPOSAL.md`** para migrar hacia una arquitectura de **Orquestador Central (VehicleController)** en la versión 2.0.0, transformando a los subsistemas de visión en sensores sin estado y eliminando las interacciones laterales entre ellos.en si el Autopiloto está pausado o no.
