@@ -291,4 +291,4 @@ Para mejorar la escalabilidad y robustez del sistema, se han identificado las si
 2.  **Centralización de Autoridad:** Mover la responsabilidad de la ejecución de maniobras desde el subsistema de detección hacia un orquestador central mejoraría la adherencia al *Principio de Responsabilidad Única*.
 3.  **Formalización del Estado:** La transición de un estado implícito (basado en pausas) a una **Máquina de Estados Finita** explícita y centralizada proporcionará mayor determinismo en situaciones de conflicto.
 
-> **Nota:** Se ha redactado la propuesta **`REFACTOR_PROPOSAL.md`** para migrar hacia una arquitectura de **Orquestador Central (VehicleController)** en la versión 2.0.0, transformando a los subsistemas de visión en sensores sin estado y eliminando las interacciones laterales entre ellos.
+> **Nota:** Se ha redactado la propuesta **`docs/v2.0.0/REFACTOR_PROPOSAL.md`** para migrar hacia una arquitectura de **Orquestador Central (VehicleController)** en la versión 2.0.0, transformando a los subsistemas de visión en sensores sin estado y eliminando las interacciones laterales entre ellos.
