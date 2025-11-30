@@ -18,7 +18,7 @@ La arquitectura actual se basa en **Controladores Paralelos con Dependencia Dire
 
 * **Multithreading:** La detección de carriles y la detección de señales corren en hilos separados para maximizar el uso de los núcleos de la CPU/GPU.
 * **Inyección de Dependencias:** El servidor del Dashboard actúa como fábrica, instanciando los controladores y pasando referencias entre ellos.
-* **Control Jerárquico Directo:** El subsistema de Señalización tiene autoridad para interrumpir y controlar al subsistema de Navegación (Autopilot).
+* **Control Jerárquico Directo:** El subsistema de Señalización tiene autoridad para interrumpir y controlar al subsistema de Navegación (Autopiloto).
 
 ---
 
@@ -28,12 +28,11 @@ El sistema se organiza en módulos funcionales que abstraen la visión, la lógi
 
 ### 2.1 Estructura de Directorios y Módulos
 
-El código fuente sigue una estructura modular clara:
-
 ```text
 brain/
 ├── dashboard/           # Capa de Presentación y Orquestación de Inicio
-│   └── dashboard_server.py  (Entry Point & Dependency Injector)
+│   ├── dashboard_server.py  (Entry Point & Dependency Injector)
+│   └── templates/           (Frontend HTML/JS)
 ├── lane_detection/      # Subsistema de Mantenimiento de Carril
 │   ├── autopilot_controller.py (Bucle de Control PID)
 │   ├── lane_detector.py        (Procesamiento de Imagen OpenCV)
@@ -41,6 +40,7 @@ brain/
 ├── sign_vision/         # Subsistema de Reconocimiento de Objetos
 │   ├── sign_controller.py      (Bucle de Detección YOLO)
 │   ├── strategies/             (Patrón Strategy para Maniobras)
+│   │   ├── stop_strategy.py
 │   │   └── intersection_strategy.py
 └── camera/              # Capa de Abstracción de Hardware (HAL)
     ├── video_streamer.py       (Webcams estándar)
@@ -51,72 +51,138 @@ brain/
 
 ```mermaid
 classDiagram
-    direction TB
+    %% Relaciones Principales
+    DashboardServer ..> AutoPilotController : Instantiates
+    DashboardServer ..> SignController : Instantiates
+    
+    AutoPilotController --> VideoStreamer : Uses
+    AutoPilotController --> CommandSender : Uses
+    AutoPilotController *-- LaneDetector : Composes
+    AutoPilotController *-- PIDController : Composes
+    AutoPilotController *-- FilterController : Composes
+    AutoPilotController *-- AngleConverter : Composes
+
+    SignController --> VideoStreamer : Uses
+    SignController --> CommandSender : Uses
+    SignController --> AutoPilotController : References (Pause/Resume)
+    SignController *-- SignDetector : Composes
+    SignController o-- SignStrategy : Aggregates (Strategies)
+
+    SignStrategy <|-- EnterIntersectionStrategy : Inherits
+    
+    VideoStreamer <|-- RealSenseStreamer : Inherits
+
+    %% Definiciones de Clase
     
     class DashboardServer {
-        + initialize_system()
-        + start_threads()
+        +initialize_autopilot_if_needed()
+        +initialize_sign_detection_if_needed()
     }
 
     class AutoPilotController {
-        - LaneDetector detector
-        - PIDController pid
-        - bool is_paused
-        + run()
-        + pause()
-        + resume()
+        -is_running: bool
+        -is_paused: bool
+        -thread: Thread
+        +start()
+        +stop()
+        +pause()
+        +resume()
+        -_control_loop()
     }
 
     class SignController {
-        - SignDetector detector
-        - AutoPilotController autopilot_ref
-        - Strategy current_strategy
-        + run()
-        - execute_strategy()
+        -strategies: Dict
+        +start()
+        +stop()
+        -_control_loop()
     }
 
-    class IManeuverStrategy {
-        <<Interface>>
-        + execute()
+    class LaneDetector {
+        +get_lane_metrics(frame)
     }
 
-    DashboardServer ..> AutoPilotController : Instancia
-    DashboardServer ..> SignController : Instancia
-    
-    %% La dependencia crítica de la v1.0
-    SignController --> AutoPilotController : Controla (Pausa/Reanuda)
-    
-    SignController o-- IManeuverStrategy : Usa
-    AutoPilotController --> CommandSender : Envía Comandos
+    class PIDController {
+        +compute(error, dt)
+        +reset()
+    }
+
+    class SignDetector {
+        -model: YOLO
+        +confidence_threshold: float
+        +initialize()
+        +get_detections()
+    }
+
+    class VideoStreamer {
+        +get_frame()
+        +initialize()
+    }
+
+    class RealSenseStreamer {
+        +get_distance(x, y)
+    }
+
+    class CommandSender {
+        +send_speed_command(speed)
+        +send_steering_command(angle)
+    }
+
+    class SignStrategy {
+        <<Abstract>>
+        +min_confidence: float
+        +activation_distance: float
+        +execute(detection)
+        +validate_detection(detection)
+    }
+
+    class EnterIntersectionStrategy {
+        +execute(detection)
+    }
 ```
 
 ---
 
-## 3. Lógica de Ejecución (Hilos y Procesos)
+## 3. Subsistema Dashboard & Orquestación (`brain/dashboard`)
 
-El sistema opera mediante tres hilos de ejecución principales que comparten memoria dentro del mismo proceso Python.
+El módulo Dashboard actúa como el **"Centro de Mando"** y punto de entrada (Entry Point) de la aplicación. Combina funciones de inicialización del sistema, interfaz de usuario y pasarela API.
 
-### 3.1 Hilo de Navegación (AutoPilot)
-* **Frecuencia:** ~30 Hz (Limitado por FPS de cámara).
-* **Responsabilidad:**
-    1.  Obtener frame de `VideoStreamer`.
-    2.  Procesar ROI (Región de Interés) para líneas de carril.
-    3.  Calcular error de centro y ángulo PID.
-    4.  **Si `!is_paused`:** Enviar comando de dirección al ESP32.
-    5.  **Si `is_paused`:** Solo procesar imagen para visualización en Dashboard (Debug).
+### 3.1 Responsabilidades Críticas
+1.  **Bootstrapping (Arranque):** Al iniciar, detecta y conecta automáticamente el hardware disponible (Cámara RealSense o WebCam, Puerto Serial ESP32).
+2.  **Inyección de Dependencias:** Instancia los controladores (`AutoPilot` y `SignController`) y vincula las referencias cruzadas necesarias para que las maniobras funcionen.
+3.  **Telemetría en Tiempo Real:** Utiliza **Server-Sent Events (SSE)** para enviar datos de sensores (velocidad, ángulo, logs) al navegador sin recargas.
 
-### 3.2 Hilo de Señalización (SignVision)
-* **Frecuencia:** ~15-20 Hz (Dependiente de inferencia YOLO).
-* **Responsabilidad:**
-    1.  Inferencia de red neuronal sobre el frame.
-    2.  Validación de **Confianza** (> 0.6) y **Distancia** (< 1.5m usando RealSense).
-    3.  Si se detecta evento: **Tomar control exclusivo del CommandSender**.
+### 3.2 Componentes del Servidor (`dashboard_server.py`)
+El backend está construido sobre **Flask** y gestiona:
+
+* **Rutas de Control (API REST):**
+    * `/autopilot/start` | `/autopilot/stop`: Gestión del hilo de navegación.
+    * `/api/pid/update`: Permite la sintonización de constantes PID (`Kp`, `Ki`, `Kd`) en tiempo de ejecución ("Hot-Tuning").
+* **Streaming de Video:** Expone la ruta `/video_feed` que sirve frames MJPEG. Permite cambiar dinámicamente entre vistas de depuración (Cámara cruda, Vista de Pájaro, Máscaras de detección).
+
+### 3.3 Interfaz de Usuario (Frontend SPA)
+La interfaz (`dashboard.html`) es una Single Page Application que ofrece:
+* **Visualización:** Feed de video con superposiciones gráficas (bounding boxes, líneas de carril).
+* **Control Manual/Ajuste:** Sliders para modificar la agresividad del PID y la zona muerta en tiempo real.
+* **Consola de Eventos:** Log en vivo de las decisiones del sistema (ej. "Stop Sign Detected", "Obstacle Avoidance Active").
 
 ---
 
-## 4. Flujos de Comportamiento
+## 4. Lógica de Ejecución
 
-### 4.1 Flujo Normal: Seguimiento de Carril
+### 4.1 Hilo de Navegación (AutoPilot)
+* **Frecuencia:** ~30 Hz.
+* **Responsabilidad:** Procesar imagen -> Calcular error de carril -> PID -> Enviar comando UART.
+* **Estado:** Puede ser **Pausado** por el controlador de señales para ceder el control del hardware.
+
+### 4.2 Hilo de Señalización (SignVision)
+* **Frecuencia:** ~15-20 Hz (Limitado por inferencia YOLO).
+* **Responsabilidad:** Detectar objetos y ejecutar **Estrategias** de maniobra que toman control exclusivo del vehículo.
+
+---
+
+## 5. Flujos de Comportamiento
+
+### 5.1 Flujo Normal: Seguimiento de Carril
 El vehículo opera en modo autónomo estándar.
 
 ```mermaid
@@ -137,8 +203,8 @@ sequenceDiagram
     end
 ```
 
-### 4.2 Flujo de Interrupción: Detección de Señal (Patrón Strategy)
-Cuando se detecta una señal compleja (ej. Intersección), el sistema de visión se queda con el control.
+### 5.2 Flujo de Interrupción: Detección de Señal
+Cuando se detecta una señal compleja, el sistema de visión toma el control.
 
 ```mermaid
 sequenceDiagram
@@ -156,37 +222,21 @@ sequenceDiagram
     rect rgb(60, 20, 20)
         note right of Strat: 1. Pausa de Seguridad
         Strat->>Auto: pause()
-        Note over Auto: Deja de enviar comandos UART<br/>(Solo procesa video)
+        Note over Auto: Deja de enviar comandos UART
     end
 
     rect rgb(20, 60, 20)
         note right of Strat: 2. Maniobra Ciega (Open Loop)
-        Strat->>Serial: send("SPEED: 0") (Stop breve)
-        Strat->>Serial: send("STEER: 0") (Centrar)
-        Strat->>Serial: send("SPEED: 150") (Avanzar 2s)
-        Strat->>Serial: send("STEER: 150") (Giro Derecha)
+        Strat->>Serial: send("SPEED: 0")
+        Strat->>Serial: send("STEER: 150") (Giro)
+        Strat->>Serial: send("SPEED: 150") (Avanzar)
     end
 
     rect rgb(20, 20, 60)
         note right of Strat: 3. Retorno de Control
         Strat->>Auto: resume()
-        Note over Auto: Reactiva el PID
     end
 ```
-
----
-
-## 5. Interfaces y Abstracciones
-
-### 5.1 Abstracción de Hardware (HAL)
-* **Cámaras:** Se utiliza una clase base `VideoStreamer`. La implementación `RealSenseStreamer` extiende esto alineando los cuadros de profundidad con los RGB para obtener la distancia de las señales detectadas.
-* **Comunicación:** `CommandSender` implementa el protocolo ASCII definido en el SAD del ESP32 (`CHANNEL:CMD:VALUE`).
-
-### 5.2 Configuración
-El comportamiento se define en `config.py` o variables de entorno:
-* `YOLO_MODEL_PATH`: Ruta a los pesos `.pt`.
-* `LANE_HSV_THRESHOLDS`: Filtros de color para detección de líneas.
-* `STRATEGY_ACTIVATION_DIST`: Distancia en metros para activar maniobras.
 
 ---
 
@@ -195,9 +245,9 @@ El comportamiento se define en `config.py` o variables de entorno:
 La arquitectura actual (v1.0) ha demostrado ser eficaz para la validación de algoritmos de visión y la implementación rápida de nuevas maniobras. Proporciona una base funcional sólida para el desarrollo actual. Sin embargo, para escalar hacia comportamientos autónomos más complejos, se ha trazado una ruta de evolución hacia la versión 2.0.
 
 ### 6.1 Fortalezas del Diseño Actual
-* **Encapsulamiento de Visión:** Los algoritmos de detección (Carriles y Señales) operan en módulos aislados, facilitando su mantenimiento individual.
-* **Flexibilidad en Maniobras:** La implementación del **Patrón Strategy** permite agregar nuevas lógicas de intersección sin modificar el código base del controlador.
-* **Observabilidad:** El Dashboard integrado ofrece una ventana transparente al estado interno del robot, crucial para la depuración en campo.
+* **Encapsulamiento de Visión:** Los algoritmos de detección operan en módulos aislados.
+* **Flexibilidad en Maniobras:** El **Patrón Strategy** permite agregar nuevas lógicas fácilmente.
+* **Observabilidad:** El Dashboard actúa como una herramienta de telemetría y control vital para el desarrollo.
 
 ### 6.2 Oportunidades de Optimización
 Para mejorar la escalabilidad y robustez del sistema, se han identificado las siguientes áreas de mejora estructural:
@@ -206,4 +256,4 @@ Para mejorar la escalabilidad y robustez del sistema, se han identificado las si
 2.  **Centralización de Autoridad:** Mover la responsabilidad de la ejecución de maniobras desde el subsistema de detección hacia un orquestador central mejoraría la adherencia al *Principio de Responsabilidad Única*.
 3.  **Formalización del Estado:** La transición de un estado implícito (basado en pausas) a una **Máquina de Estados Finita** explícita y centralizada proporcionará mayor determinismo en situaciones de conflicto.
 
-> **Nota:** Se ha redactado la propuesta **`REFACTOR_PROPOSAL.md`** para migrar hacia una arquitectura de **Orquestador Central (VehicleController)** en la versión 2.0.0, transformando a los subsistemas de visión en sensores sin estado y eliminando las interacciones laterales entre ellos.en si el Autopiloto está pausado o no.
+> **Nota:** Se ha redactado la propuesta **`REFACTOR_PROPOSAL.md`** para migrar hacia una arquitectura de **Orquestador Central (VehicleController)** en la versión 2.0.0, transformando a los subsistemas de visión en sensores sin estado y eliminando las interacciones laterales entre ellos.
