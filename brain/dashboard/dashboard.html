@@ -519,7 +519,7 @@
   </head>
   <body>
     <div class="container">
-      <h1>🚗 ESP32 Car Dashboard</h1>
+      <h1>ESP32 Car Dashboard</h1>
 
       <!-- Connection Panel -->
       <div class="connection-panel">
@@ -983,10 +983,18 @@
         <!-- Right Panel: Video Feeds -->
         <div class="right-panel">
           <!-- Camera View Header -->
-          <div style="display: flex; justify-content: space-between; align-items: center; flex-shrink: 0; margin-bottom: 8px;">
-            <h2 class="section-title" style="margin: 0;">Camera Views</h2>
+          <div
+            style="
+              display: flex;
+              justify-content: space-between;
+              align-items: center;
+              flex-shrink: 0;
+              margin-bottom: 8px;
+            "
+          >
+            <h2 class="section-title" style="margin: 0">Camera Views</h2>
           </div>
-          
+
           <!-- Debug Views (Always visible) -->
           <div
             class="section"
@@ -1053,7 +1061,7 @@
       // Auto-detect server URL (same origin)
       let serverURL = window.location.origin;
       let isConnected = false;
-      
+
       // Unified Event Stream Logic
       let eventSource = null;
 
@@ -1073,19 +1081,19 @@
             const data = JSON.parse(event.data);
 
             // Dispatch based on event type
-            if (data.type === 'serial') {
+            if (data.type === "serial") {
               handleSerialMessage(data);
-            } else if (data.type === 'server_log') {
+            } else if (data.type === "server_log") {
               log(data.message, "info");
-            } else if (data.type === 'autopilot_status') {
+            } else if (data.type === "autopilot_status") {
               updateAutopilotStatusUI(data);
-            } else if (data.type === 'sign_detection_status') {
+            } else if (data.type === "sign_detection_status") {
               updateSignDetectionStatusUI(data);
             }
           } catch (error) {
             // Fallback for raw serial messages (backward compatibility)
-            if (!event.data.startsWith('{')) {
-               // handleSerialMessage({message: event.data});
+            if (!event.data.startsWith("{")) {
+              // handleSerialMessage({message: event.data});
             }
           }
         };
@@ -1102,84 +1110,84 @@
       }
 
       function handleSerialMessage(data) {
-          const message = data.message;
-          
-          if (message && message.trim().length > 0) {
-            log(`ESP32: ${message}`, "serial");
+        const message = data.message;
 
-            // Parse system events and update status in real-time
-            if (message.startsWith("EVENT:STATE_CHANGED:")) {
-              const state = message.replace("EVENT:STATE_CHANGED:", "").trim();
-              updateStatusDisplay(state, null);
-            } else if (message.startsWith("EVENT:MODE_CHANGED:")) {
-              const mode = message.replace("EVENT:MODE_CHANGED:", "").trim();
-              updateStatusDisplay(null, mode);
-            } else if (message.startsWith("EVENT:CMD_EXECUTED:SET_SPEED:")) {
-              // Update speed slider and display
-              const speedStr = message
-                .replace("EVENT:CMD_EXECUTED:SET_SPEED:", "")
-                .trim();
-              const speed = parseInt(speedStr);
-              if (!isNaN(speed)) {
-                const speedSlider = document.getElementById("speed-slider");
-                const speedValue = document.getElementById("speed-value");
-                const speedDisplay = document.getElementById("speed-display");
+        if (message && message.trim().length > 0) {
+          log(`ESP32: ${message}`, "serial");
 
-                if (speedSlider && speedValue && speedDisplay) {
-                  speedSlider.value = speed;
-                  speedValue.textContent = speed;
-                  speedDisplay.textContent =
-                    speed === 0 ? "Stopped: 0" : `Speed: ${speed}`;
-                }
+          // Parse system events and update status in real-time
+          if (message.startsWith("EVENT:STATE_CHANGED:")) {
+            const state = message.replace("EVENT:STATE_CHANGED:", "").trim();
+            updateStatusDisplay(state, null);
+          } else if (message.startsWith("EVENT:MODE_CHANGED:")) {
+            const mode = message.replace("EVENT:MODE_CHANGED:", "").trim();
+            updateStatusDisplay(null, mode);
+          } else if (message.startsWith("EVENT:CMD_EXECUTED:SET_SPEED:")) {
+            // Update speed slider and display
+            const speedStr = message
+              .replace("EVENT:CMD_EXECUTED:SET_SPEED:", "")
+              .trim();
+            const speed = parseInt(speedStr);
+            if (!isNaN(speed)) {
+              const speedSlider = document.getElementById("speed-slider");
+              const speedValue = document.getElementById("speed-value");
+              const speedDisplay = document.getElementById("speed-display");
+
+              if (speedSlider && speedValue && speedDisplay) {
+                speedSlider.value = speed;
+                speedValue.textContent = speed;
+                speedDisplay.textContent =
+                  speed === 0 ? "Stopped: 0" : `Speed: ${speed}`;
               }
-            } else if (message.startsWith("EVENT:CMD_EXECUTED:SET_STEER:")) {
-              // Update steering slider and display
-              const angleStr = message
-                .replace("EVENT:CMD_EXECUTED:SET_STEER:", "")
-                .trim();
-              const angle = parseInt(angleStr);
-              if (!isNaN(angle)) {
-                const steerSlider = document.getElementById("steer-slider");
-                const steerValue = document.getElementById("steer-value");
-                const steerDisplay = document.getElementById("steer-display");
-
-                if (steerSlider && steerValue && steerDisplay) {
-                  steerSlider.value = angle;
-                  steerValue.textContent = `${angle}°`;
-
-                  const center = 105;
-                  // NOTE: Servo is inverted - 50 = right, 160 = left
-                  if (angle === center) {
-                    steerDisplay.textContent = "Center: 105°";
-                  } else if (angle < center) {
-                    // Lower value (50) = right turn
-                    steerDisplay.textContent = `Right: ${angle}°`;
-                  } else {
-                    // Higher value (160) = left turn
-                    steerDisplay.textContent = `Left: ${angle}°`;
-                  }
-                }
-              }
-            } else if (message === "EVENT:CMD_EXECUTED:SET_STEER_CENTER") {
-              // Center steering
+            }
+          } else if (message.startsWith("EVENT:CMD_EXECUTED:SET_STEER:")) {
+            // Update steering slider and display
+            const angleStr = message
+              .replace("EVENT:CMD_EXECUTED:SET_STEER:", "")
+              .trim();
+            const angle = parseInt(angleStr);
+            if (!isNaN(angle)) {
               const steerSlider = document.getElementById("steer-slider");
               const steerValue = document.getElementById("steer-value");
               const steerDisplay = document.getElementById("steer-display");
 
               if (steerSlider && steerValue && steerDisplay) {
+                steerSlider.value = angle;
+                steerValue.textContent = `${angle}°`;
+
                 const center = 105;
-                steerSlider.value = center;
-                steerValue.textContent = `${center}°`;
-                steerDisplay.textContent = "Center: 105°";
+                // NOTE: Servo is inverted - 50 = right, 160 = left
+                if (angle === center) {
+                  steerDisplay.textContent = "Center: 105°";
+                } else if (angle < center) {
+                  // Lower value (50) = right turn
+                  steerDisplay.textContent = `Right: ${angle}°`;
+                } else {
+                  // Higher value (160) = left turn
+                  steerDisplay.textContent = `Left: ${angle}°`;
+                }
               }
             }
+          } else if (message === "EVENT:CMD_EXECUTED:SET_STEER_CENTER") {
+            // Center steering
+            const steerSlider = document.getElementById("steer-slider");
+            const steerValue = document.getElementById("steer-value");
+            const steerDisplay = document.getElementById("steer-display");
+
+            if (steerSlider && steerValue && steerDisplay) {
+              const center = 105;
+              steerSlider.value = center;
+              steerValue.textContent = `${center}°`;
+              steerDisplay.textContent = "Center: 105°";
+            }
           }
+        }
       }
 
       function startSerialStream() {
         // Legacy wrapper: Ensure event stream is running
         if (!eventSource || eventSource.readyState === EventSource.CLOSED) {
-            initEventStream();
+          initEventStream();
         }
         log("Serial stream monitoring started", "info");
       }
@@ -1214,7 +1222,7 @@
         document.getElementById("status-mode").textContent = "--";
         const modeToggle = document.getElementById("mode-toggle");
         if (modeToggle) modeToggle.checked = false;
-        
+
         const stateEl = document.getElementById("status-state");
         stateEl.textContent = "--";
         stateEl.className = "status-value";
@@ -1595,19 +1603,25 @@
             const errorData = await response
               .json()
               .catch(() => ({ error: "Unknown error" }));
-            
+
             // Build error message with suggestions if available
-            let errorMessage = `Failed to start auto-pilot: ${errorData.error || response.status}`;
+            let errorMessage = `Failed to start auto-pilot: ${
+              errorData.error || response.status
+            }`;
             if (errorData.suggestions && errorData.suggestions.length > 0) {
-              errorMessage += "\nSuggestions: " + errorData.suggestions.join(", ");
+              errorMessage +=
+                "\nSuggestions: " + errorData.suggestions.join(", ");
             }
-            
+
             log(errorMessage, "error");
-            
+
             // Update status display to show error
             const statusEl = document.getElementById("autopilot-status");
             if (statusEl) {
-              if (errorData.error && errorData.error.includes("not initialized")) {
+              if (
+                errorData.error &&
+                errorData.error.includes("not initialized")
+              ) {
                 statusEl.textContent = "Not Initialized";
               } else {
                 statusEl.textContent = "Error";
@@ -1618,7 +1632,7 @@
           }
         } catch (error) {
           log(`Error starting auto-pilot: ${error.message}`, "error");
-          
+
           // Update status display to show error
           const statusEl = document.getElementById("autopilot-status");
           if (statusEl) {
@@ -1635,7 +1649,11 @@
           const response = await fetch(`${getBaseURL()}/autopilot/stop`, {
             method: "POST",
           });
-          console.log("[stopAutopilot] Response:", response.status, response.statusText);
+          console.log(
+            "[stopAutopilot] Response:",
+            response.status,
+            response.statusText
+          );
 
           if (response.ok) {
             const data = await response.json();
@@ -1645,15 +1663,18 @@
             const errorData = await response
               .json()
               .catch(() => ({ error: "Unknown error" }));
-            
+
             // Build error message with suggestions if available
-            let errorMessage = `Failed to stop auto-pilot: ${errorData.error || response.status}`;
+            let errorMessage = `Failed to stop auto-pilot: ${
+              errorData.error || response.status
+            }`;
             if (errorData.suggestions && errorData.suggestions.length > 0) {
-              errorMessage += "\nSuggestions: " + errorData.suggestions.join(", ");
+              errorMessage +=
+                "\nSuggestions: " + errorData.suggestions.join(", ");
             }
-            
+
             log(errorMessage, "error");
-            
+
             // Update status display to show error
             const statusEl = document.getElementById("autopilot-status");
             if (statusEl) {
@@ -1669,7 +1690,7 @@
           }
         } catch (error) {
           log(`Error stopping auto-pilot: ${error.message}`, "error");
-          
+
           // Update status display to show error
           const statusEl = document.getElementById("autopilot-status");
           if (statusEl) {
@@ -1725,7 +1746,9 @@
         }
 
         // Update command count
-        const commandCountEl = document.getElementById("autopilot-command-count");
+        const commandCountEl = document.getElementById(
+          "autopilot-command-count"
+        );
         if (
           commandCountEl &&
           status.command_count !== null &&
@@ -1859,15 +1882,11 @@
 
         // Update Deadband
         if (params.deadband !== undefined) {
-          const deadbandSlider = document.getElementById(
-            "pid-deadband-slider"
-          );
+          const deadbandSlider = document.getElementById("pid-deadband-slider");
           const deadbandValue = document.getElementById("pid-deadband-value");
           if (deadbandSlider && deadbandValue) {
             deadbandSlider.value = params.deadband;
-            deadbandValue.textContent = parseFloat(params.deadband).toFixed(
-              1
-            );
+            deadbandValue.textContent = parseFloat(params.deadband).toFixed(1);
           }
         }
       }
@@ -1927,19 +1946,25 @@
             const errorData = await response
               .json()
               .catch(() => ({ error: "Unknown error" }));
-            
+
             // Build error message with suggestions if available
-            let errorMessage = `Failed to start sign detection: ${errorData.error || response.status}`;
+            let errorMessage = `Failed to start sign detection: ${
+              errorData.error || response.status
+            }`;
             if (errorData.suggestions && errorData.suggestions.length > 0) {
-              errorMessage += "\nSuggestions: " + errorData.suggestions.join(", ");
+              errorMessage +=
+                "\nSuggestions: " + errorData.suggestions.join(", ");
             }
-            
+
             log(errorMessage, "error");
-            
+
             // Update status display to show error
             const statusEl = document.getElementById("sign-detection-status");
             if (statusEl) {
-              if (errorData.error && errorData.error.includes("not initialized")) {
+              if (
+                errorData.error &&
+                errorData.error.includes("not initialized")
+              ) {
                 statusEl.textContent = "Not Initialized";
               } else {
                 statusEl.textContent = "Error";
@@ -1950,7 +1975,7 @@
           }
         } catch (error) {
           log(`Error starting sign detection: ${error.message}`, "error");
-          
+
           // Update status display to show error
           const statusEl = document.getElementById("sign-detection-status");
           if (statusEl) {
@@ -1963,11 +1988,17 @@
       async function stopSignDetection() {
         console.log("[stopSignDetection] Called");
         try {
-          console.log("[stopSignDetection] Sending POST to /sign_detection/stop");
+          console.log(
+            "[stopSignDetection] Sending POST to /sign_detection/stop"
+          );
           const response = await fetch(`${getBaseURL()}/sign_detection/stop`, {
             method: "POST",
           });
-          console.log("[stopSignDetection] Response:", response.status, response.statusText);
+          console.log(
+            "[stopSignDetection] Response:",
+            response.status,
+            response.statusText
+          );
 
           if (response.ok) {
             const data = await response.json();
@@ -1977,15 +2008,18 @@
             const errorData = await response
               .json()
               .catch(() => ({ error: "Unknown error" }));
-            
+
             // Build error message with suggestions if available
-            let errorMessage = `Failed to stop sign detection: ${errorData.error || response.status}`;
+            let errorMessage = `Failed to stop sign detection: ${
+              errorData.error || response.status
+            }`;
             if (errorData.suggestions && errorData.suggestions.length > 0) {
-              errorMessage += "\nSuggestions: " + errorData.suggestions.join(", ");
+              errorMessage +=
+                "\nSuggestions: " + errorData.suggestions.join(", ");
             }
-            
+
             log(errorMessage, "error");
-            
+
             // Update status display to show error
             const statusEl = document.getElementById("sign-detection-status");
             if (statusEl) {
@@ -2001,7 +2035,7 @@
           }
         } catch (error) {
           log(`Error stopping sign detection: ${error.message}`, "error");
-          
+
           // Update status display to show error
           const statusEl = document.getElementById("sign-detection-status");
           if (statusEl) {
@@ -2032,7 +2066,9 @@
         }
 
         // Update detection count
-        const detectionCountEl = document.getElementById("sign-detection-count");
+        const detectionCountEl = document.getElementById(
+          "sign-detection-count"
+        );
         if (detectionCountEl) {
           detectionCountEl.textContent = status.current_detections || 0;
         }
@@ -2046,15 +2082,22 @@
         // Update command count
         const commandCountEl = document.getElementById("sign-command-count");
         if (commandCountEl) {
-          commandCountEl.textContent = status.command_count !== undefined ? status.command_count : 0;
+          commandCountEl.textContent =
+            status.command_count !== undefined ? status.command_count : 0;
         }
 
         // Update confidence threshold display
         if (status.confidence_threshold !== undefined) {
-          const confidenceValueEl = document.getElementById("sign-confidence-value");
-          const confidenceSliderEl = document.getElementById("sign-confidence-slider");
+          const confidenceValueEl = document.getElementById(
+            "sign-confidence-value"
+          );
+          const confidenceSliderEl = document.getElementById(
+            "sign-confidence-slider"
+          );
           if (confidenceValueEl) {
-            confidenceValueEl.textContent = parseFloat(status.confidence_threshold).toFixed(2);
+            confidenceValueEl.textContent = parseFloat(
+              status.confidence_threshold
+            ).toFixed(2);
           }
           if (confidenceSliderEl) {
             confidenceSliderEl.value = status.confidence_threshold;
@@ -2075,11 +2118,14 @@
         clearTimeout(signConfidenceUpdateTimeout);
         signConfidenceUpdateTimeout = setTimeout(async () => {
           try {
-            const response = await fetch(`${getBaseURL()}/sign_detection/confidence`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ threshold: parseFloat(value) }),
-            });
+            const response = await fetch(
+              `${getBaseURL()}/sign_detection/confidence`,
+              {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ threshold: parseFloat(value) }),
+              }
+            );
 
             if (response.ok) {
               const data = await response.json();
