@@ -37,7 +37,7 @@ class MarcosLaneDetector_Advanced(LaneDetector):
     
     def __init__(self, threshold):
         # --- Parámetros de la lógica de tu NUEVO script ---
-        self.LANE_WIDTH_PX = 500 # ¡CALIBRAR ESTE VALOR! Ancho del carril en píxeles en vista cenital
+        self.LANE_WIDTH_PX = 550 # ¡CALIBRAR ESTE VALOR! Ancho del carril en píxeles en vista cenital
         self.prev_left_fit = None
         self.prev_right_fit = None
         self.MIN_POINTS_FOR_FIT = 3
@@ -67,9 +67,9 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         # --- Puntos de perspectiva (de tu nuevo script) ---
         # Puntos Origen (SRC) - ROI
         self.tl = (160, 180)
-        self.bl = (0, 450)
+        self.bl = (-150, 450)
         self.tr = (480, 180)
-        self.br = (640, 450)
+        self.br = (790, 450)
         self.pts1 = np.float32([self.tl, self.bl, self.tr, self.br])
         
         # Puntos Destino (DST) - VISTA CENITAL
