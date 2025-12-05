@@ -1,0 +1,76 @@
+import socket
+import time
+import requests
+
+# --- CONFIGURACIÓN ---
+TELEGRAM_TOKEN = "TU_TOKEN_AQUI"
+
+# Lista de los 4 integrantes (IDs numéricos o cadenas)
+RECIPIENT_IDS = [
+    "ID_USUARIO_1",  # Integrante 1
+    "ID_USUARIO_2",  # Integrante 2
+    "ID_USUARIO_3",  # Integrante 3
+    "ID_USUARIO_4"   # Integrante 4
+]
+
+MAX_RETRIES = 30
+RETRY_DELAY = 10
+# ---------------------
+
+def get_routing_ip(target="8.8.8.8"):
+    """
+    Obtiene la IP de la interfaz con salida a internet.
+    """
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect((target, 80))
+        ip_address = s.getsockname()[0]
+    except Exception:
+        ip_address = None
+    finally:
+        s.close()
+    return ip_address
+
+def broadcast_notification(ip_address):
+    """
+    Envía la IP a la lista de destinatarios.
+    """
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    message = (
+        f"✅ Jetson Online\n"
+        f"📡 IP: {ip_address}\n"
+        f"🔌 SSH: ssh usuario@{ip_address}"
+    )
+    
+    sent_count = 0
+    print(f"Enviando notificación a {len(RECIPIENT_IDS)} personas...")
+
+    for chat_id in RECIPIENT_IDS:
+        payload = {"chat_id": chat_id, "text": message}
+        try:
+            response = requests.post(url, json=payload, timeout=10)
+            if response.status_code == 200:
+                sent_count += 1
+            else:
+                print(f"Error con usuario {chat_id}: {response.text}")
+        except Exception:
+            pass # Ignoramos errores individuales para no frenar el bucle
+
+    return sent_count > 0
+
+# --- LOOP PRINCIPAL ---
+if __name__ == "__main__":
+    print("--- Servicio de Notificación Grupal Iniciado ---")
+    
+    for attempt in range(MAX_RETRIES):
+        current_ip = get_routing_ip()
+        
+        if current_ip:
+            print(f"IP detectada: {current_ip}. Ejecutando difusión...")
+            if broadcast_notification(current_ip):
+                print("Difusión terminada.")
+                break
+        else:
+            print("Esperando red...")
+        
+        time.sleep(RETRY_DELAY)
