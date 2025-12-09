@@ -835,7 +835,9 @@ def uart_connect():
         serial_read_buffer = ""  # Clear buffer on new connection
         time.sleep(0.1)
         start_serial_reader()
+        print("[Dashboard] Started serial reader")
         start_heartbeat_sender()
+        print("[Dashboard] Started heartbeat sender")
         
         response = {
             'status': 'ok',
