@@ -129,6 +129,10 @@ serial_reader_thread = None
 serial_reader_running = False
 serial_read_buffer = ""  # Buffer for incomplete serial lines
 
+# Heartbeat sender thread
+heartbeat_sender_thread = None
+heartbeat_sender_running = False
+
 # Global event clients (combined stream)
 event_clients = []
 event_clients_lock = threading.Lock()
@@ -442,6 +446,47 @@ def stop_serial_reader():
     if serial_reader_thread:
         serial_reader_thread.join(timeout=1.0)
         serial_reader_thread = None
+
+
+def heartbeat_worker():
+    """Background thread that sends heartbeat to ESP32 when in AUTO mode."""
+    global serial_conn, heartbeat_sender_running, system_state, command_sender, system_state_lock
+
+    while heartbeat_sender_running:
+        if serial_conn and serial_conn.is_open and command_sender:
+            # Check if we are in AUTO mode
+            is_auto = False
+            with system_state_lock:
+                 is_auto = (system_state.get('mode') == 'AUTO')
+            
+            if is_auto:
+                try:
+                    command_sender.send_heartbeat()
+                except Exception as e:
+                    print(f"[Heartbeat] Error sending heartbeat: {e}", file=sys.stderr)
+            
+        time.sleep(0.05)  # Send every 50ms (Watchdog is 120ms)
+
+
+def start_heartbeat_sender():
+    """Start the heartbeat sender thread."""
+    global heartbeat_sender_thread, heartbeat_sender_running
+
+    if heartbeat_sender_thread is None or not heartbeat_sender_thread.is_alive():
+        heartbeat_sender_running = True
+        heartbeat_sender_thread = threading.Thread(
+            target=heartbeat_worker, daemon=True)
+        heartbeat_sender_thread.start()
+
+
+def stop_heartbeat_sender():
+    """Stop the heartbeat sender thread."""
+    global heartbeat_sender_running, heartbeat_sender_thread
+
+    heartbeat_sender_running = False
+    if heartbeat_sender_thread:
+        heartbeat_sender_thread.join(timeout=1.0)
+        heartbeat_sender_thread = None
 
 
 def autopilot_status_broadcast_worker():
@@ -788,6 +833,7 @@ def uart_connect():
         serial_read_buffer = ""  # Clear buffer on new connection
         time.sleep(0.1)
         start_serial_reader()
+        start_heartbeat_sender()
         
         response = {
             'status': 'ok',
@@ -806,6 +852,7 @@ def uart_disconnect():
     global serial_conn, serial_read_buffer, autopilot_controller, sign_detection_controller, sign_detector
 
     stop_serial_reader()
+    stop_heartbeat_sender()
     
     # Stop autopilot if running
     if autopilot_controller:
@@ -1457,6 +1504,7 @@ if __name__ == '__main__':
                 serial_conn = open_serial(args.port_name, UART_BAUD_RATE)
                 time.sleep(0.1)
                 start_serial_reader()
+                start_heartbeat_sender()
                 print(f"✓ Connected at {UART_BAUD_RATE} baud")
                 uart_connected = True
             except Exception as e:
@@ -1474,6 +1522,7 @@ if __name__ == '__main__':
                     serial_conn = open_serial(selected_port, UART_BAUD_RATE)
                     time.sleep(0.1)
                     start_serial_reader()
+                    start_heartbeat_sender()
                     print(f"✓ Connected at {UART_BAUD_RATE} baud")
                     uart_connected = True
                 except Exception as e:
@@ -1552,6 +1601,7 @@ if __name__ == '__main__':
         stop_sign_detection_status_broadcast()
         stop_autopilot_status_broadcast()
         stop_serial_reader()
+        stop_heartbeat_sender()
         if sign_detection_controller:
             sign_detection_controller.stop()
         if autopilot_controller:
