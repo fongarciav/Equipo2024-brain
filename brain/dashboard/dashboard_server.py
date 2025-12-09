@@ -827,7 +827,7 @@ def initialize_sign_detection_if_needed():
 @app.route('/uart/connect', methods=['POST'])
 def uart_connect():
     """Connect to ESP32 via UART."""
-    global serial_conn, serial_read_buffer
+    global serial_conn, serial_read_buffer, command_sender
 
     if not SERIAL_AVAILABLE:
         return jsonify({'error': 'pyserial not installed'}), 500
@@ -846,6 +846,11 @@ def uart_connect():
 
         serial_conn = open_serial(port, UART_BAUD_RATE)
         serial_read_buffer = ""  # Clear buffer on new connection
+        
+        # Initialize command sender immediately after connection
+        if command_sender is None:
+            command_sender = CommandSender(write_uart_command)
+            
         time.sleep(0.1)
         start_serial_reader()
         print("[Dashboard] Started serial reader")
