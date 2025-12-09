@@ -379,10 +379,12 @@ def parse_system_events(line: str):
         state = line.replace('EVENT:STATE_CHANGED:', '').strip()
         with system_state_lock:
             system_state['state'] = state
+            print(f"[SystemState] State changed to: {state}")
     elif line.startswith('EVENT:MODE_CHANGED:'):
         mode = line.replace('EVENT:MODE_CHANGED:', '').strip()
         with system_state_lock:
             system_state['mode'] = mode
+            print(f"[SystemState] Mode changed to: {mode}")
 
 
 def serial_reader_worker():
