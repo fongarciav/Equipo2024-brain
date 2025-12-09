@@ -49,3 +49,15 @@ class CommandSender:
         success, message = self.write_uart_command(command)
         return success
 
+    def send_heartbeat(self) -> bool:
+        """
+        Send heartbeat signal to ESP32 to prevent dead man switch activation.
+        
+        Returns:
+            True if command was sent successfully, False otherwise
+        """
+        # Format: M:HEARTBEAT:1
+        command = "M:HEARTBEAT:1"
+        success, message = self.write_uart_command(command)
+        return success
+
