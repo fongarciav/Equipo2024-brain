@@ -454,20 +454,33 @@ def heartbeat_worker():
     """Background thread that sends heartbeat to ESP32 when in AUTO mode."""
     global serial_conn, heartbeat_sender_running, system_state, command_sender, system_state_lock
 
+    print("[Heartbeat] Worker thread started")
+
     while heartbeat_sender_running:
         if serial_conn and serial_conn.is_open and command_sender:
             # Check if we are in AUTO mode
             is_auto = False
             with system_state_lock:
                  is_auto = (system_state.get('mode') == 'AUTO')
+                 current_mode = system_state.get('mode')
             
+            # Debug log only when state changes or periodically (to avoid spam)
+            # For now, let's print if we think we should be sending
             if is_auto:
                 try:
                     command_sender.send_heartbeat()
+                    # print("[Heartbeat] Sent heartbeat", file=sys.stderr) # Uncomment for verbose logging
                 except Exception as e:
                     print(f"[Heartbeat] Error sending heartbeat: {e}", file=sys.stderr)
+            else:
+                 pass
+                 # print(f"[Heartbeat] Skipped (Mode: {current_mode})", file=sys.stderr)
+        else:
+             print(f"[Heartbeat] Not ready - Serial: {serial_conn and serial_conn.is_open}, Sender: {command_sender is not None}")
             
         time.sleep(0.05)  # Send every 50ms (Watchdog is 120ms)
+
+    print("[Heartbeat] Worker thread stopped")
 
 
 def start_heartbeat_sender():
