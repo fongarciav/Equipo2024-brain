@@ -4,7 +4,7 @@ from .base_strategy import SignStrategy
 class EnterIntersectionStrategy(SignStrategy):
     """Strategy for entering an intersection (disables lane following temporarily)."""
     
-    def __init__(self, controller, lock, cooldown=10.0, min_confidence=0.7, activation_distance=0.5):
+    def __init__(self, controller, lock, cooldown=10.0, min_confidence=0.7, activation_distance=0.4):
         super().__init__(controller, lock, min_confidence, activation_distance)
         self.last_activation_time = 0
         self.cooldown = cooldown
