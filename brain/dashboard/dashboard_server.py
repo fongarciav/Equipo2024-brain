@@ -151,7 +151,8 @@ sign_detection_status_broadcast_thread = None
 # ...
 
 # System state tracking
-system_state = {'mode': 'MANUAL', 'state': 'ARMED'}
+# Deafult esp32 state is already armed and running, in manual mode
+system_state = {'mode': 'MANUAL', 'state': 'RUNNING'}
 system_state_lock = threading.Lock()
 
 # Auto-pilot components
