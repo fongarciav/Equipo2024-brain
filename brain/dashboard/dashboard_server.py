@@ -514,7 +514,9 @@ def heartbeat_worker():
             if is_auto:
                 try:
                     command_sender.send_heartbeat()
-                    # print("[Heartbeat] Sent heartbeat", file=sys.stderr) # Uncomment for verbose logging
+                    # Log every ~1 second (20 cycles * 50ms) to avoid spam but confirm activity
+                    if int(time.time()) % 2 == 0 and int(time.time() * 20) % 20 == 0:
+                         print(".", end="", flush=True)
                 except Exception as e:
                     print(f"[Heartbeat] Error sending heartbeat: {e}", file=sys.stderr)
             else:
