@@ -1228,14 +1228,6 @@ def autopilot_start():
     
     success = autopilot_controller.start()
     if success:
-        # Automatically switch to AUTO mode when autopilot starts
-        with system_state_lock:
-            system_state['mode'] = 'AUTO'
-        
-        # Send mode command to ESP32
-        if command_sender:
-            command_sender.write_uart_command("M:SYS_MODE:1")
-        
         # Restart sign detector if running to prevent stream freezing
         # This handles the case where starting Autopilot might interfere with an existing SignDetector loop
         if sign_detector is not None:
@@ -1381,20 +1373,6 @@ def sign_detection_start():
     controller_success = sign_detection_controller.start()
     
     if detector_success or controller_success:
-        # Automatically switch to AUTO mode when sign detection starts
-        # Important: Update state BEFORE sending command so heartbeat starts immediately
-        with system_state_lock:
-            system_state['mode'] = 'AUTO'
-            
-        # Send mode command to ESP32
-        if command_sender:
-            command_sender.write_uart_command("M:SYS_MODE:1")
-            # Send an immediate heartbeat to reset the watchdog timer on the ESP32
-            try:
-                command_sender.send_heartbeat()
-            except:
-                pass
-            
         return jsonify({'status': 'ok', 'message': 'Sign detection started'})
     else:
         return jsonify({'error': 'Sign detection already running'}), 400
