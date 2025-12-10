@@ -56,9 +56,13 @@ class IncreaseSpeedAndLaneWidthStrategy(SignStrategy):
                 if hasattr(self.controller.autopilot_controller, 'lane_detector'):
                     # The lane detector stores LANE_WIDTH_PX. We assume it's public or accessible.
                     # Based on user context: self.LANE_WIDTH_PX = 500
-                    TARGET_LANE_WIDTH = 600
+                    TARGET_LANE_WIDTH = 550
                     self.controller.autopilot_controller.lane_detector.LANE_WIDTH_PX = TARGET_LANE_WIDTH
-                    print(f"[IncreaseSpeedAndLaneWidthStrategy] Set LANE_WIDTH_PX to {TARGET_LANE_WIDTH}")
+                    
+                    # Also decrease lookahead distance for tighter response at speed
+                    TARGET_LOOKAHEAD = 200
+                    self.controller.autopilot_controller.lane_detector.LOOKAHEAD_DISTANCE = TARGET_LOOKAHEAD
+                    print(f"[IncreaseSpeedAndLaneWidthStrategy] Set LANE_WIDTH_PX to {TARGET_LANE_WIDTH}, LOOKAHEAD to {TARGET_LOOKAHEAD}")
                 else:
                     print("[IncreaseSpeedAndLaneWidthStrategy] Warning: Autopilot has no lane_detector")
             else:
