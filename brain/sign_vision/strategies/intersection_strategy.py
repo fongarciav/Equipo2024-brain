@@ -65,10 +65,10 @@ class EnterIntersectionStrategy(SignStrategy):
 
             # Phase 1: Enter Intersection (Forward)
             self.controller.command_sender.send_speed_command(ZERO_SPEED)
-            time.sleep(2)
+            time.sleep(3)
             self.controller.command_sender.send_speed_command(SPEED)
             self.controller.command_sender.send_steering_command(RIGHT_LEFT_ANGLE)
-            time.sleep(2)
+            time.sleep(5)
             
         except Exception as e:
             print(f"[EnterIntersectionStrategy] Error during manual sequence: {e}")
