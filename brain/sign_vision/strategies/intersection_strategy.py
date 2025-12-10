@@ -57,16 +57,17 @@ class EnterIntersectionStrategy(SignStrategy):
             FORWARD_ANGLE = 105
             RIGHT_LEFT_ANGLE = 140 # Close to 50 (hard right)
             SPEED = 235
+            ZERO_SPEED = 0
 
             # Use current speed if sensible, otherwise default
             if self.controller.current_speed > 0:
                 SPEED = self.controller.current_speed
 
             # Phase 1: Enter Intersection (Forward)
-            self.controller.command_sender.send_steering_command(RIGHT_LEFT_ANGLE)
-            self.controller.command_sender.send_speed_command(SPEED)
+            self.controller.command_sender.send_speed_command(ZERO_SPEED)
             time.sleep(2)
             self.controller.command_sender.send_speed_command(SPEED)
+            self.controller.command_sender.send_steering_command(RIGHT_LEFT_ANGLE)
             time.sleep(2)
             
         except Exception as e:
