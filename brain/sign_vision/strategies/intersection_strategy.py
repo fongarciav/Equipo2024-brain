@@ -64,8 +64,7 @@ class EnterIntersectionStrategy(SignStrategy):
             print("[EnterIntersectionStrategy] Executing manual sequence: Forward 1.5s then Right 3.5s")
             
             # SERVO Constants from angle_converter.py: CENTER=105, RIGHT=50, LEFT=160
-            FORWARD_ANGLE = 105
-            LEFT_ANGLE = 140 
+            LEFT_ANGLE = 130 
             SPEED = 230
             ZERO_SPEED = 0
 
