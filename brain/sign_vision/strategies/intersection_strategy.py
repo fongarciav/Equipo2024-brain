@@ -41,12 +41,15 @@ class EnterIntersectionStrategy(SignStrategy):
                 "message": msg
             })
             
-        # 1. Update Lane Width immediately (Just with detection)
+        # 1. Update Lane Width and Lookahead immediately (Just with detection)
         if hasattr(self.controller, 'autopilot_controller') and self.controller.autopilot_controller:
             if hasattr(self.controller.autopilot_controller, 'lane_detector'):
                  RESET_LANE_WIDTH = 500
                  self.controller.autopilot_controller.lane_detector.LANE_WIDTH_PX = RESET_LANE_WIDTH
-                 print(f"[EnterIntersectionStrategy] Reset LANE_WIDTH_PX to {RESET_LANE_WIDTH}")
+                 
+                 RESET_LOOKAHEAD = 250
+                 self.controller.autopilot_controller.lane_detector.LOOKAHEAD_DISTANCE = RESET_LOOKAHEAD
+                 print(f"[EnterIntersectionStrategy] Reset LANE_WIDTH_PX to {RESET_LANE_WIDTH}, LOOKAHEAD to {RESET_LOOKAHEAD}")
 
         # 2. Pause Autopilot (Lane Following)
         if hasattr(self.controller, 'autopilot_controller') and self.controller.autopilot_controller:
