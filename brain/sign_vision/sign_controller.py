@@ -54,10 +54,9 @@ class SignController:
         
         # Initialize strategies
         self.strategies = {
-            'stop': EnterIntersectionStrategy(self, self.lock),
+            'stop': DefaultStopStrategy(self, self.lock),
             'lightred': DefaultStopStrategy(self, self.lock, self.stop_cooldown),
             'no_entry': DefaultStopStrategy(self, self.lock, self.stop_cooldown),
-            'intersection': EnterIntersectionStrategy(self, self.lock),
             'priority': EnterIntersectionStrategy(self, self.lock),
         }
         
