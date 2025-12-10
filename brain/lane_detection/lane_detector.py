@@ -808,6 +808,9 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         cv2.arrowedLine(bird_view_with_lines, (legend_x + 5, y_offset - 5), (legend_x + 20, y_offset - 10), (0, 165, 255), 2, tipLength=0.4)
         cv2.putText(bird_view_with_lines, 'Result (Stanley)', (legend_x + 25, y_offset), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), font_thickness)
 
+        y_offset += legend_spacing
+        cv2.putText(bird_view_with_lines, f'Lane Width: {self.LANE_WIDTH_PX}px', (legend_x, y_offset), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (200, 200, 200), font_thickness)
+
         # Empaquetar imágenes de depuración para mostrarlas fuera
         debug_images = {
             "original": original_frame,

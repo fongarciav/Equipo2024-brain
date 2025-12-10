@@ -16,7 +16,7 @@ if str(brain_dir) not in sys.path:
 
 from command_sender import CommandSender
 from sign_vision.sign_detector import SignDetector
-from .strategies import DefaultStopStrategy, EnterIntersectionStrategy, GoForwardStrategy
+from .strategies import DefaultStopStrategy, EnterIntersectionStrategy, IncreaseSpeedAndLaneWidthStrategy
 
 
 class SignController:
@@ -56,7 +56,7 @@ class SignController:
         self.strategies = {
             'stop': DefaultStopStrategy(self, self.lock),
             'no_entry': DefaultStopStrategy(self, self.lock, self.stop_cooldown),
-            'onewayroad': GoForwardStrategy(self, self.lock)
+            'onewayroad': IncreaseSpeedAndLaneWidthStrategy(self, self.lock)
         }
         
     def start(self):
