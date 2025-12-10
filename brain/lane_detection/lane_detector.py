@@ -67,9 +67,9 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         # --- Puntos de perspectiva (de tu nuevo script) ---
         # Puntos Origen (SRC) - ROI
         self.tl = (160, 180)
-        self.bl = (-150, 450)
+        self.bl = (0, 450)
         self.tr = (480, 180)
-        self.br = (790, 450)
+        self.br = (640, 450)
         self.pts1 = np.float32([self.tl, self.bl, self.tr, self.br])
         
         # Puntos Destino (DST) - VISTA CENITAL
