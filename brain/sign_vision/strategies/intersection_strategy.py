@@ -73,8 +73,14 @@ class EnterIntersectionStrategy(SignStrategy):
         except Exception as e:
             print(f"[EnterIntersectionStrategy] Error during manual sequence: {e}")
         
-        # 3. Resume Autopilot
+        # 3. Resume Autopilot and Reset Lane Width
         if hasattr(self.controller, 'autopilot_controller') and self.controller.autopilot_controller:
+            # Reset lane width to normal (500)
+            if hasattr(self.controller.autopilot_controller, 'lane_detector'):
+                 RESET_LANE_WIDTH = 500
+                 self.controller.autopilot_controller.lane_detector.LANE_WIDTH_PX = RESET_LANE_WIDTH
+                 print(f"[EnterIntersectionStrategy] Reset LANE_WIDTH_PX to {RESET_LANE_WIDTH}")
+
             self.controller.autopilot_controller.resume()
             print("[EnterIntersectionStrategy] Autopilot resumed")
         
