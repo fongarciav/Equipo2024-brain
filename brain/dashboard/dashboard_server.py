@@ -1380,12 +1380,18 @@ def sign_detection_start():
     
     if detector_success or controller_success:
         # Automatically switch to AUTO mode when sign detection starts
+        # Important: Update state BEFORE sending command so heartbeat starts immediately
         with system_state_lock:
             system_state['mode'] = 'AUTO'
-        
+            
         # Send mode command to ESP32
         if command_sender:
             command_sender.write_uart_command("M:SYS_MODE:1")
+            # Send an immediate heartbeat to reset the watchdog timer on the ESP32
+            try:
+                command_sender.send_heartbeat()
+            except:
+                pass
             
         return jsonify({'status': 'ok', 'message': 'Sign detection started'})
     else:
