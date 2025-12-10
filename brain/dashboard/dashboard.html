@@ -656,7 +656,23 @@
             <div class="slider-container">
               <div class="slider-label">
                 <span>Speed</span>
-                <span id="speed-value">0</span>
+                <div style="display: flex; align-items: center; gap: 8px">
+                  <button
+                    class="btn btn-secondary"
+                    onclick="adjustSpeed(-1)"
+                    style="padding: 2px 8px; font-size: 10px"
+                  >
+                    -1
+                  </button>
+                  <span id="speed-value">0</span>
+                  <button
+                    class="btn btn-secondary"
+                    onclick="adjustSpeed(1)"
+                    style="padding: 2px 8px; font-size: 10px"
+                  >
+                    +1
+                  </button>
+                </div>
               </div>
               <input
                 type="range"
@@ -1517,6 +1533,21 @@
           sendCommand(`changeSpeed?speed=${speed}&direction=forward`);
         }
         // Note: Slider value will be updated again when ESP32 confirms via EVENT:CMD_EXECUTED
+      }
+
+      function adjustSpeed(delta) {
+        const speedSlider = document.getElementById("speed-slider");
+        if (!speedSlider) return;
+
+        let currentSpeed = parseInt(speedSlider.value);
+        let newSpeed = currentSpeed + delta;
+
+        // Clamp to valid range
+        newSpeed = Math.max(0, Math.min(255, newSpeed));
+
+        // Update slider (which will trigger updateSpeed)
+        speedSlider.value = newSpeed;
+        updateSpeed(newSpeed);
       }
 
       function updateSteering(value) {
