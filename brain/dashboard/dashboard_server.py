@@ -190,7 +190,7 @@ def translate_http_to_uart(endpoint: str, args: dict):
     SERVO_RIGHT = 50   # Right turn (lower value)
     SERVO_LEFT = 160   # Left turn (higher value)
     MOTOR_SPEED_MAX = 255
-    FORWARD_SPEED = 210
+    FORWARD_SPEED = 220
 
     if endpoint == 'arm':
         return True, "ARM", "M:SYS_ARM:0"
