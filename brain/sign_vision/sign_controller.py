@@ -56,6 +56,7 @@ class SignController:
         self.strategies = {
             'stop': DefaultStopStrategy(self, self.lock),
             'no_entry': DefaultStopStrategy(self, self.lock, self.stop_cooldown),
+            'priority': EnterIntersectionStrategy(self, self.lock),
             'onewayroad': IncreaseSpeedAndLaneWidthStrategy(self, self.lock)
         }
         
