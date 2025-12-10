@@ -50,13 +50,13 @@ class IncreaseSpeedAndLaneWidthStrategy(SignStrategy):
             if success:
                 self.controller.current_speed = SPEED
             
-            # 2. Increase Lane Width
+            # 2. Increase Lane Width - not used for now
             # We need to access the autopilot controller -> lane detector
             if hasattr(self.controller, 'autopilot_controller') and self.controller.autopilot_controller:
                 if hasattr(self.controller.autopilot_controller, 'lane_detector'):
                     # The lane detector stores LANE_WIDTH_PX. We assume it's public or accessible.
                     # Based on user context: self.LANE_WIDTH_PX = 500
-                    TARGET_LANE_WIDTH = 600
+                    TARGET_LANE_WIDTH = 500
                     self.controller.autopilot_controller.lane_detector.LANE_WIDTH_PX = TARGET_LANE_WIDTH
                     
                     # Also decrease lookahead distance for tighter response at speed
