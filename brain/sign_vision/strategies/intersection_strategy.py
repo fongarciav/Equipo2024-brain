@@ -55,8 +55,8 @@ class EnterIntersectionStrategy(SignStrategy):
             
             # SERVO Constants from angle_converter.py: CENTER=105, RIGHT=50, LEFT=160
             FORWARD_ANGLE = 105
-            LEFT_ANGLE = 140 # Close to 50 (hard right)
-            SPEED = 235
+            LEFT_ANGLE = 135 # Close to 50 (hard right)
+            SPEED = 230
             ZERO_SPEED = 0
 
             # Use current speed if sensible, otherwise default
