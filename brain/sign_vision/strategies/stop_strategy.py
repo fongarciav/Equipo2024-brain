@@ -4,7 +4,7 @@ from .base_strategy import SignStrategy
 class DefaultStopStrategy(SignStrategy):
     """Default strategy for handling STOP signs (Stop and wait)."""
     
-    def __init__(self, controller, lock, cooldown=5.0, min_confidence=0.6, activation_distance=1.0):
+    def __init__(self, controller, lock, cooldown=5.0, min_confidence=0.6, activation_distance=0.5):
         super().__init__(controller, lock, min_confidence, activation_distance)
         self.last_activation_time = 0
         self.cooldown = cooldown
