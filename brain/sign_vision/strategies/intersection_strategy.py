@@ -62,7 +62,7 @@ class EnterIntersectionStrategy(SignStrategy):
             
             # SERVO Constants from angle_converter.py: CENTER=105, RIGHT=50, LEFT=160
             FORWARD_ANGLE = 105
-            LEFT_ANGLE = 135 # Close to 50 (hard right)
+            LEFT_ANGLE = 130 
             SPEED = 230
             ZERO_SPEED = 0
 
@@ -75,7 +75,7 @@ class EnterIntersectionStrategy(SignStrategy):
             time.sleep(3)
             self.controller.command_sender.send_steering_command(LEFT_ANGLE)
             self.controller.command_sender.send_speed_command(SPEED)
-            time.sleep(6)
+            time.sleep(5)
             
         except Exception as e:
             print(f"[EnterIntersectionStrategy] Error during manual sequence: {e}")
