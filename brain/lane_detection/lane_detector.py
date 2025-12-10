@@ -44,7 +44,7 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         self.MIN_LANE_DISTANCE_PX = 100  # Distancia mínima entre líneas para evitar que se fusionen
         
         # --- Parámetros de cálculo de ángulos ---
-        self.LOOKAHEAD_DISTANCE = 250  # Distancia hacia adelante para calcular dirección (px)
+        self.LOOKAHEAD_DISTANCE = 210  # Distancia hacia adelante para calcular dirección (px)
         self.CURVATURE_THRESHOLD = 10.0  # Grados: menor a esto se considera recto
         self.STRAIGHT_LANE_WIDTH_REDUCTION = 60  # Reducción de píxeles para rectas
         
