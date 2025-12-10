@@ -344,13 +344,40 @@ def read_available_lines(ser):
                     line, serial_read_buffer = serial_read_buffer.split('\r\n', 1)
                     line = line.strip()
                     if line:
-                        lines.append(line)
+                        # Fix for concatenated messages (e.g. EVENT:A...EVENT:B...)
+                        # If a line contains multiple "EVENT:" markers after the start, split them
+                        if 'EVENT:' in line[6:]:  # Skip checking the very start
+                            parts = line.split('EVENT:')
+                            # First part (might be empty if line started with EVENT:)
+                            first = parts[0].strip()
+                            if first:
+                                lines.append(first)
+                            
+                            # Subsequent parts need "EVENT:" added back
+                            for part in parts[1:]:
+                                clean_part = f"EVENT:{part}".strip()
+                                if clean_part:
+                                    lines.append(clean_part)
+                        else:
+                             lines.append(line)
+
                 # Then check for \n (Unix line ending)
                 elif '\n' in serial_read_buffer:
                     line, serial_read_buffer = serial_read_buffer.split('\n', 1)
                     line = line.strip()
                     if line:
-                        lines.append(line)
+                        # Fix for concatenated messages (duplicate logic)
+                        if 'EVENT:' in line[6:]:
+                            parts = line.split('EVENT:')
+                            first = parts[0].strip()
+                            if first:
+                                lines.append(first)
+                            for part in parts[1:]:
+                                clean_part = f"EVENT:{part}".strip()
+                                if clean_part:
+                                    lines.append(clean_part)
+                        else:
+                            lines.append(line)
                 else:
                     # No more complete lines, break
                     break
@@ -362,7 +389,18 @@ def read_available_lines(ser):
                 if data:
                     line = data.decode('utf-8', errors='ignore').rstrip()
                     if line:
-                        lines.append(line)
+                        # Fix for concatenated messages in readline fallback
+                        if 'EVENT:' in line[6:]:
+                            parts = line.split('EVENT:')
+                            first = parts[0].strip()
+                            if first:
+                                lines.append(first)
+                            for part in parts[1:]:
+                                clean_part = f"EVENT:{part}".strip()
+                                if clean_part:
+                                    lines.append(clean_part)
+                        else:
+                            lines.append(line)
             except:
                 pass  # Timeout is expected when no data
     except Exception as e:
