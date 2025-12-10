@@ -113,3 +113,20 @@ Las estrategias de señales utilizan umbrales configurables para su ejecución:
 Actualmente existe un acoplamiento donde `SignController` conoce y manipula a `AutoPilotController`.
 Existe una propuesta de refactorización (`REFACTOR_PROPOSAL.md`) para mover hacia una arquitectura de **Orquestador Central (VehicleController)**, donde un cerebro central gestiona tanto la detección de carril como las señales, eliminando la dependencia circular.
 
+---
+
+## 7. Comunicación UART y Manejo de Errores
+
+La comunicación serial con el ESP32 (115200 baudios) puede sufrir de fragmentación o concatenación de mensajes cuando el microcontrolador envía ráfagas de datos (ej. durante el arranque).
+
+### Problema: Concatenación de Mensajes
+Es posible recibir múltiples eventos en una sola línea leída debido al buffering, por ejemplo:
+`EVENT:MODE_CHANGED:MANEVENT:STATE_CHANGED:RUNNING`
+
+### Solución: Sanitización de Líneas
+En `read_available_lines` (dentro de `dashboard_server.py`), se implementa una lógica de sanitización que:
+1.  Detecta si una línea contiene múltiples marcadores `EVENT:`.
+2.  Si es así, divide la línea en múltiples eventos independientes.
+3.  Reinyecta estos eventos como líneas separadas en el sistema.
+
+Esto previene que el parser de eventos (`parse_system_events`) intente procesar una cadena corrupta y falle al actualizar el estado del sistema.
