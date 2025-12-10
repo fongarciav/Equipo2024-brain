@@ -37,14 +37,14 @@ class MarcosLaneDetector_Advanced(LaneDetector):
     
     def __init__(self, threshold):
         # --- Parámetros de la lógica de tu NUEVO script ---
-        self.LANE_WIDTH_PX = 500 # ¡CALIBRAR ESTE VALOR! Ancho del carril en píxeles en vista cenital
+        self.LANE_WIDTH_PX = 550 # ¡CALIBRAR ESTE VALOR! Ancho del carril en píxeles en vista cenital
         self.prev_left_fit = None
         self.prev_right_fit = None
         self.MIN_POINTS_FOR_FIT = 3
         self.MIN_LANE_DISTANCE_PX = 100  # Distancia mínima entre líneas para evitar que se fusionen
         
         # --- Parámetros de cálculo de ángulos ---
-        self.LOOKAHEAD_DISTANCE = 210  # Distancia hacia adelante para calcular dirección (px)
+        self.LOOKAHEAD_DISTANCE = 220  # Distancia hacia adelante para calcular dirección (px)
         self.CURVATURE_THRESHOLD = 10.0  # Grados: menor a esto se considera recto
         self.STRAIGHT_LANE_WIDTH_REDUCTION = 60  # Reducción de píxeles para rectas
         
@@ -62,7 +62,7 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         # Valor bajo (ej: 0.2): El auto entra tarde a las curvas y depende más de corregir cuando ya se salió un poco.
         # TODO: Ajustar este valor desde el web server.
         self.curvature_factor = 0.5  # Factor para combinar curvatura
-        self.error_factor = 0.2  # Factor para combinar error posicional
+        self.error_factor = 0.1  # Factor para combinar error posicional
         
         # --- Puntos de perspectiva (de tu nuevo script) ---
         # Puntos Origen (SRC) - ROI
