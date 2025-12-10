@@ -41,7 +41,14 @@ class EnterIntersectionStrategy(SignStrategy):
                 "message": msg
             })
             
-        # 1. Pause Autopilot (Lane Following)
+        # 1. Update Lane Width immediately (Just with detection)
+        if hasattr(self.controller, 'autopilot_controller') and self.controller.autopilot_controller:
+            if hasattr(self.controller.autopilot_controller, 'lane_detector'):
+                 RESET_LANE_WIDTH = 500
+                 self.controller.autopilot_controller.lane_detector.LANE_WIDTH_PX = RESET_LANE_WIDTH
+                 print(f"[EnterIntersectionStrategy] Reset LANE_WIDTH_PX to {RESET_LANE_WIDTH}")
+
+        # 2. Pause Autopilot (Lane Following)
         if hasattr(self.controller, 'autopilot_controller') and self.controller.autopilot_controller:
             self.controller.autopilot_controller.pause()
             print("[EnterIntersectionStrategy] Autopilot paused")
@@ -73,14 +80,8 @@ class EnterIntersectionStrategy(SignStrategy):
         except Exception as e:
             print(f"[EnterIntersectionStrategy] Error during manual sequence: {e}")
         
-        # 3. Resume Autopilot and Reset Lane Width
+        # 4. Resume Autopilot
         if hasattr(self.controller, 'autopilot_controller') and self.controller.autopilot_controller:
-            # Reset lane width to normal (500)
-            if hasattr(self.controller.autopilot_controller, 'lane_detector'):
-                 RESET_LANE_WIDTH = 500
-                 self.controller.autopilot_controller.lane_detector.LANE_WIDTH_PX = RESET_LANE_WIDTH
-                 print(f"[EnterIntersectionStrategy] Reset LANE_WIDTH_PX to {RESET_LANE_WIDTH}")
-
             self.controller.autopilot_controller.resume()
             print("[EnterIntersectionStrategy] Autopilot resumed")
         
