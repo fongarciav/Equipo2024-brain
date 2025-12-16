@@ -257,6 +257,20 @@ def index():
     return send_from_directory(SCRIPT_DIR, 'dashboard.html')
 
 
+@app.route('/dashboard.css')
+def serve_css():
+    """Serve the dashboard CSS file."""
+    return send_from_directory(SCRIPT_DIR, 'dashboard.css')
+
+
+@app.route('/fonts/<path:filename>')
+def serve_fonts(filename):
+    """Serve font files."""
+    import os
+    fonts_dir = os.path.join(SCRIPT_DIR, 'fonts')
+    return send_from_directory(fonts_dir, filename)
+
+
 @app.route('/<path:endpoint>')
 def handle_command(endpoint):
     """Handle all dashboard commands and translate to UART."""
