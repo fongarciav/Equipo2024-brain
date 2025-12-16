@@ -18,7 +18,7 @@ class IncreaseSpeedAndLaneWidthStrategy(SignStrategy):
         print("[IncreaseSpeedAndLaneWidthStrategy] Resetting parameters...")
         try:
             # 1. Reset Speed to 210 (Normal Speed)
-            RESET_SPEED = 225
+            RESET_SPEED = 230
             success = self.controller.command_sender.send_speed_command(RESET_SPEED)
             if success:
                 # We need to lock when updating shared state from a thread
@@ -73,7 +73,7 @@ class IncreaseSpeedAndLaneWidthStrategy(SignStrategy):
         # Execute Action
         try:
             # 1. Increase Speed
-            SPEED = 230
+            SPEED = 235
             print(f"[IncreaseSpeedAndLaneWidthStrategy] Setting speed to {SPEED}")
             
             success = self.controller.command_sender.send_speed_command(SPEED)
