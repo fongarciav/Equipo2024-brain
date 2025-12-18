@@ -78,7 +78,7 @@ class EnterIntersectionStrategy(SignStrategy):
             time.sleep(3)
             self.controller.command_sender.send_steering_command(LEFT_ANGLE)
             self.controller.command_sender.send_speed_command(SPEED)
-            time.sleep(7)
+            time.sleep(5)
             self.controller.command_sender.send_steering_command(SPEED_RESET)
             
         except Exception as e:
