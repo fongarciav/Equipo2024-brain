@@ -120,6 +120,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # UART Configuration
 UART_BAUD_RATE = 115200
+UART_TERMINATOR = ";;\r\n"
 
 # Global serial connection
 serial_conn = None
@@ -169,14 +170,16 @@ CORS(app)  # Enable CORS for all routes
 
 
 def write_uart_command(command: str):
-    """Write a UART command to ESP32."""
+    """Write a UART command."""
     global serial_conn
     if not serial_conn or not serial_conn.is_open:
         return False, "Serial port not connected"
 
     try:
         with serial_lock:
-            line = (command.strip() + "\n").encode("utf-8")
+            payload = command.strip()
+            line = payload if payload.endswith("\n") else f"{payload}\n"
+            line = line.encode("utf-8")
             serial_conn.write(line)
             serial_conn.flush()
             return True, "OK"
@@ -189,40 +192,65 @@ def translate_http_to_uart(endpoint: str, args: dict):
     SERVO_CENTER = 105
     SERVO_RIGHT = 50   # Right turn (lower value)
     SERVO_LEFT = 160   # Left turn (higher value)
-    MOTOR_SPEED_MAX = 255
+    ANGLE_MAX = 30
+    SPEED_UI_MAX = 255
+    SPEED_MM_S_MAX = 500
+    STEER_TENTHS_MIN = -250
+    STEER_TENTHS_MAX = 250
     FORWARD_SPEED = 220
 
+    def format_command(key: str, payload: str) -> str:
+        return f"#{key}:{payload}{UART_TERMINATOR}"
+
+    def convert_ui_speed_to_mm_s(speed_value: int, direction: str = "forward") -> int:
+        scaled = int(round((speed_value / SPEED_UI_MAX) * SPEED_MM_S_MAX))
+        scaled = -abs(scaled) if direction.lower() == "backward" else abs(scaled)
+        return max(-SPEED_MM_S_MAX, min(SPEED_MM_S_MAX, scaled))
+
+    def convert_servo_to_steer_tenths(angle_value: int) -> int:
+        conversion_factor = (SERVO_CENTER - SERVO_RIGHT) / ANGLE_MAX
+        steering_angle = (SERVO_CENTER - angle_value) / conversion_factor
+        steering_tenths = int(round(steering_angle * 10))
+        return max(STEER_TENTHS_MIN, min(STEER_TENTHS_MAX, steering_tenths))
+
     if endpoint == 'arm':
-        return True, "ARM", "M:SYS_ARM:0"
+        return True, "ARM", format_command("kl", "30")
     elif endpoint == 'disarm':
-        return True, "DISARM", "M:SYS_DISARM:0"
+        return True, "DISARM", format_command("kl", "0")
     elif endpoint == 'mode':
         value = args.get('value', '').upper()
         if value == 'AUTO':
-            return True, "MODE: AUTO", "M:SYS_MODE:1"
+            return True, "MODE: AUTO", format_command("kl", "30")
         elif value == 'MANUAL':
-            return True, "MODE: MANUAL", "M:SYS_MODE:0"
+            return True, "MODE: MANUAL", format_command("kl", "15")
         else:
             return False, "Invalid mode value", None
     elif endpoint == 'brake':
-        return True, "BRAKE", "E:BRAKE_NOW:0"
+        return True, "BRAKE", format_command("brake", "0")
     elif endpoint == 'forward':
-        return True, "FORWARD", f"C:SET_SPEED:{FORWARD_SPEED}"
+        speed_mm_s = convert_ui_speed_to_mm_s(FORWARD_SPEED, "forward")
+        return True, "FORWARD", format_command("speed", str(speed_mm_s))
     elif endpoint == 'back':
-        return True, "BACKWARD", f"C:SET_SPEED:{MOTOR_SPEED_MAX}"
+        speed_mm_s = convert_ui_speed_to_mm_s(SPEED_UI_MAX, "backward")
+        return True, "BACKWARD", format_command("speed", str(speed_mm_s))
     elif endpoint == 'driveStop':
-        return True, "STOP", "C:SET_SPEED:0"
+        return True, "STOP", format_command("speed", "0")
     elif endpoint == 'changeSpeed':
         speed_str = args.get('speed', '0')
         direction_str = args.get('direction', 'forward')
         try:
             speed = int(speed_str)
-            if speed < 0 or speed > MOTOR_SPEED_MAX:
-                return False, f"Speed must be 0-{MOTOR_SPEED_MAX}", None
+            if speed < 0 or speed > SPEED_UI_MAX:
+                return False, f"Speed must be 0-{SPEED_UI_MAX}", None
             if speed == 0:
-                return True, "STOP", "C:SET_SPEED:0"
+                return True, "STOP", format_command("speed", "0")
             else:
-                return True, f"SPEED: {speed} ({direction_str})", f"C:SET_SPEED:{speed}"
+                speed_mm_s = convert_ui_speed_to_mm_s(speed, direction_str)
+                return (
+                    True,
+                    f"SPEED: {speed} ({direction_str})",
+                    format_command("speed", str(speed_mm_s)),
+                )
         except ValueError:
             return False, "Invalid speed value", None
     elif endpoint == 'steer' or endpoint == 'changeSteer':
@@ -232,21 +260,25 @@ def translate_http_to_uart(endpoint: str, args: dict):
             # SERVO_RIGHT (50) is minimum, SERVO_LEFT (160) is maximum
             if angle < SERVO_RIGHT or angle > SERVO_LEFT:
                 return False, f"Angle must be {SERVO_RIGHT}-{SERVO_LEFT}", None
-            return True, f"STEER: {angle}°", f"C:SET_STEER:{angle}"
+            steering_tenths = convert_servo_to_steer_tenths(angle)
+            return True, f"STEER: {angle}°", format_command("steer", str(steering_tenths))
         except ValueError:
             return False, "Invalid angle value", None
     elif endpoint == 'left':
-        return True, "LEFT", f"C:SET_STEER:{SERVO_LEFT}"
+        steering_tenths = convert_servo_to_steer_tenths(SERVO_LEFT)
+        return True, "LEFT", format_command("steer", str(steering_tenths))
     elif endpoint == 'right':
-        return True, "RIGHT", f"C:SET_STEER:{SERVO_RIGHT}"
+        steering_tenths = convert_servo_to_steer_tenths(SERVO_RIGHT)
+        return True, "RIGHT", format_command("steer", str(steering_tenths))
     elif endpoint == 'steerStop':
-        return True, "CENTER", f"C:SET_STEER:{SERVO_CENTER}"
+        steering_tenths = convert_servo_to_steer_tenths(SERVO_CENTER)
+        return True, "CENTER", format_command("steer", str(steering_tenths))
     elif endpoint == 'LightsOn':
-        return True, "LIGHTS ON", "M:LIGHTS_ON:0"
+        return False, "Lights not supported", None
     elif endpoint == 'LightsOff':
-        return True, "LIGHTS OFF", "M:LIGHTS_OFF:0"
+        return False, "Lights not supported", None
     elif endpoint == 'LightsAuto':
-        return True, "LIGHTS AUTO", "M:LIGHTS_AUTO:0"
+        return False, "Lights not supported", None
     else:
         return False, f"Unknown endpoint: {endpoint}", None
 
@@ -444,11 +476,39 @@ def parse_system_events(line: str):
         with system_state_lock:
             system_state['mode'] = mode
             print(f"[SystemState] Mode changed to: {mode} (raw: {raw_mode})")
+    elif line.startswith('@kl:'):
+        raw_value = line.replace('@kl:', '').replace(';;', '').strip()
+        try:
+            kl_value = int(raw_value)
+        except ValueError:
+            kl_value = None
+
+        if kl_value == 0:
+            state = "DISARMED"
+            mode = "MANUAL"
+        elif kl_value == 15:
+            state = "ARMED"
+            mode = "MANUAL"
+        elif kl_value == 30:
+            state = "RUNNING"
+            mode = "AUTO"
+        else:
+            state = "UNKNOWN"
+            mode = "MANUAL"
+
+        with system_state_lock:
+            system_state['state'] = state
+            system_state['mode'] = mode
+            print(f"[SystemState] KL update: {kl_value} -> {state}/{mode}")
+    elif line.startswith('@shutdown:'):
+        with system_state_lock:
+            system_state['state'] = "SHUTDOWN"
+            print("[SystemState] Shutdown reported by STM32")
 
 
 def serial_reader_worker():
     """Background thread that reads from serial port."""
-    global serial_conn, serial_reader_running, event_clients
+    global serial_conn, serial_reader_running, event_clients, sign_detection_controller
 
     while serial_reader_running:
         if serial_conn and serial_conn.is_open:
@@ -458,6 +518,14 @@ def serial_reader_worker():
                     if line:
                         # Parse system events for state tracking
                         parse_system_events(line)
+                        if line.startswith('@speed:') and sign_detection_controller is not None:
+                            raw_speed = line.replace('@speed:', '').replace(';;', '').strip()
+                            try:
+                                speed_mm_s = int(raw_speed)
+                                ui_speed = int(round((abs(speed_mm_s) / 500) * 255))
+                                sign_detection_controller.update_current_speed(ui_speed)
+                            except ValueError:
+                                pass
 
                         # Broadcast message to all connected SSE clients
                         message_data = {

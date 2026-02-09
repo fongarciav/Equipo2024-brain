@@ -1,12 +1,22 @@
 """
-Command Sender Module - Handles sending steering commands to ESP32 via UART.
+Command Sender Module - Handles sending steering commands via UART.
 
 Following SRP: This module only handles command sending.
 """
 
 
+SERVO_CENTER = 105
+SERVO_RIGHT = 50
+ANGLE_MAX = 30
+STEER_TENTHS_MIN = -250
+STEER_TENTHS_MAX = 250
+SPEED_MM_S_MIN = -500
+SPEED_MM_S_MAX = 500
+UART_TERMINATOR = ";;\r\n"
+
+
 class CommandSender:
-    """Handles sending commands to ESP32 via UART."""
+    """Handles sending commands via UART."""
     
     def __init__(self, write_uart_command_func):
         """
@@ -20,7 +30,7 @@ class CommandSender:
     
     def send_steering_command(self, servo_angle: int) -> bool:
         """
-        Send steering command to ESP32.
+        Send steering command.
         
         Args:
             servo_angle: Servo angle (50-160, where 105 is center)
@@ -28,14 +38,19 @@ class CommandSender:
         Returns:
             True if command was sent successfully, False otherwise
         """
-        # Format: C:SET_STEER:<angle>
-        command = f"C:SET_STEER:{servo_angle}"
-        success, message = self.write_uart_command(command)
+        # Convert ESP32-style servo angle to STM32 steering tenths of degree.
+        conversion_factor = (SERVO_CENTER - SERVO_RIGHT) / ANGLE_MAX
+        steering_angle = (SERVO_CENTER - servo_angle) / conversion_factor
+        steering_tenths = int(round(steering_angle * 10))
+        steering_tenths = max(STEER_TENTHS_MIN, min(STEER_TENTHS_MAX, steering_tenths))
+
+        command = f"#steer:{steering_tenths}{UART_TERMINATOR}"
+        success, _message = self.write_uart_command(command)
         return success
     
     def send_speed_command(self, speed: int, direction: str = "forward") -> bool:
         """
-        Send speed command to ESP32.
+        Send speed command.
         
         Args:
             speed: Speed value (0-255)
@@ -44,20 +59,24 @@ class CommandSender:
         Returns:
             True if command was sent successfully, False otherwise
         """
-        # Format: C:SET_SPEED:<speed>
-        command = f"C:SET_SPEED:{speed}"
-        success, message = self.write_uart_command(command)
+        scaled_speed = int(round((speed / 255) * SPEED_MM_S_MAX))
+        if direction.lower() == "backward":
+            scaled_speed = -abs(scaled_speed)
+        else:
+            scaled_speed = abs(scaled_speed)
+        scaled_speed = max(SPEED_MM_S_MIN, min(SPEED_MM_S_MAX, scaled_speed))
+
+        command = f"#speed:{scaled_speed}{UART_TERMINATOR}"
+        success, _message = self.write_uart_command(command)
         return success
 
     def send_heartbeat(self) -> bool:
         """
-        Send heartbeat signal to ESP32 to prevent dead man switch activation.
+        Send heartbeat signal.
         
         Returns:
             True if command was sent successfully, False otherwise
         """
-        # Format: M:HEARTBEAT:1
-        command = "M:HEARTBEAT:1"
-        success, message = self.write_uart_command(command)
+        command = f"#alive:1{UART_TERMINATOR}"
+        success, _message = self.write_uart_command(command)
         return success
-
