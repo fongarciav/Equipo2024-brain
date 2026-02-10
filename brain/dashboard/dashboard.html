@@ -649,6 +649,24 @@
         if (message && message.trim().length > 0) {
           log(`ESP32: ${message}`, "serial");
 
+          const servoCenter = 105;
+          const servoRight = 50;
+          const angleMax = 30;
+          const speedUiMax = 255;
+          const speedMmMax = 500;
+
+          function mapSpeedMmToUi(speedMm) {
+            const magnitude = Math.min(Math.abs(speedMm), speedMmMax);
+            return Math.round((magnitude / speedMmMax) * speedUiMax);
+          }
+
+          function mapSteerTenthsToServo(steerTenths) {
+            const conversionFactor = (servoCenter - servoRight) / angleMax;
+            const steeringAngle = steerTenths / 10;
+            const servoAngle = Math.round(servoCenter - (steeringAngle * conversionFactor));
+            return Math.max(50, Math.min(160, servoAngle));
+          }
+
           // Parse system events and update status in real-time
           if (message.startsWith("EVENT:STATE_CHANGED:")) {
             const state = message.replace("EVENT:STATE_CHANGED:", "").trim();
@@ -672,6 +690,24 @@
                 speedValue.textContent = speed;
                 speedDisplay.textContent =
                   speed === 0 ? "Stopped: 0" : `Speed: ${speed}`;
+              }
+            }
+          } else if (message.startsWith("@speed:")) {
+            const speedStr = message.replace("@speed:", "").replace(";;", "").trim();
+            const speedMm = parseInt(speedStr);
+            if (!isNaN(speedMm)) {
+              const speedSlider = document.getElementById("speed-slider");
+              const speedValue = document.getElementById("speed-value");
+              const speedDisplay = document.getElementById("speed-display");
+              const uiSpeed = mapSpeedMmToUi(speedMm);
+
+              if (speedSlider && speedValue && speedDisplay) {
+                speedSlider.value = uiSpeed;
+                speedValue.textContent = uiSpeed;
+                speedDisplay.textContent =
+                  speedMm === 0
+                    ? "Stopped: 0"
+                    : `Speed: ${speedMm} mm/s`;
               }
             }
           } else if (message.startsWith("EVENT:CMD_EXECUTED:SET_STEER:")) {
@@ -698,6 +734,29 @@
                   steerDisplay.textContent = `Right: ${angle}°`;
                 } else {
                   // Higher value (160) = left turn
+                  steerDisplay.textContent = `Left: ${angle}°`;
+                }
+              }
+            }
+          } else if (message.startsWith("@steer:")) {
+            const steerStr = message.replace("@steer:", "").replace(";;", "").trim();
+            const steerTenths = parseInt(steerStr);
+            if (!isNaN(steerTenths)) {
+              const steerSlider = document.getElementById("steer-slider");
+              const steerValue = document.getElementById("steer-value");
+              const steerDisplay = document.getElementById("steer-display");
+              const angle = mapSteerTenthsToServo(steerTenths);
+
+              if (steerSlider && steerValue && steerDisplay) {
+                steerSlider.value = angle;
+                steerValue.textContent = `${angle}°`;
+
+                const center = 105;
+                if (angle === center) {
+                  steerDisplay.textContent = "Center: 105°";
+                } else if (angle < center) {
+                  steerDisplay.textContent = `Right: ${angle}°`;
+                } else {
                   steerDisplay.textContent = `Left: ${angle}°`;
                 }
               }
