@@ -177,14 +177,8 @@ def write_uart_command(command: str):
 
     try:
         with serial_lock:
-            # IMPORTANT: preserve STM32 protocol terminator (;;\r\n).
-            payload = command
-            if payload.endswith("\r\n"):
-                line = payload
-            elif payload.endswith("\n"):
-                line = payload
-            else:
-                line = f"{payload}\r\n"
+            payload = command.strip()
+            line = payload if payload.endswith("\n") else f"{payload}\n"
             line = line.encode("utf-8")
             serial_conn.write(line)
             serial_conn.flush()
@@ -228,10 +222,7 @@ def translate_http_to_uart(endpoint: str, args: dict):
         if value == 'AUTO':
             return True, "MODE: AUTO", format_command("kl", "30")
         elif value == 'MANUAL':
-            # STM32 accepts speed/steer only with KL=30.
-            # Keep manual dashboard mode semantics, but do not drop KL to 15
-            # or motor commands will be rejected.
-            return True, "MODE: MANUAL", format_command("kl", "30")
+            return True, "MODE: MANUAL", format_command("kl", "15")
         else:
             return False, "Invalid mode value", None
     elif endpoint == 'brake':
@@ -494,16 +485,21 @@ def parse_system_events(line: str):
 
         if kl_value == 0:
             state = "DISARMED"
+            mode = "MANUAL"
         elif kl_value == 15:
             state = "ARMED"
+            mode = "MANUAL"
         elif kl_value == 30:
             state = "RUNNING"
+            mode = "AUTO"
         else:
             state = "UNKNOWN"
+            mode = "MANUAL"
 
         with system_state_lock:
             system_state['state'] = state
-            print(f"[SystemState] KL update: {kl_value} -> {state}")
+            system_state['mode'] = mode
+            print(f"[SystemState] KL update: {kl_value} -> {state}/{mode}")
     elif line.startswith('@shutdown:'):
         with system_state_lock:
             system_state['state'] = "SHUTDOWN"
