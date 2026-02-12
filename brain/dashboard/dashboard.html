@@ -1551,46 +1551,63 @@
       }
 
       // Sign Detection functions
+      let signDetectionPollTimer = null;
+      function stopSignDetectionPolling() {
+        if (signDetectionPollTimer) {
+          clearInterval(signDetectionPollTimer);
+          signDetectionPollTimer = null;
+        }
+      }
+      async function pollSignDetectionStatus() {
+        try {
+          const r = await fetch(`${getBaseURL()}/health`);
+          const data = await r.json();
+          const sd = data.sign_detection_status;
+          const statusEl = document.getElementById("sign-detection-status");
+          if (sd && sd.initializing) {
+            if (statusEl) { statusEl.textContent = "Initializing..."; statusEl.style.color = "#ffc107"; }
+            return true;
+          }
+          stopSignDetectionPolling();
+          if (sd && (sd.is_running !== undefined || sd.device !== undefined)) {
+            updateSignDetectionStatusUI({ status: sd });
+          } else if (statusEl) {
+            statusEl.textContent = "Not Initialized";
+            statusEl.style.color = "#ffc107";
+          }
+          return false;
+        } catch (e) { stopSignDetectionPolling(); return false; }
+      }
       async function startSignDetection() {
         try {
           const response = await fetch(`${getBaseURL()}/sign_detection/start`, {
             method: "POST",
           });
 
+          const data = await response.json().catch(() => ({}));
           if (response.ok) {
-            const data = await response.json();
             log(`Sign detection started: ${data.message || "OK"}`, "success");
-            // Status will be updated automatically via SSE stream
+            const statusEl = document.getElementById("sign-detection-status");
+            if (statusEl) { statusEl.textContent = "Running"; statusEl.style.color = "#28a745"; }
+          } else if (response.status === 202) {
+            log(data.message || "Sign detection initializing (30-60s)...", "info");
+            const statusEl = document.getElementById("sign-detection-status");
+            if (statusEl) { statusEl.textContent = "Initializing..."; statusEl.style.color = "#ffc107"; }
+            stopSignDetectionPolling();
+            signDetectionPollTimer = setInterval(pollSignDetectionStatus, 3000);
+            pollSignDetectionStatus();
           } else {
-            const errorData = await response
-              .json()
-              .catch(() => ({ error: "Unknown error" }));
-
-            // Build error message with suggestions if available
-            let errorMessage = `Failed to start sign detection: ${
-              errorData.error || response.status
-            }`;
+            const errorData = data && data.error ? data : { error: "Unknown error" };
+            let errorMessage = `Failed to start sign detection: ${errorData.error || response.status}`;
             if (errorData.suggestions && errorData.suggestions.length > 0) {
-              errorMessage +=
-                "\nSuggestions: " + errorData.suggestions.join(", ");
+              errorMessage += "\nSuggestions: " + errorData.suggestions.join(", ");
             }
-
             log(errorMessage, "error");
-
-            // Update status display to show error
             const statusEl = document.getElementById("sign-detection-status");
             if (statusEl) {
-              if (
-                errorData.error &&
-                errorData.error.includes("not initialized")
-              ) {
-                statusEl.textContent = "Not Initialized";
-              } else {
-                statusEl.textContent = "Error";
-              }
+              statusEl.textContent = (errorData.error && errorData.error.includes("not initialized")) ? "Not Initialized" : "Error";
               statusEl.style.color = "#dc3545";
             }
-            // Status will be updated automatically via SSE stream
           }
         } catch (error) {
           log(`Error starting sign detection: ${error.message}`, "error");
@@ -1665,23 +1682,25 @@
       }
 
       function updateSignDetectionStatusUI(data) {
-        // Handle error case
         if (data.error) {
           const statusEl = document.getElementById("sign-detection-status");
           if (statusEl) {
             statusEl.textContent = "Not Initialized";
-            statusEl.style.color = "#ffc107"; // Yellow/warning color
+            statusEl.style.color = "#ffc107";
           }
           return;
         }
 
         const status = data.status || {};
-
-        // Update status display
         const statusEl = document.getElementById("sign-detection-status");
         if (statusEl) {
-          statusEl.textContent = status.is_running ? "Running" : "Stopped";
-          statusEl.style.color = status.is_running ? "#28a745" : "#dc3545";
+          if (status.initializing) {
+            statusEl.textContent = "Initializing...";
+            statusEl.style.color = "#ffc107";
+          } else {
+            statusEl.textContent = status.is_running ? "Running" : "Stopped";
+            statusEl.style.color = status.is_running ? "#28a745" : "#dc3545";
+          }
         }
 
         // Update detection count

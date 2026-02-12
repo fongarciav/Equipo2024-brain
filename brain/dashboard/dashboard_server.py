@@ -164,6 +164,7 @@ command_sender = None
 # Sign vision components
 sign_detector = None
 sign_detection_controller = None
+sign_detection_initializing = False  # True while loading YOLO model in background
 
 app = Flask(__name__, static_folder=SCRIPT_DIR)
 CORS(app)  # Enable CORS for all routes
