@@ -1,8 +1,8 @@
 
 #!/usr/bin/env python3
 """
-Flask server to serve the ESP32 Car Control Dashboard.
-This allows accessing the dashboard via IP address from any device on the network.
+Flask server for the car control dashboard (Nucleo/STM32 over UART).
+Serves the dashboard and proxies commands to the Nucleo via serial.
 """
 
 from flask import Flask, send_from_directory, request, jsonify, Response, stream_with_context
@@ -152,7 +152,7 @@ sign_detection_status_broadcast_thread = None
 # ...
 
 # System state tracking
-# Deafult esp32 state is already armed and running, in manual mode
+# Default state: armed, manual mode (Nucleo)
 system_state = {'mode': 'MANUAL', 'state': 'RUNNING'}
 system_state_lock = threading.Lock()
 
@@ -170,25 +170,28 @@ CORS(app)  # Enable CORS for all routes
 
 
 def write_uart_command(command: str):
-    """Write a UART command."""
+    """Write a UART command. Nucleo expects lines ending with \\r\\n (do not strip)."""
     global serial_conn
     if not serial_conn or not serial_conn.is_open:
         return False, "Serial port not connected"
 
     try:
         with serial_lock:
-            payload = command.strip()
-            line = payload if payload.endswith("\n") else f"{payload}\n"
-            line = line.encode("utf-8")
+            # Keep terminator ;;\\r\\n intact - do not strip or Nucleo may not parse
+            if not command.endswith("\n"):
+                command = command + "\r\n"
+            line = command.encode("utf-8")
             serial_conn.write(line)
             serial_conn.flush()
+            print(f"[UART TX] {line.decode('utf-8', errors='replace').strip()!r}")
             return True, "OK"
     except Exception as e:
         return False, str(e)
 
 
 def translate_http_to_uart(endpoint: str, args: dict):
-    """Translate HTTP endpoint to UART command."""
+    """Translate HTTP endpoint to UART command (Nucleo: #key:payload;;\\r\\n, keys from main.cpp)."""
+    from command_sender import KEY_STEER, KEY_SPEED, KEY_BRAKE, KEY_KL
     SERVO_CENTER = 105
     SERVO_RIGHT = 50   # Right turn (lower value)
     SERVO_LEFT = 160   # Left turn (higher value)
@@ -213,28 +216,29 @@ def translate_http_to_uart(endpoint: str, args: dict):
         steering_tenths = int(round(steering_angle * 10))
         return max(STEER_TENTHS_MIN, min(STEER_TENTHS_MAX, steering_tenths))
 
+    # kl = Nucleo CKlmanager (arm/disarm/mode)
     if endpoint == 'arm':
-        return True, "ARM", format_command("kl", "30")
+        return True, "ARM", format_command(KEY_KL, "30")
     elif endpoint == 'disarm':
-        return True, "DISARM", format_command("kl", "0")
+        return True, "DISARM", format_command(KEY_KL, "0")
     elif endpoint == 'mode':
         value = args.get('value', '').upper()
         if value == 'AUTO':
-            return True, "MODE: AUTO", format_command("kl", "30")
+            return True, "MODE: AUTO", format_command(KEY_KL, "30")
         elif value == 'MANUAL':
-            return True, "MODE: MANUAL", format_command("kl", "15")
+            return True, "MODE: MANUAL", format_command(KEY_KL, "15")
         else:
             return False, "Invalid mode value", None
     elif endpoint == 'brake':
-        return True, "BRAKE", format_command("brake", "0")
+        return True, "BRAKE", format_command(KEY_BRAKE, "0")
     elif endpoint == 'forward':
         speed_mm_s = convert_ui_speed_to_mm_s(FORWARD_SPEED, "forward")
-        return True, "FORWARD", format_command("speed", str(speed_mm_s))
+        return True, "FORWARD", format_command(KEY_SPEED, str(speed_mm_s))
     elif endpoint == 'back':
         speed_mm_s = convert_ui_speed_to_mm_s(SPEED_UI_MAX, "backward")
-        return True, "BACKWARD", format_command("speed", str(speed_mm_s))
+        return True, "BACKWARD", format_command(KEY_SPEED, str(speed_mm_s))
     elif endpoint == 'driveStop':
-        return True, "STOP", format_command("speed", "0")
+        return True, "STOP", format_command(KEY_SPEED, "0")
     elif endpoint == 'changeSpeed':
         speed_str = args.get('speed', '0')
         direction_str = args.get('direction', 'forward')
@@ -243,13 +247,13 @@ def translate_http_to_uart(endpoint: str, args: dict):
             if speed < 0 or speed > SPEED_UI_MAX:
                 return False, f"Speed must be 0-{SPEED_UI_MAX}", None
             if speed == 0:
-                return True, "STOP", format_command("speed", "0")
+                return True, "STOP", format_command(KEY_SPEED, "0")
             else:
                 speed_mm_s = convert_ui_speed_to_mm_s(speed, direction_str)
                 return (
                     True,
                     f"SPEED: {speed} ({direction_str})",
-                    format_command("speed", str(speed_mm_s)),
+                    format_command(KEY_SPEED, str(speed_mm_s)),
                 )
         except ValueError:
             return False, "Invalid speed value", None
@@ -257,22 +261,21 @@ def translate_http_to_uart(endpoint: str, args: dict):
         angle_str = args.get('angle', '105')
         try:
             angle = int(angle_str)
-            # SERVO_RIGHT (50) is minimum, SERVO_LEFT (160) is maximum
             if angle < SERVO_RIGHT or angle > SERVO_LEFT:
                 return False, f"Angle must be {SERVO_RIGHT}-{SERVO_LEFT}", None
             steering_tenths = convert_servo_to_steer_tenths(angle)
-            return True, f"STEER: {angle}°", format_command("steer", str(steering_tenths))
+            return True, f"STEER: {angle}°", format_command(KEY_STEER, str(steering_tenths))
         except ValueError:
             return False, "Invalid angle value", None
     elif endpoint == 'left':
         steering_tenths = convert_servo_to_steer_tenths(SERVO_LEFT)
-        return True, "LEFT", format_command("steer", str(steering_tenths))
+        return True, "LEFT", format_command(KEY_STEER, str(steering_tenths))
     elif endpoint == 'right':
         steering_tenths = convert_servo_to_steer_tenths(SERVO_RIGHT)
-        return True, "RIGHT", format_command("steer", str(steering_tenths))
+        return True, "RIGHT", format_command(KEY_STEER, str(steering_tenths))
     elif endpoint == 'steerStop':
         steering_tenths = convert_servo_to_steer_tenths(SERVO_CENTER)
-        return True, "CENTER", format_command("steer", str(steering_tenths))
+        return True, "CENTER", format_command(KEY_STEER, str(steering_tenths))
     elif endpoint == 'LightsOn':
         return False, "Lights not supported", None
     elif endpoint == 'LightsOff':
@@ -327,7 +330,7 @@ def handle_command(endpoint):
 @app.route('/proxy/<path:endpoint>')
 def proxy_request(endpoint):
     """
-    Proxy requests to ESP32 to avoid CORS issues.
+    Proxy requests to external device (legacy) to avoid CORS issues.
     Usage: /proxy/arm, /proxy/status, etc.
     """
     esp32_ip = request.args.get('ip', '192.168.4.1')
@@ -578,36 +581,16 @@ def stop_serial_reader():
 
 
 def heartbeat_worker():
-    """Background thread that sends heartbeat to ESP32 when in AUTO mode."""
-    global serial_conn, heartbeat_sender_running, system_state, command_sender, system_state_lock
-
-    print("[Heartbeat] Worker thread started")
+    """Send #alive to Nucleo so watchdog does not stop the motors (every 50ms when UART connected)."""
+    global serial_conn, heartbeat_sender_running, command_sender
 
     while heartbeat_sender_running:
         if serial_conn and serial_conn.is_open and command_sender:
-            # Check if we are in AUTO mode
-            is_auto = False
-            with system_state_lock:
-                 is_auto = (system_state.get('mode') == 'AUTO')
-                 current_mode = system_state.get('mode')
-            
-            # Debug log only when state changes or periodically (to avoid spam)
-            # For now, let's print if we think we should be sending
-            if is_auto:
-                try:
-                    command_sender.send_heartbeat()
-                    # Log every ~1 second (20 cycles * 50ms) to avoid spam but confirm activity
-                    if int(time.time()) % 2 == 0 and int(time.time() * 20) % 20 == 0:
-                         print(".", end="", flush=True)
-                except Exception as e:
-                    print(f"[Heartbeat] Error sending heartbeat: {e}", file=sys.stderr)
-            else:
-                 pass
-                 # print(f"[Heartbeat] Skipped (Mode: {current_mode})", file=sys.stderr)
-        else:
-             print(f"[Heartbeat] Not ready - Serial: {serial_conn and serial_conn.is_open}, Sender: {command_sender is not None}")
-            
-        time.sleep(0.05)  # Send every 50ms (Watchdog is 120ms)
+            try:
+                command_sender.send_heartbeat()
+            except Exception as e:
+                print(f"[Heartbeat] Error: {e}", file=sys.stderr)
+        time.sleep(0.05)  # 50ms; Nucleo watchdog typically ~120ms
 
     print("[Heartbeat] Worker thread stopped")
 
@@ -955,7 +938,7 @@ def initialize_sign_detection_if_needed():
 
 @app.route('/uart/connect', methods=['POST'])
 def uart_connect():
-    """Connect to ESP32 via UART."""
+    """Connect to Nucleo (STM32) via UART."""
     global serial_conn, serial_read_buffer, command_sender
 
     if not SERIAL_AVAILABLE:
@@ -999,7 +982,7 @@ def uart_connect():
 
 @app.route('/uart/disconnect', methods=['POST'])
 def uart_disconnect():
-    """Disconnect from ESP32."""
+    """Disconnect from Nucleo (UART)."""
     global serial_conn, serial_read_buffer, autopilot_controller, sign_detection_controller, sign_detector
 
     stop_serial_reader()
@@ -1570,7 +1553,7 @@ def select_port_interactive() -> str:
 
     ports = list(serial_list_ports.comports())
     if not ports:
-        print("No serial ports found. Connect the ESP32 and try again.")
+        print("No serial ports found. Connect the Nucleo (ST-Link USB) and try again.")
         return None
     if len(ports) == 1:
         selected = ports[0].device
@@ -1606,7 +1589,7 @@ if __name__ == '__main__':
     import argparse
 
     parser = argparse.ArgumentParser(
-        description='ESP32 Car Control Dashboard Server')
+        description='Car Control Dashboard Server (Nucleo/STM32 UART)')
     parser.add_argument('--host', default='0.0.0.0',
                         help='Host to bind to (default: 0.0.0.0 for all interfaces)')
     parser.add_argument('--port', type=int, default=5000,
@@ -1639,7 +1622,7 @@ if __name__ == '__main__':
     local_ip = get_local_ip()
 
     print("=" * 70)
-    print(" " * 15 + "ESP32 Car Control Dashboard Server")
+    print(" " * 15 + "Car Control Dashboard (Nucleo/STM32)")
     print("=" * 70)
     print()
     
