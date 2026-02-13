@@ -54,6 +54,8 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         self.SLIDING_WINDOW_WIDTH = 50  # Ancho a cada lado del centro de la ventana
         self.SLIDING_WINDOW_EXPANDED_WIDTH = 150  # Ancho expandido para búsqueda ampliada
         self.ENABLE_EXPANDED_SEARCH = False  # Habilitar/deshabilitar búsqueda expandida
+        self.HISTOGRAM_PEAK_THRESHOLD = 3000  # Umbral mínimo para considerar un pico de histograma válido
+        self.HISTOGRAM_SMOOTH_KERNEL_SIZE = 9  # Kernel 1D para suavizar histograma antes de detectar picos
         
         # --- Parámetros de Control ---
         # La Ganancia o peso que le das a la anticipación.
@@ -113,10 +115,53 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         # Usar toda la ventana del birdview para el histograma
         histogram = np.sum(mask[mask.shape[0]//2:, :], axis=0)
         midpoint = int(histogram.shape[0]/2)
-        
-        # Calcular los picos brutos (brute force peak finding)
-        raw_left_base = np.argmax(histogram[:midpoint])
-        raw_right_base = np.argmax(histogram[midpoint:]) + midpoint
+
+        # Suavizar histograma para reducir ruido local antes de detectar picos
+        histogram_smoothed = cv2.GaussianBlur(
+            histogram.astype(np.float32).reshape(1, -1),
+            (self.HISTOGRAM_SMOOTH_KERNEL_SIZE, 1),
+            0
+        ).flatten()
+
+        def _find_first_peak_from_center(hist, center_x, direction, threshold):
+            """
+            Buscar el primer pico local válido desde el centro hacia un lado.
+
+            Args:
+                hist: Histograma 1D (suavizado)
+                center_x: Índice X del centro
+                direction: -1 para buscar hacia la izquierda, +1 hacia la derecha
+                threshold: Valor mínimo del histograma para aceptar pico
+
+            Returns:
+                int: índice del pico encontrado, o -1 si no existe pico válido
+            """
+            if direction == -1:
+                scan_range = range(center_x - 1, 0, -1)
+            else:
+                scan_range = range(center_x, len(hist) - 1)
+
+            for x in scan_range:
+                value = hist[x]
+                if value < threshold:
+                    continue
+
+                prev_value = hist[x - 1]
+                next_value = hist[x + 1]
+
+                # Máximo local simple (incluye pequeñas mesetas)
+                if value >= prev_value and value >= next_value:
+                    return x
+
+            return -1
+
+        # Calcular bases como primer pico desde el centro hacia cada lado
+        raw_left_base = _find_first_peak_from_center(
+            histogram_smoothed, midpoint, direction=-1, threshold=self.HISTOGRAM_PEAK_THRESHOLD
+        )
+        raw_right_base = _find_first_peak_from_center(
+            histogram_smoothed, midpoint, direction=+1, threshold=self.HISTOGRAM_PEAK_THRESHOLD
+        )
 
         # =========================================================
         # --- VALIDACIÓN DE CONTENIDO BLANCO EN ZONA INFERIOR ---
