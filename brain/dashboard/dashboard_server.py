@@ -627,10 +627,14 @@ def autopilot_status_broadcast_worker():
             if autopilot_controller is not None:
                 status = autopilot_controller.get_status()
                 pid_params = autopilot_controller.get_pid_parameters()
+                use_memory_fallback = True
+                if hasattr(autopilot_controller, 'lane_detector') and autopilot_controller.lane_detector is not None:
+                    use_memory_fallback = getattr(autopilot_controller.lane_detector, 'use_memory_fallback', True)
                 status_data = {
                     'type': 'autopilot_status',
                     'status': status,
                     'pid_parameters': pid_params,
+                    'use_memory_fallback': use_memory_fallback,
                     'timestamp': time.time()
                 }
             else:
@@ -1392,6 +1396,35 @@ def autopilot_get_pid():
     
     pid_params = autopilot_controller.get_pid_parameters()
     return jsonify(pid_params)
+
+
+@app.route('/api/lane/use-memory', methods=['GET'])
+def lane_get_use_memory():
+    """Get whether lane detector uses memory fallback (mode MEMORY)."""
+    global autopilot_controller
+    if autopilot_controller is None:
+        return jsonify({'error': 'Auto-pilot controller not initialized'}), 503
+    ld = getattr(autopilot_controller, 'lane_detector', None)
+    if ld is None:
+        return jsonify({'use_memory_fallback': True})
+    return jsonify({'use_memory_fallback': getattr(ld, 'use_memory_fallback', True)})
+
+
+@app.route('/api/lane/use-memory', methods=['POST'])
+def lane_set_use_memory():
+    """Enable or disable lane memory fallback (mode MEMORY). When disabled, only live detection is used."""
+    global autopilot_controller
+    if autopilot_controller is None:
+        return jsonify({'error': 'Auto-pilot controller not initialized'}), 503
+    data = request.get_json() or {}
+    enabled = data.get('enabled')
+    if enabled is None:
+        return jsonify({'error': 'Missing "enabled" (boolean)'}), 400
+    ld = getattr(autopilot_controller, 'lane_detector', None)
+    if ld is None:
+        return jsonify({'error': 'Lane detector not available'}), 503
+    ld.use_memory_fallback = bool(enabled)
+    return jsonify({'status': 'ok', 'use_memory_fallback': ld.use_memory_fallback})
 
 
 @app.route('/sign_detection/start', methods=['POST'])

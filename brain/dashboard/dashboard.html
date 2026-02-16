@@ -379,6 +379,20 @@
                     >0</span
                   >
                 </div>
+                <div
+                  style="
+                    display: flex;
+                    justify-content: space-between;
+                    align-items: center;
+                    margin-bottom: 8px;
+                  "
+                >
+                  <label style="color: #fff; cursor: pointer; display: flex; align-items: center; gap: 6px;">
+                    <input type="checkbox" id="lane-use-memory-checkbox" checked onchange="updateLaneUseMemory(this.checked)" />
+                    Usar memoria (fallback)
+                  </label>
+                  <span id="lane-use-memory-hint" style="font-size: 10px; color: #888;">Desmarca = solo detección en vivo</span>
+                </div>
 
                 <div
                   style="
@@ -1381,6 +1395,35 @@
         // Update PID parameters if available
         if (pidParams && Object.keys(pidParams).length > 0) {
           updatePIDSliders(pidParams, false); // false = don't trigger update
+        }
+
+        // Update lane use-memory checkbox
+        const useMemory = data.use_memory_fallback;
+        if (useMemory !== undefined) {
+          const cb = document.getElementById("lane-use-memory-checkbox");
+          if (cb) cb.checked = !!useMemory;
+        }
+      }
+
+      async function updateLaneUseMemory(enabled) {
+        try {
+          const response = await fetch(`${getBaseURL()}/api/lane/use-memory`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ enabled: !!enabled }),
+          });
+          if (response.ok) {
+            log(enabled ? "Memoria (fallback) activada" : "Memoria desactivada — solo detección en vivo", "success");
+          } else {
+            const err = await response.json().catch(() => ({}));
+            log("Error al cambiar memoria: " + (err.error || response.status), "error");
+            const cb = document.getElementById("lane-use-memory-checkbox");
+            if (cb) cb.checked = !enabled;
+          }
+        } catch (e) {
+          log("Error al cambiar memoria: " + e.message, "error");
+          const cb = document.getElementById("lane-use-memory-checkbox");
+          if (cb) cb.checked = !enabled;
         }
       }
 

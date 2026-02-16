@@ -35,11 +35,14 @@ class MarcosLaneDetector_Advanced(LaneDetector):
     Retorna angle_desviacion_deg (ángulo de desviación) para control PID.
     """
     
-    def __init__(self, threshold):
+    def __init__(self, threshold, use_memory_fallback=True):
         # --- Parámetros de la lógica de tu NUEVO script ---
         self.LANE_WIDTH_PX = 500 # ¡CALIBRAR ESTE VALOR! Ancho del carril en píxeles en vista cenital
         self.prev_left_fit = None
         self.prev_right_fit = None
+        # Si True: cuando no hay detección (NONE) se usa la última guardada (modo MEMORY).
+        # Si False: en ese caso se retorna None (solo detección en vivo).
+        self.use_memory_fallback = use_memory_fallback
         self.MIN_POINTS_FOR_FIT = 3
         self.MIN_LANE_DISTANCE_PX = 100  # Distancia mínima entre líneas para evitar que se fusionen
         
@@ -479,9 +482,10 @@ class MarcosLaneDetector_Advanced(LaneDetector):
             self.prev_left_fit = final_left_fit
             self.prev_right_fit = final_right_fit
 
-        # --- NIVEL 4: MEMORIA (Si falló todo, usar memoria si existe) ---
+        # --- NIVEL 4: MEMORIA (Si falló todo, usar memoria si existe y está habilitada) ---
         if detection_mode == "NONE":
-            if self.prev_left_fit is not None and self.prev_right_fit is not None:
+            if (self.use_memory_fallback and
+                self.prev_left_fit is not None and self.prev_right_fit is not None):
                 detection_mode = "MEMORY"
                 final_left_fit = self.prev_left_fit
                 final_right_fit = self.prev_right_fit
