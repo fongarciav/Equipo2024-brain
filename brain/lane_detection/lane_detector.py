@@ -41,7 +41,10 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         self.prev_left_fit = None
         self.prev_right_fit = None
         self.MIN_POINTS_FOR_FIT = 3
-        self.MIN_LANE_DISTANCE_PX = 100  # Distancia mínima entre líneas para evitar que se fusionen
+        self.MIN_LANE_DISTANCE_PX = 40  # Distancia mínima entre líneas (reducida para modo más permisivo)
+        self.ENABLE_MIN_LANE_DISTANCE_CHECK = True  # Permite desactivar chequeo de distancia mínima en STEREO
+        self.ENABLE_HARD_SIDE_POINT_FILTER = False  # Modo limpio: no descartar puntos por cruzar el centro
+        self.ENABLE_BASE_EXCLUSION_FILTER = False  # Modo limpio: no invalidar fits por base en lado opuesto
         
         # --- Parámetros de cálculo de ángulos ---
         self.LOOKAHEAD_DISTANCE = 250  # Distancia hacia adelante para calcular dirección (px)
@@ -325,26 +328,23 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         
         MIDPOINT_X = 320  # Mitad de la imagen (640 / 2)
 
-        # 1. Filtrar puntos Izquierdos (Deben estar a la IZQUIERDA del centro)
-        if len(lx) > 0:
-            # Usamos zip para filtrar X e Y simultáneamente
-            valid_l = [(x, y) for x, y in zip(lx, ly) if x < MIDPOINT_X]
-            if len(valid_l) > 0:
-                lx, ly = zip(*valid_l)
-                lx, ly = list(lx), list(ly)
-            else:
-                lx, ly = [], [] # Todos eran inválidos
+        # 1. Filtrar puntos por lado (opcional, desactivado por defecto en modo limpio)
+        if self.ENABLE_HARD_SIDE_POINT_FILTER:
+            if len(lx) > 0:
+                valid_l = [(x, y) for x, y in zip(lx, ly) if x < MIDPOINT_X]
+                if len(valid_l) > 0:
+                    lx, ly = zip(*valid_l)
+                    lx, ly = list(lx), list(ly)
+                else:
+                    lx, ly = [], []
 
-        # 2. Filtrar puntos Derechos (Deben estar a la DERECHA del centro)
-        if len(rx) > 0:
-            # Esta es la línea que arreglará tu foto:
-            # Elimina los puntos R8, R9, R10 que están en el lado izquierdo
-            valid_r = [(x, y) for x, y in zip(rx, ry) if x > MIDPOINT_X]
-            if len(valid_r) > 0:
-                rx, ry = zip(*valid_r)
-                rx, ry = list(rx), list(ry)
-            else:
-                rx, ry = [], [] # Todos eran inválidos (Probablemente tu caso actual)
+            if len(rx) > 0:
+                valid_r = [(x, y) for x, y in zip(rx, ry) if x > MIDPOINT_X]
+                if len(valid_r) > 0:
+                    rx, ry = zip(*valid_r)
+                    rx, ry = list(rx), list(ry)
+                else:
+                    rx, ry = [], []
 
         # ==============================================================================
         
@@ -367,25 +367,19 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         
         MIDPOINT_X = 320  # Mitad de tu imagen (640 / 2)
         
-        # 1. Validar Carril Izquierdo
-        if left_fit_current is not None:
-            # Calculamos dónde toca el suelo la línea (y=480)
-            lx_base = left_fit_current[0]*480**2 + left_fit_current[1]*480 + left_fit_current[2]
-            
-            # Si la base está a la derecha de la mitad... es un impostor.
-            if lx_base > MIDPOINT_X: 
-                print(f"🚫 RECHAZADO: Falso Izquierdo en zona derecha (x={int(lx_base)})")
-                left_fit_current = None  # Lo descartamos
+        # 1-2. Validación de base por lado (opcional, desactivada por defecto en modo limpio)
+        if self.ENABLE_BASE_EXCLUSION_FILTER:
+            if left_fit_current is not None:
+                lx_base = left_fit_current[0]*480**2 + left_fit_current[1]*480 + left_fit_current[2]
+                if lx_base > MIDPOINT_X:
+                    print(f"🚫 RECHAZADO: Falso Izquierdo en zona derecha (x={int(lx_base)})")
+                    left_fit_current = None
 
-        # 2. Validar Carril Derecho
-        if right_fit_current is not None:
-            # Calculamos dónde toca el suelo la línea (y=480)
-            rx_base = right_fit_current[0]*480**2 + right_fit_current[1]*480 + right_fit_current[2]
-            
-            # Si la base está a la izquierda de la mitad... es un impostor (TU ERROR ACTUAL).
-            if rx_base < MIDPOINT_X:
-                print(f"🚫 RECHAZADO: Falso Derecho en zona izquierda (x={int(rx_base)})")
-                right_fit_current = None  # Lo descartamos
+            if right_fit_current is not None:
+                rx_base = right_fit_current[0]*480**2 + right_fit_current[1]*480 + right_fit_current[2]
+                if rx_base < MIDPOINT_X:
+                    print(f"🚫 RECHAZADO: Falso Derecho en zona izquierda (x={int(rx_base)})")
+                    right_fit_current = None
 
         # Función auxiliar para calcular distancia entre dos líneas en la posición y=480
         def get_line_distance(fit1, fit2):
@@ -442,8 +436,9 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         if left_fit_current is not None and right_fit_current is not None:
             distance = get_line_distance(left_fit_current, right_fit_current)
             intersect = lines_intersect(left_fit_current, right_fit_current)
-            
-            if distance >= self.MIN_LANE_DISTANCE_PX and not intersect:
+            distance_ok = (distance >= self.MIN_LANE_DISTANCE_PX) if self.ENABLE_MIN_LANE_DISTANCE_CHECK else True
+
+            if distance_ok and not intersect:
                 detection_mode = "STEREO"
                 final_left_fit = left_fit_current
                 final_right_fit = right_fit_current
