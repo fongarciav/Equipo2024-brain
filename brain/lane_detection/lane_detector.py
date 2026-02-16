@@ -183,7 +183,7 @@ class MarcosLaneDetector_Advanced(LaneDetector):
                 return xs[-1]
             return None
 
-        def _choose_candidate(contours, x_offset, side, prev_xs):
+        def _extract_candidates(contours):
             candidates = []
             for contour in contours:
                 area = cv2.contourArea(contour)
@@ -193,12 +193,17 @@ class MarcosLaneDetector_Advanced(LaneDetector):
                 if M['m00'] == 0:
                     continue
 
-                cx = int(M['m10'] / M['m00']) + x_offset
+                cx = int(M['m10'] / M['m00'])
                 cy_local = int(M['m01'] / M['m00'])
+                candidates.append((cx, cy_local, area))
+            return candidates
 
-                if side == 'left' and cx >= midpoint:
-                    continue
-                if side == 'right' and cx <= midpoint:
+        def _choose_candidate(candidates, side, prev_xs, used_indexes):
+            scored = []
+            pred_x = _predict_next_x(prev_xs)
+
+            for idx, (cx, cy_local, area) in enumerate(candidates):
+                if idx in used_indexes:
                     continue
 
                 if prev_xs:
@@ -208,33 +213,38 @@ class MarcosLaneDetector_Advanced(LaneDetector):
                 else:
                     jump = 0
 
-                pred_x = _predict_next_x(prev_xs)
                 trend_penalty = abs(cx - pred_x) if pred_x is not None else 0
                 if pred_x is not None and trend_penalty > self.HEMISLICE_TREND_TOLERANCE_PX:
                     continue
 
-                score = jump + 0.5 * trend_penalty - 0.01 * area
-                candidates.append((score, cx, cy_local))
+                # Posición lateral como criterio suave (no hard split por hemisferio)
+                if side == 'left':
+                    lateral_penalty = max(0, cx - midpoint)
+                else:
+                    lateral_penalty = max(0, midpoint - cx)
 
-            if not candidates:
+                score = jump + 0.5 * trend_penalty + 0.35 * lateral_penalty - 0.01 * area
+                scored.append((score, idx, cx, cy_local))
+
+            if not scored:
                 return None
 
-            candidates.sort(key=lambda c: c[0])
-            _, best_x, best_cy_local = candidates[0]
+            scored.sort(key=lambda s: s[0])
+            _, idx, best_x, best_cy_local = scored[0]
+            used_indexes.add(idx)
             return best_x, best_cy_local
 
         while y > 0:
             y0 = max(0, y - self.SLIDING_WINDOW_HEIGHT)
             y1 = y
 
-            left_slice = mask[y0:y1, :midpoint]
-            right_slice = mask[y0:y1, midpoint:]
+            full_slice = mask[y0:y1, :]
+            contours, _ = cv2.findContours(full_slice, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+            candidates = _extract_candidates(contours)
+            used_candidate_indexes = set()
 
-            contours_left, _ = cv2.findContours(left_slice, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-            contours_right, _ = cv2.findContours(right_slice, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-
-            left_candidate = _choose_candidate(contours_left, x_offset=0, side='left', prev_xs=lx)
-            right_candidate = _choose_candidate(contours_right, x_offset=midpoint, side='right', prev_xs=rx)
+            left_candidate = _choose_candidate(candidates, side='left', prev_xs=lx, used_indexes=used_candidate_indexes)
+            right_candidate = _choose_candidate(candidates, side='right', prev_xs=rx, used_indexes=used_candidate_indexes)
 
             found_left = left_candidate is not None
             found_right = right_candidate is not None
@@ -256,14 +266,10 @@ class MarcosLaneDetector_Advanced(LaneDetector):
             window_results['left'].append((found_left, False))
             window_results['right'].append((found_right, False))
 
-            left_color = (0, 255, 0) if found_left else (0, 0, 255)
-            right_color = (0, 255, 0) if found_right else (0, 0, 255)
-
-            cv2.rectangle(msk, (0, y1), (midpoint, y0), left_color, 1)
-            cv2.rectangle(msk, (midpoint, y1), (w - 1, y0), right_color, 1)
-            cv2.putText(msk, f'L{window_index}', (8, max(15, y0 + 15)),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
-            cv2.putText(msk, f'R{window_index}', (midpoint + 8, max(15, y0 + 15)),
+            slice_color = (0, 255, 0) if (found_left or found_right) else (0, 0, 255)
+            cv2.rectangle(msk, (0, y1), (w - 1, y0), slice_color, 1)
+            cv2.line(msk, (midpoint, y0), (midpoint, y1), (80, 80, 80), 1)
+            cv2.putText(msk, f'S{window_index}', (8, max(15, y0 + 15)),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
 
             y -= self.SLIDING_WINDOW_HEIGHT
