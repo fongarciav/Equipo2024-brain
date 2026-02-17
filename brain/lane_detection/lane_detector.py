@@ -54,7 +54,7 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         
         # --- Parámetros de ventanas deslizantes ---
         self.SLIDING_WINDOW_START_Y = 472  # Posición Y inicial para sliding windows (desde abajo)
-        self.SLIDING_WINDOW_HEIGHT = 40  # Altura de cada ventana deslizante
+        self.SLIDING_WINDOW_HEIGHT = 20  # Altura de cada slice para mejorar conectividad de DBSCAN
         self.SLIDING_WINDOW_WIDTH = 50  # Ancho a cada lado del centro de la ventana
         self.SLIDING_WINDOW_EXPANDED_WIDTH = 150  # Ancho expandido para búsqueda ampliada
         self.ENABLE_EXPANDED_SEARCH = False  # Habilitar/deshabilitar búsqueda expandida
