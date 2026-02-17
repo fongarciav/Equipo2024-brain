@@ -278,6 +278,28 @@ class MarcosLaneDetector_Advanced(LaneDetector):
             y -= self.SLIDING_WINDOW_HEIGHT
             window_index += 1
 
+        # ==============================================================================
+        # --- CROSS-CHECK & SWAP (Corrección cruzada de asignación izquierda/derecha) ---
+        # ==============================================================================
+        # Si un único carril fue asignado al lado equivocado por el orden de búsqueda,
+        # lo re-asignamos antes de filtros de hemisferio y polyfit.
+        MIDPOINT_X = int(w // 2)
+        MIN_POINTS_SIDE = self.MIN_POINTS_FOR_FIT
+
+        if len(lx) > 0:
+            mean_lx = float(np.mean(lx))
+            if mean_lx > MIDPOINT_X and len(rx) < MIN_POINTS_SIDE:
+                rx, ry = list(lx), list(ly)
+                lx, ly = [], []
+                print("⚠️ SWAP: Left candidate re-assigned to Right based on position")
+
+        if len(rx) > 0:
+            mean_rx = float(np.mean(rx))
+            if mean_rx < MIDPOINT_X and len(lx) < MIN_POINTS_SIDE:
+                lx, ly = list(rx), list(ry)
+                rx, ry = [], []
+                print("⚠️ SWAP: Right candidate re-assigned to Left")
+
         raw_left_base = lx[0] if len(lx) > 0 else -1
         raw_right_base = rx[0] if len(rx) > 0 else -1
         left_base = raw_left_base
