@@ -38,9 +38,10 @@ class MarcosLaneDetector_Advanced(LaneDetector):
     
     def __init__(self, threshold):
         # --- Parámetros de la lógica de tu NUEVO script ---
-        self.LANE_WIDTH_PX = 500 # ¡CALIBRAR ESTE VALOR! Ancho del carril en píxeles en vista cenital
+        self.LANE_WIDTH_PX = 800 # ¡CALIBRAR ESTE VALOR! Ancho del carril en píxeles en vista cenital
         self.prev_left_fit = None
         self.prev_right_fit = None
+        self.ENABLE_MEMORY_MODE = True  # Permite habilitar/deshabilitar fallback MEMORY
         self.MIN_POINTS_FOR_FIT = 3
         self.MIN_LANE_DISTANCE_PX = 40  # Distancia mínima entre líneas (reducida para modo más permisivo)
         self.ENABLE_MIN_LANE_DISTANCE_CHECK = True  # Permite desactivar chequeo de distancia mínima en STEREO
@@ -510,16 +511,17 @@ class MarcosLaneDetector_Advanced(LaneDetector):
             self.prev_left_fit = final_left_fit
             self.prev_right_fit = final_right_fit
 
-        # --- NIVEL 4: MEMORIA (Si falló todo, usar memoria si existe) ---
+        # --- NIVEL 4: MEMORIA (Si falló todo, usar memoria si existe y está habilitada) ---
         if detection_mode == "NONE":
-            if self.prev_left_fit is not None and self.prev_right_fit is not None:
+            if self.ENABLE_MEMORY_MODE and self.prev_left_fit is not None and self.prev_right_fit is not None:
                 detection_mode = "MEMORY"
                 final_left_fit = self.prev_left_fit
                 final_right_fit = self.prev_right_fit
             else:
                 # FALLO TOTAL: No hay nada que hacer
                 bird_view_with_lines = transformed_frame.copy()
-                cv2.putText(bird_view_with_lines, "NO LANE DETECTED", (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+                no_lane_text = "NO LANE DETECTED" if self.ENABLE_MEMORY_MODE else "NO LANE DETECTED (MEMORY OFF)"
+                cv2.putText(bird_view_with_lines, no_lane_text, (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
                 
                 debug_images = {
                     "original": original_frame,
