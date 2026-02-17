@@ -37,7 +37,7 @@ class MarcosLaneDetector_Advanced(LaneDetector):
     
     def __init__(self, threshold, use_memory_fallback=True):
         # --- Parámetros de la lógica de tu NUEVO script ---
-        self.LANE_WIDTH_PX = 600 # Ancho del carril en píxeles en vista cenital (calibrado)
+        self.LANE_WIDTH_PX = 800 # Ancho del carril en píxeles en vista cenital (calibrado)
         self.prev_left_fit = None
         self.prev_right_fit = None
         # Si True: cuando no hay detección (NONE) se usa la última guardada (modo MEMORY).
