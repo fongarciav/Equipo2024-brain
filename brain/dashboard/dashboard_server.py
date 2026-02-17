@@ -1394,6 +1394,40 @@ def autopilot_get_pid():
     return jsonify(pid_params)
 
 
+@app.route('/autopilot/memory_mode', methods=['GET'])
+def autopilot_get_memory_mode():
+    """Get lane detector memory mode state."""
+    global autopilot_controller
+    if autopilot_controller is None:
+        return jsonify({'error': 'Auto-pilot controller not initialized'}), 503
+
+    lane_detector = getattr(autopilot_controller, 'lane_detector', None)
+    if lane_detector is None or not hasattr(lane_detector, 'ENABLE_MEMORY_MODE'):
+        return jsonify({'error': 'Lane detector memory mode not available'}), 400
+
+    return jsonify({'enabled': bool(lane_detector.ENABLE_MEMORY_MODE)})
+
+
+@app.route('/autopilot/memory_mode', methods=['POST'])
+def autopilot_set_memory_mode():
+    """Enable/disable lane detector memory mode."""
+    global autopilot_controller
+    if autopilot_controller is None:
+        return jsonify({'error': 'Auto-pilot controller not initialized'}), 503
+
+    data = request.get_json() or {}
+    enabled = data.get('enabled')
+    if not isinstance(enabled, bool):
+        return jsonify({'error': 'Invalid enabled value, expected boolean'}), 400
+
+    lane_detector = getattr(autopilot_controller, 'lane_detector', None)
+    if lane_detector is None or not hasattr(lane_detector, 'ENABLE_MEMORY_MODE'):
+        return jsonify({'error': 'Lane detector memory mode not available'}), 400
+
+    lane_detector.ENABLE_MEMORY_MODE = enabled
+    return jsonify({'status': 'ok', 'enabled': bool(lane_detector.ENABLE_MEMORY_MODE)})
+
+
 @app.route('/sign_detection/start', methods=['POST'])
 def sign_detection_start():
     """Start the sign detection controller."""

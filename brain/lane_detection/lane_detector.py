@@ -2,6 +2,7 @@ import cv2
 import numpy as np
 import math
 from abc import ABC, abstractmethod
+from sklearn.cluster import DBSCAN
 
 # ======================================================================
 # --- CLASE BASE PARA DETECTORES DE CARRIL ---
@@ -37,11 +38,15 @@ class MarcosLaneDetector_Advanced(LaneDetector):
     
     def __init__(self, threshold):
         # --- Parámetros de la lógica de tu NUEVO script ---
-        self.LANE_WIDTH_PX = 500 # ¡CALIBRAR ESTE VALOR! Ancho del carril en píxeles en vista cenital
+        self.LANE_WIDTH_PX = 800 # ¡CALIBRAR ESTE VALOR! Ancho del carril en píxeles en vista cenital
         self.prev_left_fit = None
         self.prev_right_fit = None
+        self.ENABLE_MEMORY_MODE = True  # Permite habilitar/deshabilitar fallback MEMORY
         self.MIN_POINTS_FOR_FIT = 3
-        self.MIN_LANE_DISTANCE_PX = 100  # Distancia mínima entre líneas para evitar que se fusionen
+        self.MIN_LANE_DISTANCE_PX = 40  # Distancia mínima entre líneas (reducida para modo más permisivo)
+        self.ENABLE_MIN_LANE_DISTANCE_CHECK = True  # Permite desactivar chequeo de distancia mínima en STEREO
+        self.ENABLE_HARD_SIDE_POINT_FILTER = False  # Modo limpio: no descartar puntos por cruzar el centro
+        self.ENABLE_BASE_EXCLUSION_FILTER = False  # Modo limpio: no invalidar fits por base en lado opuesto
         
         # --- Parámetros de cálculo de ángulos ---
         self.LOOKAHEAD_DISTANCE = 250  # Distancia hacia adelante para calcular dirección (px)
@@ -50,10 +55,31 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         
         # --- Parámetros de ventanas deslizantes ---
         self.SLIDING_WINDOW_START_Y = 472  # Posición Y inicial para sliding windows (desde abajo)
-        self.SLIDING_WINDOW_HEIGHT = 40  # Altura de cada ventana deslizante
+        self.SLIDING_WINDOW_HEIGHT = 20  # Altura de cada slice para mejorar conectividad de DBSCAN
         self.SLIDING_WINDOW_WIDTH = 50  # Ancho a cada lado del centro de la ventana
         self.SLIDING_WINDOW_EXPANDED_WIDTH = 150  # Ancho expandido para búsqueda ampliada
         self.ENABLE_EXPANDED_SEARCH = False  # Habilitar/deshabilitar búsqueda expandida
+        self.HISTOGRAM_PEAK_THRESHOLD = 3000  # Umbral mínimo para considerar un pico de histograma válido
+        self.HISTOGRAM_SMOOTH_KERNEL_SIZE = 9  # Kernel 1D para suavizar histograma antes de detectar picos
+
+        # --- Parámetros de slices por hemisferio ---
+        self.HEMISLICE_MIN_CONTOUR_AREA = 20
+        self.HEMISLICE_MAX_JUMP_PX = 120
+        self.HEMISLICE_TREND_TOLERANCE_PX = 90
+
+        # --- Parámetros DBSCAN (selección de carriles por clustering) ---
+        self.DBSCAN_EPS = 35
+        self.DBSCAN_MIN_SAMPLES = 3
+        self.MIN_CLUSTER_POINTS = 6
+        self.USE_WORLD_COORDINATES_FOR_ORDERING = False
+        self.DEBUG_LANE_CLUSTER_SELECTION = False
+
+        # --- Threshold automático por ROI de referencia (bloque compartido) ---
+        self.AUTO_THR_REF_X_NORM = 0.5
+        self.AUTO_THR_REF_Y_FROM_BOTTOM_PX = 8
+        self.AUTO_THR_REF_ROI_SIZE = 41
+        self.AUTO_THR_BG_PERCENTILE = 90.0
+        self.AUTO_THR_OFFSET = 45
         
         # --- Parámetros de Control ---
         # La Ganancia o peso que le das a la anticipación.
@@ -105,296 +131,227 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         # use cv2.cuda.warpPerspective
         transformed_frame = cv2.warpPerspective(frame, self.matrix, (640, 480))
         
-        # --- Detección de color ---
-        hsv_transformed_frame = cv2.cvtColor(transformed_frame, cv2.COLOR_BGR2HSV)
-        mask = cv2.inRange(hsv_transformed_frame, self.hsv_lower, self.hsv_upper)
-        
-        # --- Histograma y Sliding Windows ---
-        # Usar toda la ventana del birdview para el histograma
-        histogram = np.sum(mask[mask.shape[0]//2:, :], axis=0)
-        midpoint = int(histogram.shape[0]/2)
-        
-        # Calcular los picos brutos (brute force peak finding)
-        raw_left_base = np.argmax(histogram[:midpoint])
-        raw_right_base = np.argmax(histogram[midpoint:]) + midpoint
+        # --- Detección de color + threshold automático por ROI de referencia ---
+        gray_transformed_frame = cv2.cvtColor(transformed_frame, cv2.COLOR_BGR2GRAY)
 
-        # =========================================================
-        # --- VALIDACIÓN DE CONTENIDO BLANCO EN ZONA INFERIOR ---
-        # =========================================================
-        def _validate_lane_base_has_content(mask, lane_base, bottom_zone_height=100, min_white_pixels=20, search_window_width=100):
+        def _clamp(v, lo, hi):
+            return max(lo, min(hi, v))
+
+        def _compute_auto_threshold_from_ref_roi(gray):
             """
-            Validar si una posición base de carril tiene suficientes píxeles blancos en la zona inferior.
-            
-            Args:
-                mask: Imagen de máscara binaria
-                lane_base: Posición X de la base del carril
-                bottom_zone_height: Altura de la zona inferior a verificar (píxeles desde abajo)
-                min_white_pixels: Mínimo de píxeles blancos requeridos
-                search_window_width: Ancho de la ventana de búsqueda alrededor de la base del carril
-                
-            Returns:
-                bool: True si es válido (suficientes píxeles blancos), False en caso contrario
+            Calcula threshold automático usando un bloque de referencia que debe caer en suelo negro.
+            Basado en el bloque de referencia compartido por el usuario.
             """
-            if lane_base == -1:
-                return False
-                
-            # Extraer zona inferior de la máscara
-            bottom_zone = mask[mask.shape[0] - bottom_zone_height:, :]
-            
-            # Definir ventana de búsqueda alrededor de la base del carril
-            zone_x_start = max(0, lane_base - search_window_width // 2)
-            zone_x_end = min(bottom_zone.shape[1], lane_base + search_window_width // 2)
-            zone = bottom_zone[:, zone_x_start:zone_x_end]
-            
-            # Contar píxeles blancos
-            white_pixels = np.sum(zone > 0)
-            
-            return white_pixels >= min_white_pixels
-        
-        # Verificar si hay suficiente contenido blanco en la zona inferior de cada lado
-        if not _validate_lane_base_has_content(mask, raw_left_base):
-            raw_left_base = -1  # Descartar carril izquierdo
-        
-        if not _validate_lane_base_has_content(mask, raw_right_base):
-            raw_right_base = -1  # Descartar carril derecho
-        
-        # =========================================================
-        # --- CORRECCIÓN DE FUSIÓN (VALIDACIÓN DE DISTANCIA) ---
-        # =========================================================
-        def _resolve_lane_fusion(raw_left_base, raw_right_base, histogram, min_distance, confidence_threshold=50):
-            """
-            Resolver fusión de carriles cuando dos carriles detectados están demasiado cerca.
-            
-            Args:
-                raw_left_base: Posición X de la base del carril izquierdo (-1 si no detectado)
-                raw_right_base: Posición X de la base del carril derecho (-1 si no detectado)
-                histogram: Array de histograma para verificar alturas de picos
-                min_distance: Distancia mínima requerida entre carriles
-                confidence_threshold: Altura mínima del pico para considerar carril válido
-                
-            Returns:
-                tuple: (left_base, right_base) - posiciones de carriles resueltas (-1 si descartado)
-            """
-            # Si cualquier carril ya es inválido, retornar como está
-            if raw_left_base == -1 or raw_right_base == -1:
-                return raw_left_base, raw_right_base
-            
-            # Verificar si los carriles están demasiado cerca (fusionados)
-            if raw_right_base - raw_left_base < min_distance:
-                # Determinar qué pico es más fuerte
-                left_peak_height = histogram[raw_left_base]
-                right_peak_height = histogram[raw_right_base]
-                
-                # Priorizar carril derecho (como se solicitó)
-                if right_peak_height > left_peak_height:
-                    return -1, raw_right_base  # Mantener derecho, descartar izquierdo
-                elif left_peak_height > right_peak_height:
-                    return raw_left_base, -1  # Mantener izquierdo, descartar derecho
-                else:
-                    # Fuerza igual: verificar si es suficientemente fuerte, sino descartar ambos
-                    if right_peak_height < confidence_threshold:
-                        return -1, -1  # Ambos demasiado débiles
-                    else:
-                        return -1, raw_right_base  # Priorizar derecho
+            h, w = gray.shape[:2]
+            cx = int(_clamp(self.AUTO_THR_REF_X_NORM, 0.0, 1.0) * (w - 1))
+            cy = int(_clamp(h - 1 - self.AUTO_THR_REF_Y_FROM_BOTTOM_PX, 0, h - 1))
+
+            r = max(1, self.AUTO_THR_REF_ROI_SIZE // 2)
+            x0 = _clamp(cx - r, 0, w - 1)
+            x1 = _clamp(cx + r, 0, w - 1)
+            y0 = _clamp(cy - r, 0, h - 1)
+            y1 = _clamp(cy + r, 0, h - 1)
+
+            roi = gray[y0:y1 + 1, x0:x1 + 1]
+            if roi.size == 0:
+                t = 128
             else:
-                # Los carriles están suficientemente separados, mantener ambos
-                return raw_left_base, raw_right_base
-        
-        # Resolver fusión de carriles si los carriles detectados están demasiado cerca
-        left_base, right_base = _resolve_lane_fusion(
-            raw_left_base, raw_right_base, histogram, 
-            self.MIN_LANE_DISTANCE_PX, confidence_threshold=50
-        )
-        
-        # =========================================================
-        
+                bg = float(np.percentile(roi, _clamp(self.AUTO_THR_BG_PERCENTILE, 0.0, 100.0)))
+                t = int(round(bg + float(self.AUTO_THR_OFFSET)))
+
+            t = int(_clamp(t, 0, 255))
+            return t, (x0, y0, x1, y1)
+
+        auto_thr, auto_thr_roi = _compute_auto_threshold_from_ref_roi(gray_transformed_frame)
+        _, mask = cv2.threshold(gray_transformed_frame, auto_thr, 255, cv2.THRESH_BINARY)
+
+        # --- Histograma (debug) ---
+        histogram = np.sum(mask[mask.shape[0]//2:, :], axis=0)
+        midpoint = int(histogram.shape[0] / 2)
+
+        # --- Slices por hemisferio con validación de coherencia ---
         y = self.SLIDING_WINDOW_START_Y
         lx, ly, rx, ry = [], [], [], []
-        msk = cv2.cvtColor(mask.copy(), cv2.COLOR_GRAY2BGR)  # Convert to BGR for colored visualization
-
-        # Store window search results for debugging
-        window_results = {'left': [], 'right': []}  # Store (found, expanded) tuples
-        window_index = 0
+        msk = cv2.cvtColor(mask.copy(), cv2.COLOR_GRAY2BGR)
+        h, w = mask.shape[:2]
 
         # Draw histogram visualization
         histogram_viz = np.zeros((100, mask.shape[1], 3), dtype=np.uint8)
         histogram_normalized = (histogram / histogram.max() * 100).astype(int) if histogram.max() > 0 else histogram
-        for i, h in enumerate(histogram_normalized):
-            if h > 0:
-                cv2.line(histogram_viz, (i, 100), (i, 100 - h), (255, 255, 255), 1)
-        # Mark midpoint and base positions
-        cv2.line(histogram_viz, (midpoint, 0), (midpoint, 100), (0, 255, 255), 2)  # Yellow midpoint
-        if left_base != -1:
-            cv2.circle(histogram_viz, (left_base, 50), 8, (0, 0, 255), -1)  # Red for left base
-        if right_base != -1:
-            cv2.circle(histogram_viz, (right_base, 50), 8, (255, 0, 0), -1)  # Blue for right base
+        for i, hv in enumerate(histogram_normalized):
+            if hv > 0:
+                cv2.line(histogram_viz, (i, 100), (i, 100 - hv), (255, 255, 255), 1)
+        cv2.line(histogram_viz, (midpoint, 0), (midpoint, 100), (0, 255, 255), 2)
+
+        window_results = {'left': [], 'right': []}
+        window_index = 0
+
+        def _extract_candidates(contours):
+            candidates = []
+            for contour in contours:
+                area = cv2.contourArea(contour)
+                if area < self.HEMISLICE_MIN_CONTOUR_AREA:
+                    continue
+                M = cv2.moments(contour)
+                if M['m00'] == 0:
+                    continue
+
+                cx = int(M['m10'] / M['m00'])
+                cy_local = int(M['m01'] / M['m00'])
+                candidates.append((cx, cy_local, area))
+            return candidates
+
+        all_points = []
+        cluster_debug_info = []
+        labels = None
 
         while y > 0:
-            # --- VENTANA IZQUIERDA (Solo busca si left_base != -1) ---
-            found_left = False
-            used_expanded_left = False
-            
-            if left_base != -1:
-                img = mask[y-self.SLIDING_WINDOW_HEIGHT:y, left_base-self.SLIDING_WINDOW_WIDTH:left_base+self.SLIDING_WINDOW_WIDTH]
-                contours, _ = cv2.findContours(img, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-                
-                for contour in contours:
-                    M = cv2.moments(contour)
-                    if M["m00"] != 0:
-                        cx = int(M["m10"]/M["m00"])
-                        cy = int(M["m01"]/M["m00"])
-                        point_x = left_base-self.SLIDING_WINDOW_WIDTH + cx
-                        point_y = y-self.SLIDING_WINDOW_HEIGHT + cy
-                        lx.append(point_x)
-                        ly.append(point_y)
-                        left_base = point_x
-                        found_left = True
-                        
-                        # Draw the detected centroid
-                        cv2.circle(msk, (point_x, point_y), 4, (0, 0, 255), -1)  # Red dot
-                        break  # Solo tomar el primer contorno encontrado
-                
-                # Si no encontró nada, expandir la búsqueda en la ventana actual
-                if not found_left and y > self.SLIDING_WINDOW_HEIGHT and self.ENABLE_EXPANDED_SEARCH:
-                    # Buscar en una ventana más ancha
-                    img_expanded = mask[y-self.SLIDING_WINDOW_HEIGHT:y, max(0, left_base-self.SLIDING_WINDOW_EXPANDED_WIDTH//2):min(mask.shape[1], left_base+self.SLIDING_WINDOW_EXPANDED_WIDTH//2)]
-                    contours_expanded, _ = cv2.findContours(img_expanded, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-                    for contour in contours_expanded:
-                        M = cv2.moments(contour)
-                        if M["m00"] != 0:
-                            cx = int(M["m10"]/M["m00"])
-                            cy = int(M["m01"]/M["m00"])
-                            point_x = max(0, left_base-self.SLIDING_WINDOW_EXPANDED_WIDTH//2) + cx
-                            point_y = y-self.SLIDING_WINDOW_HEIGHT + cy
-                            lx.append(point_x)
-                            ly.append(point_y)
-                            left_base = point_x
-                            found_left = True
-                            used_expanded_left = True
-                            
-                            # Draw expanded search window in different color
-                            cv2.rectangle(msk, 
-                                        (max(0, left_base-self.SLIDING_WINDOW_EXPANDED_WIDTH//2), y),
-                                        (min(mask.shape[1], left_base+self.SLIDING_WINDOW_EXPANDED_WIDTH//2), y-self.SLIDING_WINDOW_HEIGHT),
-                                        (255, 165, 0), 1)  # Orange for expanded
-                            # Draw the detected centroid
-                            cv2.circle(msk, (point_x, point_y), 4, (255, 0, 255), -1)  # Magenta for expanded find
-                            break
-            
-            window_results['left'].append((found_left, used_expanded_left))
-            
-            # --- VENTANA DERECHA (Solo busca si right_base != -1) ---
-            found_right = False
-            used_expanded_right = False
-            
-            if right_base != -1:
-                img = mask[y-self.SLIDING_WINDOW_HEIGHT:y, right_base-self.SLIDING_WINDOW_WIDTH:right_base+self.SLIDING_WINDOW_WIDTH]
-                contours, _ = cv2.findContours(img, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-                
-                for contour in contours:
-                    M = cv2.moments(contour)
-                    if M["m00"] != 0:
-                        cx = int(M["m10"]/M["m00"])
-                        cy = int(M["m01"]/M["m00"])
-                        point_x = right_base-self.SLIDING_WINDOW_WIDTH + cx
-                        point_y = y-self.SLIDING_WINDOW_HEIGHT + cy
-                        rx.append(point_x)
-                        ry.append(point_y)
-                        right_base = point_x
-                        found_right = True
-                        
-                        # Draw the detected centroid
-                        cv2.circle(msk, (point_x, point_y), 4, (255, 0, 0), -1)  # Blue dot
-                        break  # Solo tomar el primer contorno encontrado
-                
-                # Si no encontró nada, expandir la búsqueda en la ventana actual
-                if not found_right and y > self.SLIDING_WINDOW_HEIGHT and self.ENABLE_EXPANDED_SEARCH:
-                    # Buscar en una ventana más ancha
-                    img_expanded = mask[y-self.SLIDING_WINDOW_HEIGHT:y, max(0, right_base-self.SLIDING_WINDOW_EXPANDED_WIDTH//2):min(mask.shape[1], right_base+self.SLIDING_WINDOW_EXPANDED_WIDTH//2)]
-                    contours_expanded, _ = cv2.findContours(img_expanded, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-                    for contour in contours_expanded:
-                        M = cv2.moments(contour)
-                        if M["m00"] != 0:
-                            cx = int(M["m10"]/M["m00"])
-                            cy = int(M["m01"]/M["m00"])
-                            point_x = max(0, right_base-self.SLIDING_WINDOW_EXPANDED_WIDTH//2) + cx
-                            point_y = y-self.SLIDING_WINDOW_HEIGHT + cy
-                            rx.append(point_x)
-                            ry.append(point_y)
-                            right_base = point_x
-                            found_right = True
-                            used_expanded_right = True
-                            
-                            # Draw expanded search window in different color
-                            cv2.rectangle(msk,
-                                        (max(0, right_base-self.SLIDING_WINDOW_EXPANDED_WIDTH//2), y),
-                                        (min(mask.shape[1], right_base+self.SLIDING_WINDOW_EXPANDED_WIDTH//2), y-self.SLIDING_WINDOW_HEIGHT),
-                                        (255, 165, 0), 1)  # Orange for expanded
-                            # Draw the detected centroid
-                            cv2.circle(msk, (point_x, point_y), 4, (255, 0, 255), -1)  # Magenta for expanded find
-                            break
-            
-            window_results['right'].append((found_right, used_expanded_right))
-            
-            # DIBUJO DE RECTÁNGULOS con color según resultado
-            if left_base != -1:
-                # Color based on search result: Green if found, Red if not found, Orange if expanded
-                if found_left:
-                    color = (0, 255, 0) if not used_expanded_left else (255, 165, 0)
-                else:
-                    color = (0, 0, 255)
-                cv2.rectangle(msk, (left_base-self.SLIDING_WINDOW_WIDTH,y), 
-                             (left_base+self.SLIDING_WINDOW_WIDTH,y-self.SLIDING_WINDOW_HEIGHT), 
-                             color, 2)
-                # Add window number
-                cv2.putText(msk, f'L{window_index}', (left_base-self.SLIDING_WINDOW_WIDTH+5, y-5),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
-            
-            if right_base != -1:
-                # Color based on search result
-                if found_right:
-                    color = (0, 255, 0) if not used_expanded_right else (255, 165, 0)
-                else:
-                    color = (0, 0, 255)
-                cv2.rectangle(msk, (right_base-self.SLIDING_WINDOW_WIDTH,y), 
-                             (right_base+self.SLIDING_WINDOW_WIDTH,y-self.SLIDING_WINDOW_HEIGHT), 
-                             color, 2)
-                # Add window number
-                cv2.putText(msk, f'R{window_index}', (right_base+self.SLIDING_WINDOW_WIDTH-25, y-5),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
-            
+            y0 = max(0, y - self.SLIDING_WINDOW_HEIGHT)
+            y1 = y
+
+            full_slice = mask[y0:y1, :]
+            contours, _ = cv2.findContours(full_slice, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+            candidates = _extract_candidates(contours)
+
+            found_any = len(candidates) > 0
+            for cx, cy_local, _ in candidates:
+                point_y = y0 + cy_local
+                all_points.append((cx, point_y))
+                cv2.circle(msk, (cx, point_y), 2, (180, 180, 180), -1)
+
+            window_results['left'].append((found_any, False))
+            window_results['right'].append((found_any, False))
+
+            slice_color = (0, 255, 0) if found_any else (0, 0, 255)
+            cv2.rectangle(msk, (0, y1), (w - 1, y0), slice_color, 1)
+            cv2.line(msk, (midpoint, y0), (midpoint, y1), (80, 80, 80), 1)
+            cv2.putText(msk, f'S{window_index}', (8, max(15, y0 + 15)),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+
             y -= self.SLIDING_WINDOW_HEIGHT
             window_index += 1
-        
+
+        selected_left_points = []
+        selected_right_points = []
+        left_base = -1
+        right_base = -1
+
+        if len(all_points) >= self.DBSCAN_MIN_SAMPLES:
+            X = np.array(all_points, dtype=np.float32)
+            labels = DBSCAN(eps=self.DBSCAN_EPS, min_samples=self.DBSCAN_MIN_SAMPLES).fit(X).labels_
+
+            clusters = []
+            for label_id in np.unique(labels):
+                if label_id == -1:
+                    continue
+                pts = X[labels == label_id]
+                support = len(pts)
+                if support < self.MIN_CLUSTER_POINTS:
+                    continue
+
+                centroid_x = float(np.mean(pts[:, 0]))
+                clusters.append({
+                    'label_id': int(label_id),
+                    'points': pts,
+                    'centroid_x': centroid_x,
+                    'support': support
+                })
+
+            if self.DEBUG_LANE_CLUSTER_SELECTION:
+                print(f"[DBSCAN] valid_clusters={len(clusters)}")
+                for c in clusters:
+                    print(f"  label={c['label_id']} support={c['support']} centroid_x={c['centroid_x']:.1f}")
+
+            left_cluster = None
+            right_cluster = None
+
+            if len(clusters) == 1:
+                reference_center_x = 0.0 if self.USE_WORLD_COORDINATES_FOR_ORDERING else (w / 2)
+                if clusters[0]['centroid_x'] < reference_center_x:
+                    left_cluster = clusters[0]
+                else:
+                    right_cluster = clusters[0]
+            elif len(clusters) >= 2:
+                clusters_sorted = sorted(clusters, key=lambda c: c['centroid_x'])
+                left_cluster = clusters_sorted[0]
+                right_cluster = clusters_sorted[-1]
+
+            if left_cluster is not None:
+                selected_left_points = [tuple(map(int, p)) for p in left_cluster['points']]
+                left_base = int(round(left_cluster['centroid_x']))
+                cluster_debug_info.append(('L', left_cluster['label_id'], left_cluster['centroid_x']))
+
+            if right_cluster is not None:
+                selected_right_points = [tuple(map(int, p)) for p in right_cluster['points']]
+                right_base = int(round(right_cluster['centroid_x']))
+                cluster_debug_info.append(('R', right_cluster['label_id'], right_cluster['centroid_x']))
+
+            if self.DEBUG_LANE_CLUSTER_SELECTION:
+                print(f"[DBSCAN] selected_left={None if left_cluster is None else left_cluster['label_id']} selected_right={None if right_cluster is None else right_cluster['label_id']}")
+
+            # Overlay de centroides de clusters
+            for c in clusters:
+                cx = int(round(c['centroid_x']))
+                cy = 30 + 18 * c['label_id']
+                cv2.circle(msk, (cx, 20), 5, (255, 255, 0), -1)
+                cv2.putText(msk, f"C{c['label_id']}:{c['support']}", (cx + 6, 24),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.35, (255, 255, 0), 1)
+
+            if left_cluster is not None:
+                cv2.circle(msk, (left_base, 38), 6, (0, 0, 255), -1)
+                cv2.putText(msk, f"L{left_cluster['label_id']}", (left_base + 6, 40),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
+            if right_cluster is not None:
+                cv2.circle(msk, (right_base, 56), 6, (255, 0, 0), -1)
+                cv2.putText(msk, f"R{right_cluster['label_id']}", (right_base + 6, 58),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 0, 0), 1)
+
+        lx = [p[0] for p in selected_left_points]
+        ly = [p[1] for p in selected_left_points]
+        rx = [p[0] for p in selected_right_points]
+        ry = [p[1] for p in selected_right_points]
+
+        raw_left_base = left_base
+        raw_right_base = right_base
+        left_base = raw_left_base
+        right_base = raw_right_base
+
+        if left_base != -1:
+            cv2.circle(histogram_viz, (left_base, 50), 8, (0, 0, 255), -1)
+        if right_base != -1:
+            cv2.circle(histogram_viz, (right_base, 50), 8, (255, 0, 0), -1)
+
         # Draw connecting lines between detected points to show trajectory
         if len(lx) > 1:
             for i in range(len(lx)-1):
-                cv2.line(msk, (lx[i], ly[i]), (lx[i+1], ly[i+1]), (0, 255, 255), 1)  # Cyan trajectory
+                cv2.line(msk, (lx[i], ly[i]), (lx[i+1], ly[i+1]), (0, 255, 255), 1)
         if len(rx) > 1:
             for i in range(len(rx)-1):
-                cv2.line(msk, (rx[i], ry[i]), (rx[i+1], ry[i+1]), (0, 255, 255), 1)  # Cyan trajectory
+                cv2.line(msk, (rx[i], ry[i]), (rx[i+1], ry[i+1]), (0, 255, 255), 1)
 
         # Add statistics overlay
-        # Ajustado Y +40px para no solapar con el indicador de Pausa/Frame
         stats_y = 70
-        cv2.putText(msk, f'Left points: {len(lx)}', (10, stats_y), 
+        cv2.putText(msk, f'Left points: {len(lx)}', (10, stats_y),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
         stats_y += 30
-        cv2.putText(msk, f'Right points: {len(rx)}', (10, stats_y), 
+        cv2.putText(msk, f'Right points: {len(rx)}', (10, stats_y),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
         stats_y += 30
-        left_expanded_count = sum(1 for _, exp in window_results['left'] if exp)
-        right_expanded_count = sum(1 for _, exp in window_results['right'] if exp)
-        cv2.putText(msk, f'Expanded searches: L={left_expanded_count} R={right_expanded_count}', 
-                   (10, stats_y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 165, 0), 2)
+        valid_clusters_count = len(set(labels)) - (1 if labels is not None and -1 in labels else 0) if labels is not None else 0
+        cv2.putText(msk, f'Valid clusters: {valid_clusters_count}', (10, stats_y),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
         stats_y += 30
-
-        # Validation status
-        left_status = "VALID" if raw_left_base != -1 and left_base != -1 else "INVALID"
-        right_status = "VALID" if raw_right_base != -1 and right_base != -1 else "INVALID"
-        cv2.putText(msk, f'Validation: L={left_status} R={right_status}', 
-                   (10, stats_y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, 
-                   (0, 255, 0) if left_status == "VALID" and right_status == "VALID" else (0, 255, 255), 2)
+        cv2.putText(msk, f'Auto thr: {auto_thr}', (10, stats_y),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+        stats_y += 30
+        cv2.putText(msk, f'ROI: {auto_thr_roi}', (10, stats_y),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+        stats_y += 30
+        left_status = 'VALID' if left_base != -1 else 'INVALID'
+        right_status = 'VALID' if right_base != -1 else 'INVALID'
+        cv2.putText(msk, f'Validation: L={left_status} R={right_status}',
+                   (10, stats_y), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+                   (0, 255, 0) if left_status == 'VALID' and right_status == 'VALID' else (0, 255, 255), 2)
 
     # --- Polyfit y Lógica de Estimación ---
         left_fit_current = None
@@ -408,26 +365,23 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         
         MIDPOINT_X = 320  # Mitad de la imagen (640 / 2)
 
-        # 1. Filtrar puntos Izquierdos (Deben estar a la IZQUIERDA del centro)
-        if len(lx) > 0:
-            # Usamos zip para filtrar X e Y simultáneamente
-            valid_l = [(x, y) for x, y in zip(lx, ly) if x < MIDPOINT_X]
-            if len(valid_l) > 0:
-                lx, ly = zip(*valid_l)
-                lx, ly = list(lx), list(ly)
-            else:
-                lx, ly = [], [] # Todos eran inválidos
+        # 1. Filtrar puntos por lado (opcional, desactivado por defecto en modo limpio)
+        if self.ENABLE_HARD_SIDE_POINT_FILTER:
+            if len(lx) > 0:
+                valid_l = [(x, y) for x, y in zip(lx, ly) if x < MIDPOINT_X]
+                if len(valid_l) > 0:
+                    lx, ly = zip(*valid_l)
+                    lx, ly = list(lx), list(ly)
+                else:
+                    lx, ly = [], []
 
-        # 2. Filtrar puntos Derechos (Deben estar a la DERECHA del centro)
-        if len(rx) > 0:
-            # Esta es la línea que arreglará tu foto:
-            # Elimina los puntos R8, R9, R10 que están en el lado izquierdo
-            valid_r = [(x, y) for x, y in zip(rx, ry) if x > MIDPOINT_X]
-            if len(valid_r) > 0:
-                rx, ry = zip(*valid_r)
-                rx, ry = list(rx), list(ry)
-            else:
-                rx, ry = [], [] # Todos eran inválidos (Probablemente tu caso actual)
+            if len(rx) > 0:
+                valid_r = [(x, y) for x, y in zip(rx, ry) if x > MIDPOINT_X]
+                if len(valid_r) > 0:
+                    rx, ry = zip(*valid_r)
+                    rx, ry = list(rx), list(ry)
+                else:
+                    rx, ry = [], []
 
         # ==============================================================================
         
@@ -450,25 +404,19 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         
         MIDPOINT_X = 320  # Mitad de tu imagen (640 / 2)
         
-        # 1. Validar Carril Izquierdo
-        if left_fit_current is not None:
-            # Calculamos dónde toca el suelo la línea (y=480)
-            lx_base = left_fit_current[0]*480**2 + left_fit_current[1]*480 + left_fit_current[2]
-            
-            # Si la base está a la derecha de la mitad... es un impostor.
-            if lx_base > MIDPOINT_X: 
-                print(f"🚫 RECHAZADO: Falso Izquierdo en zona derecha (x={int(lx_base)})")
-                left_fit_current = None  # Lo descartamos
+        # 1-2. Validación de base por lado (opcional, desactivada por defecto en modo limpio)
+        if self.ENABLE_BASE_EXCLUSION_FILTER:
+            if left_fit_current is not None:
+                lx_base = left_fit_current[0]*480**2 + left_fit_current[1]*480 + left_fit_current[2]
+                if lx_base > MIDPOINT_X:
+                    print(f"🚫 RECHAZADO: Falso Izquierdo en zona derecha (x={int(lx_base)})")
+                    left_fit_current = None
 
-        # 2. Validar Carril Derecho
-        if right_fit_current is not None:
-            # Calculamos dónde toca el suelo la línea (y=480)
-            rx_base = right_fit_current[0]*480**2 + right_fit_current[1]*480 + right_fit_current[2]
-            
-            # Si la base está a la izquierda de la mitad... es un impostor (TU ERROR ACTUAL).
-            if rx_base < MIDPOINT_X:
-                print(f"🚫 RECHAZADO: Falso Derecho en zona izquierda (x={int(rx_base)})")
-                right_fit_current = None  # Lo descartamos
+            if right_fit_current is not None:
+                rx_base = right_fit_current[0]*480**2 + right_fit_current[1]*480 + right_fit_current[2]
+                if rx_base < MIDPOINT_X:
+                    print(f"🚫 RECHAZADO: Falso Derecho en zona izquierda (x={int(rx_base)})")
+                    right_fit_current = None
 
         # Función auxiliar para calcular distancia entre dos líneas en la posición y=480
         def get_line_distance(fit1, fit2):
@@ -525,8 +473,9 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         if left_fit_current is not None and right_fit_current is not None:
             distance = get_line_distance(left_fit_current, right_fit_current)
             intersect = lines_intersect(left_fit_current, right_fit_current)
-            
-            if distance >= self.MIN_LANE_DISTANCE_PX and not intersect:
+            distance_ok = (distance >= self.MIN_LANE_DISTANCE_PX) if self.ENABLE_MIN_LANE_DISTANCE_CHECK else True
+
+            if distance_ok and not intersect:
                 detection_mode = "STEREO"
                 final_left_fit = left_fit_current
                 final_right_fit = right_fit_current
@@ -562,16 +511,17 @@ class MarcosLaneDetector_Advanced(LaneDetector):
             self.prev_left_fit = final_left_fit
             self.prev_right_fit = final_right_fit
 
-        # --- NIVEL 4: MEMORIA (Si falló todo, usar memoria si existe) ---
+        # --- NIVEL 4: MEMORIA (Si falló todo, usar memoria si existe y está habilitada) ---
         if detection_mode == "NONE":
-            if self.prev_left_fit is not None and self.prev_right_fit is not None:
+            if self.ENABLE_MEMORY_MODE and self.prev_left_fit is not None and self.prev_right_fit is not None:
                 detection_mode = "MEMORY"
                 final_left_fit = self.prev_left_fit
                 final_right_fit = self.prev_right_fit
             else:
                 # FALLO TOTAL: No hay nada que hacer
                 bird_view_with_lines = transformed_frame.copy()
-                cv2.putText(bird_view_with_lines, "NO LANE DETECTED", (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+                no_lane_text = "NO LANE DETECTED" if self.ENABLE_MEMORY_MODE else "NO LANE DETECTED (MEMORY OFF)"
+                cv2.putText(bird_view_with_lines, no_lane_text, (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
                 
                 debug_images = {
                     "original": original_frame,
