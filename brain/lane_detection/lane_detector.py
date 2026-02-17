@@ -262,19 +262,21 @@ class MarcosLaneDetector_Advanced(LaneDetector):
                 for c in clusters:
                     print(f"  label={c['label_id']} support={c['support']} centroid_x={c['centroid_x']:.1f}")
 
+            # Selección ego-lane inspirada en el paper:
+            # 1) dividir clusters por lado respecto al centro del vehículo
+            # 2) si hay múltiples por lado, elegir el más cercano al centro (no extremos)
             left_cluster = None
             right_cluster = None
+            reference_center_x = 0.0 if self.USE_WORLD_COORDINATES_FOR_ORDERING else (w / 2)
 
-            if len(clusters) == 1:
-                reference_center_x = 0.0 if self.USE_WORLD_COORDINATES_FOR_ORDERING else (w / 2)
-                if clusters[0]['centroid_x'] < reference_center_x:
-                    left_cluster = clusters[0]
-                else:
-                    right_cluster = clusters[0]
-            elif len(clusters) >= 2:
-                clusters_sorted = sorted(clusters, key=lambda c: c['centroid_x'])
-                left_cluster = clusters_sorted[0]
-                right_cluster = clusters_sorted[-1]
+            left_side_clusters = [c for c in clusters if c['centroid_x'] < reference_center_x]
+            right_side_clusters = [c for c in clusters if c['centroid_x'] >= reference_center_x]
+
+            if left_side_clusters:
+                left_cluster = min(left_side_clusters, key=lambda c: abs(reference_center_x - c['centroid_x']))
+
+            if right_side_clusters:
+                right_cluster = min(right_side_clusters, key=lambda c: abs(c['centroid_x'] - reference_center_x))
 
             if left_cluster is not None:
                 selected_left_points = [tuple(map(int, p)) for p in left_cluster['points']]
