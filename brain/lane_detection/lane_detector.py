@@ -176,6 +176,8 @@ class MarcosLaneDetector_Advanced(LaneDetector):
 
         window_results = {'left': [], 'right': []}
         window_index = 0
+        MIDPOINT_X = midpoint
+        TOLERANCE_PX = 20
 
         def _predict_next_x(xs):
             if len(xs) >= 2:
@@ -207,6 +209,14 @@ class MarcosLaneDetector_Advanced(LaneDetector):
 
             for idx, (cx, cy_local, area) in enumerate(candidates):
                 if idx in used_indexes:
+                    continue
+
+                # Hard hemisphere constraint:
+                # Left tracker must not take candidates clearly on the right side,
+                # and right tracker must not take candidates clearly on the left side.
+                if side == 'left' and cx > (MIDPOINT_X + TOLERANCE_PX):
+                    continue
+                if side == 'right' and cx < (MIDPOINT_X - TOLERANCE_PX):
                     continue
 
                 if prev_xs:
