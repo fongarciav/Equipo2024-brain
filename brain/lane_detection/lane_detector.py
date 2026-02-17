@@ -2,6 +2,7 @@ import cv2
 import numpy as np
 import math
 from abc import ABC, abstractmethod
+from sklearn.cluster import DBSCAN
 
 # ======================================================================
 # --- CLASE BASE PARA DETECTORES DE CARRIL ---
@@ -64,6 +65,13 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         self.HEMISLICE_MIN_CONTOUR_AREA = 20
         self.HEMISLICE_MAX_JUMP_PX = 120
         self.HEMISLICE_TREND_TOLERANCE_PX = 90
+
+        # --- Parámetros DBSCAN (selección de carriles por clustering) ---
+        self.DBSCAN_EPS = 35
+        self.DBSCAN_MIN_SAMPLES = 3
+        self.MIN_CLUSTER_POINTS = 6
+        self.USE_WORLD_COORDINATES_FOR_ORDERING = False
+        self.DEBUG_LANE_CLUSTER_SELECTION = False
 
         # --- Threshold automático por ROI de referencia (bloque compartido) ---
         self.AUTO_THR_REF_X_NORM = 0.5
@@ -177,15 +185,6 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         window_results = {'left': [], 'right': []}
         window_index = 0
 
-        def _predict_next_x(xs):
-            if len(xs) >= 2:
-                delta = xs[-1] - xs[-2]
-                delta = int(_clamp(delta, -self.HEMISLICE_MAX_JUMP_PX, self.HEMISLICE_MAX_JUMP_PX))
-                return xs[-1] + delta
-            if len(xs) == 1:
-                return xs[-1]
-            return None
-
         def _extract_candidates(contours):
             candidates = []
             for contour in contours:
@@ -201,41 +200,9 @@ class MarcosLaneDetector_Advanced(LaneDetector):
                 candidates.append((cx, cy_local, area))
             return candidates
 
-        def _choose_candidate(candidates, side, prev_xs, used_indexes):
-            scored = []
-            pred_x = _predict_next_x(prev_xs)
-
-            for idx, (cx, cy_local, area) in enumerate(candidates):
-                if idx in used_indexes:
-                    continue
-
-                if prev_xs:
-                    jump = abs(cx - prev_xs[-1])
-                    if jump > self.HEMISLICE_MAX_JUMP_PX:
-                        continue
-                else:
-                    jump = 0
-
-                trend_penalty = abs(cx - pred_x) if pred_x is not None else 0
-                if pred_x is not None and trend_penalty > self.HEMISLICE_TREND_TOLERANCE_PX:
-                    continue
-
-                # Posición lateral como criterio suave (no hard split por hemisferio)
-                if side == 'left':
-                    lateral_penalty = max(0, cx - midpoint)
-                else:
-                    lateral_penalty = max(0, midpoint - cx)
-
-                score = jump + 0.5 * trend_penalty + 0.35 * lateral_penalty - 0.01 * area
-                scored.append((score, idx, cx, cy_local))
-
-            if not scored:
-                return None
-
-            scored.sort(key=lambda s: s[0])
-            _, idx, best_x, best_cy_local = scored[0]
-            used_indexes.add(idx)
-            return best_x, best_cy_local
+        all_points = []
+        cluster_debug_info = []
+        labels = None
 
         while y > 0:
             y0 = max(0, y - self.SLIDING_WINDOW_HEIGHT)
@@ -244,32 +211,17 @@ class MarcosLaneDetector_Advanced(LaneDetector):
             full_slice = mask[y0:y1, :]
             contours, _ = cv2.findContours(full_slice, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
             candidates = _extract_candidates(contours)
-            used_candidate_indexes = set()
 
-            left_candidate = _choose_candidate(candidates, side='left', prev_xs=lx, used_indexes=used_candidate_indexes)
-            right_candidate = _choose_candidate(candidates, side='right', prev_xs=rx, used_indexes=used_candidate_indexes)
-
-            found_left = left_candidate is not None
-            found_right = right_candidate is not None
-
-            if found_left:
-                point_x, cy_local = left_candidate
+            found_any = len(candidates) > 0
+            for cx, cy_local, _ in candidates:
                 point_y = y0 + cy_local
-                lx.append(point_x)
-                ly.append(point_y)
-                cv2.circle(msk, (point_x, point_y), 4, (0, 0, 255), -1)
+                all_points.append((cx, point_y))
+                cv2.circle(msk, (cx, point_y), 2, (180, 180, 180), -1)
 
-            if found_right:
-                point_x, cy_local = right_candidate
-                point_y = y0 + cy_local
-                rx.append(point_x)
-                ry.append(point_y)
-                cv2.circle(msk, (point_x, point_y), 4, (255, 0, 0), -1)
+            window_results['left'].append((found_any, False))
+            window_results['right'].append((found_any, False))
 
-            window_results['left'].append((found_left, False))
-            window_results['right'].append((found_right, False))
-
-            slice_color = (0, 255, 0) if (found_left or found_right) else (0, 0, 255)
+            slice_color = (0, 255, 0) if found_any else (0, 0, 255)
             cv2.rectangle(msk, (0, y1), (w - 1, y0), slice_color, 1)
             cv2.line(msk, (midpoint, y0), (midpoint, y1), (80, 80, 80), 1)
             cv2.putText(msk, f'S{window_index}', (8, max(15, y0 + 15)),
@@ -278,8 +230,88 @@ class MarcosLaneDetector_Advanced(LaneDetector):
             y -= self.SLIDING_WINDOW_HEIGHT
             window_index += 1
 
-        raw_left_base = lx[0] if len(lx) > 0 else -1
-        raw_right_base = rx[0] if len(rx) > 0 else -1
+        selected_left_points = []
+        selected_right_points = []
+        left_base = -1
+        right_base = -1
+
+        if len(all_points) >= self.DBSCAN_MIN_SAMPLES:
+            X = np.array(all_points, dtype=np.float32)
+            labels = DBSCAN(eps=self.DBSCAN_EPS, min_samples=self.DBSCAN_MIN_SAMPLES).fit(X).labels_
+
+            clusters = []
+            for label_id in np.unique(labels):
+                if label_id == -1:
+                    continue
+                pts = X[labels == label_id]
+                support = len(pts)
+                if support < self.MIN_CLUSTER_POINTS:
+                    continue
+
+                centroid_x = float(np.mean(pts[:, 0]))
+                clusters.append({
+                    'label_id': int(label_id),
+                    'points': pts,
+                    'centroid_x': centroid_x,
+                    'support': support
+                })
+
+            if self.DEBUG_LANE_CLUSTER_SELECTION:
+                print(f"[DBSCAN] valid_clusters={len(clusters)}")
+                for c in clusters:
+                    print(f"  label={c['label_id']} support={c['support']} centroid_x={c['centroid_x']:.1f}")
+
+            left_cluster = None
+            right_cluster = None
+
+            if len(clusters) == 1:
+                reference_center_x = 0.0 if self.USE_WORLD_COORDINATES_FOR_ORDERING else (w / 2)
+                if clusters[0]['centroid_x'] < reference_center_x:
+                    left_cluster = clusters[0]
+                else:
+                    right_cluster = clusters[0]
+            elif len(clusters) >= 2:
+                clusters_sorted = sorted(clusters, key=lambda c: c['centroid_x'])
+                left_cluster = clusters_sorted[0]
+                right_cluster = clusters_sorted[-1]
+
+            if left_cluster is not None:
+                selected_left_points = [tuple(map(int, p)) for p in left_cluster['points']]
+                left_base = int(round(left_cluster['centroid_x']))
+                cluster_debug_info.append(('L', left_cluster['label_id'], left_cluster['centroid_x']))
+
+            if right_cluster is not None:
+                selected_right_points = [tuple(map(int, p)) for p in right_cluster['points']]
+                right_base = int(round(right_cluster['centroid_x']))
+                cluster_debug_info.append(('R', right_cluster['label_id'], right_cluster['centroid_x']))
+
+            if self.DEBUG_LANE_CLUSTER_SELECTION:
+                print(f"[DBSCAN] selected_left={None if left_cluster is None else left_cluster['label_id']} selected_right={None if right_cluster is None else right_cluster['label_id']}")
+
+            # Overlay de centroides de clusters
+            for c in clusters:
+                cx = int(round(c['centroid_x']))
+                cy = 30 + 18 * c['label_id']
+                cv2.circle(msk, (cx, 20), 5, (255, 255, 0), -1)
+                cv2.putText(msk, f"C{c['label_id']}:{c['support']}", (cx + 6, 24),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.35, (255, 255, 0), 1)
+
+            if left_cluster is not None:
+                cv2.circle(msk, (left_base, 38), 6, (0, 0, 255), -1)
+                cv2.putText(msk, f"L{left_cluster['label_id']}", (left_base + 6, 40),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
+            if right_cluster is not None:
+                cv2.circle(msk, (right_base, 56), 6, (255, 0, 0), -1)
+                cv2.putText(msk, f"R{right_cluster['label_id']}", (right_base + 6, 58),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 0, 0), 1)
+
+        lx = [p[0] for p in selected_left_points]
+        ly = [p[1] for p in selected_left_points]
+        rx = [p[0] for p in selected_right_points]
+        ry = [p[1] for p in selected_right_points]
+
+        raw_left_base = left_base
+        raw_right_base = right_base
         left_base = raw_left_base
         right_base = raw_right_base
 
@@ -303,6 +335,10 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         stats_y += 30
         cv2.putText(msk, f'Right points: {len(rx)}', (10, stats_y),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        stats_y += 30
+        valid_clusters_count = len(set(labels)) - (1 if labels is not None and -1 in labels else 0) if labels is not None else 0
+        cv2.putText(msk, f'Valid clusters: {valid_clusters_count}', (10, stats_y),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
         stats_y += 30
         cv2.putText(msk, f'Auto thr: {auto_thr}', (10, stats_y),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
