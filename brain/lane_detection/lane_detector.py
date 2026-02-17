@@ -178,6 +178,7 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         window_index = 0
         MIDPOINT_X = midpoint
         TOLERANCE_PX = 20
+        SEARCH_MARGIN_X = 80
 
         def _predict_next_x(xs):
             if len(xs) >= 2:
@@ -203,13 +204,18 @@ class MarcosLaneDetector_Advanced(LaneDetector):
                 candidates.append((cx, cy_local, area))
             return candidates
 
-        def _choose_candidate(candidates, side, prev_xs, used_indexes):
+        def _choose_candidate(candidates, side, prev_xs, used_indexes, x_min=None, x_max=None):
             scored = []
             pred_x = _predict_next_x(prev_xs)
 
             for idx, (cx, cy_local, area) in enumerate(candidates):
                 if idx in used_indexes:
                     continue
+
+                # Dynamic memory-guided window bounds (snake search)
+                if x_min is not None and x_max is not None:
+                    if cx < x_min or cx > x_max:
+                        continue
 
                 # Hard hemisphere constraint:
                 # Left tracker must not take candidates clearly on the right side,
@@ -255,9 +261,43 @@ class MarcosLaneDetector_Advanced(LaneDetector):
             contours, _ = cv2.findContours(full_slice, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
             candidates = _extract_candidates(contours)
             used_candidate_indexes = set()
+            y_center = int((y0 + y1) / 2)
 
-            left_candidate = _choose_candidate(candidates, side='left', prev_xs=lx, used_indexes=used_candidate_indexes)
-            right_candidate = _choose_candidate(candidates, side='right', prev_xs=rx, used_indexes=used_candidate_indexes)
+            left_x_min = None
+            left_x_max = None
+            right_x_min = None
+            right_x_max = None
+
+            if self.prev_left_fit is not None:
+                expected_left_x = self.prev_left_fit[0] * y_center**2 + self.prev_left_fit[1] * y_center + self.prev_left_fit[2]
+                left_x_min = max(0, int(expected_left_x - SEARCH_MARGIN_X))
+                left_x_max = min(midpoint - 1, int(expected_left_x + SEARCH_MARGIN_X))
+                if left_x_min > left_x_max:
+                    left_x_min, left_x_max = None, None
+
+            if self.prev_right_fit is not None:
+                expected_right_x = self.prev_right_fit[0] * y_center**2 + self.prev_right_fit[1] * y_center + self.prev_right_fit[2]
+                right_x_min = max(midpoint, int(expected_right_x - SEARCH_MARGIN_X))
+                right_x_max = min(w - 1, int(expected_right_x + SEARCH_MARGIN_X))
+                if right_x_min > right_x_max:
+                    right_x_min, right_x_max = None, None
+
+            left_candidate = _choose_candidate(
+                candidates,
+                side='left',
+                prev_xs=lx,
+                used_indexes=used_candidate_indexes,
+                x_min=left_x_min,
+                x_max=left_x_max
+            )
+            right_candidate = _choose_candidate(
+                candidates,
+                side='right',
+                prev_xs=rx,
+                used_indexes=used_candidate_indexes,
+                x_min=right_x_min,
+                x_max=right_x_max
+            )
 
             found_left = left_candidate is not None
             found_right = right_candidate is not None
@@ -282,6 +322,15 @@ class MarcosLaneDetector_Advanced(LaneDetector):
             slice_color = (0, 255, 0) if (found_left or found_right) else (0, 0, 255)
             cv2.rectangle(msk, (0, y1), (w - 1, y0), slice_color, 1)
             cv2.line(msk, (midpoint, y0), (midpoint, y1), (80, 80, 80), 1)
+
+            # Draw dynamic search tunnel bounds (green) window by window
+            if left_x_min is not None and left_x_max is not None:
+                cv2.line(msk, (left_x_min, y0), (left_x_min, y1), (0, 255, 0), 1)
+                cv2.line(msk, (left_x_max, y0), (left_x_max, y1), (0, 255, 0), 1)
+            if right_x_min is not None and right_x_max is not None:
+                cv2.line(msk, (right_x_min, y0), (right_x_min, y1), (0, 255, 0), 1)
+                cv2.line(msk, (right_x_max, y0), (right_x_max, y1), (0, 255, 0), 1)
+
             cv2.putText(msk, f'S{window_index}', (8, max(15, y0 + 15)),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
 
