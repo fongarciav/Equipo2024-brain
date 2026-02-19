@@ -45,8 +45,14 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         self.MIN_POINTS_FOR_FIT = 3
         self.MIN_LANE_DISTANCE_PX = 40  # Distancia mínima entre líneas (reducida para modo más permisivo)
         self.ENABLE_MIN_LANE_DISTANCE_CHECK = True  # Permite desactivar chequeo de distancia mínima en STEREO
-        self.ENABLE_HARD_SIDE_POINT_FILTER = False  # Modo limpio: no descartar puntos por cruzar el centro
-        self.ENABLE_BASE_EXCLUSION_FILTER = False  # Modo limpio: no invalidar fits por base en lado opuesto
+        self.ENABLE_HARD_SIDE_POINT_FILTER = True  # Estricto: descartar puntos por cruzar el centro
+        self.ENABLE_BASE_EXCLUSION_FILTER = True  # Estricto: invalidar fits por base en lado opuesto
+        self.MAX_TRACKING_JUMP_PX = 80  # Salto máximo permitido contra la última posición válida
+        self.TRACKING_RESET_FRAMES = 10  # Frames máximos sin detección antes de resetear tracking
+        self.last_left_x = None
+        self.last_right_x = None
+        self.left_missed_frames = 0
+        self.right_missed_frames = 0
         
         # --- Parámetros de cálculo de ángulos ---
         self.LOOKAHEAD_DISTANCE = 250  # Distancia hacia adelante para calcular dirección (px)
@@ -235,6 +241,8 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         selected_right_points = []
         left_base = -1
         right_base = -1
+        left_rejected_by_jump = False
+        right_rejected_by_jump = False
 
         if len(all_points) >= self.DBSCAN_MIN_SAMPLES:
             X = np.array(all_points, dtype=np.float32)
@@ -262,9 +270,10 @@ class MarcosLaneDetector_Advanced(LaneDetector):
                 for c in clusters:
                     print(f"  label={c['label_id']} support={c['support']} centroid_x={c['centroid_x']:.1f}")
 
-            # Selección ego-lane inspirada en el paper:
+            # Selección ego-lane robusta:
             # 1) dividir clusters por lado respecto al centro del vehículo
-            # 2) si hay múltiples por lado, elegir el más cercano al centro (no extremos)
+            # 2) priorizar el cluster más cercano a la última posición válida (tracking)
+            # 3) descartar saltos bruscos (> MAX_TRACKING_JUMP_PX) para evitar carriles falsos
             left_cluster = None
             right_cluster = None
             reference_center_x = 0.0 if self.USE_WORLD_COORDINATES_FOR_ORDERING else (w / 2)
@@ -272,11 +281,31 @@ class MarcosLaneDetector_Advanced(LaneDetector):
             left_side_clusters = [c for c in clusters if c['centroid_x'] < reference_center_x]
             right_side_clusters = [c for c in clusters if c['centroid_x'] >= reference_center_x]
 
-            if left_side_clusters:
-                left_cluster = min(left_side_clusters, key=lambda c: abs(reference_center_x - c['centroid_x']))
+            def _pick_cluster_with_tracking(candidates, side):
+                if not candidates:
+                    return None, False
 
-            if right_side_clusters:
-                right_cluster = min(right_side_clusters, key=lambda c: abs(c['centroid_x'] - reference_center_x))
+                if side == "left":
+                    prev_x = self.last_left_x
+                else:
+                    prev_x = self.last_right_x
+
+                # Primer frame / tracking reseteado: fallback por cercanía al centro.
+                if prev_x is None:
+                    candidate = min(candidates, key=lambda c: abs(reference_center_x - c['centroid_x']))
+                    return candidate, False
+
+                # Tracking activo: elegir por cercanía a la última posición.
+                ordered = sorted(candidates, key=lambda c: abs(c['centroid_x'] - prev_x))
+                for candidate in ordered:
+                    if abs(candidate['centroid_x'] - prev_x) <= self.MAX_TRACKING_JUMP_PX:
+                        return candidate, False
+
+                # Todos los candidatos son incoherentes con el track previo.
+                return None, True
+
+            left_cluster, left_rejected_by_jump = _pick_cluster_with_tracking(left_side_clusters, "left")
+            right_cluster, right_rejected_by_jump = _pick_cluster_with_tracking(right_side_clusters, "right")
 
             if left_cluster is not None:
                 selected_left_points = [tuple(map(int, p)) for p in left_cluster['points']]
@@ -290,6 +319,10 @@ class MarcosLaneDetector_Advanced(LaneDetector):
 
             if self.DEBUG_LANE_CLUSTER_SELECTION:
                 print(f"[DBSCAN] selected_left={None if left_cluster is None else left_cluster['label_id']} selected_right={None if right_cluster is None else right_cluster['label_id']}")
+                if left_rejected_by_jump:
+                    print(f"[DBSCAN] left rejected by jump > {self.MAX_TRACKING_JUMP_PX}px")
+                if right_rejected_by_jump:
+                    print(f"[DBSCAN] right rejected by jump > {self.MAX_TRACKING_JUMP_PX}px")
 
             # Overlay de centroides de clusters
             for c in clusters:
@@ -307,6 +340,23 @@ class MarcosLaneDetector_Advanced(LaneDetector):
                 cv2.circle(msk, (right_base, 56), 6, (255, 0, 0), -1)
                 cv2.putText(msk, f"R{right_cluster['label_id']}", (right_base + 6, 58),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 0, 0), 1)
+
+        # Actualizar tracking por lado con timeout de reset en TODOS los frames.
+        if left_base != -1:
+            self.last_left_x = float(left_base)
+            self.left_missed_frames = 0
+        else:
+            self.left_missed_frames += 1
+            if self.left_missed_frames > self.TRACKING_RESET_FRAMES:
+                self.last_left_x = None
+
+        if right_base != -1:
+            self.last_right_x = float(right_base)
+            self.right_missed_frames = 0
+        else:
+            self.right_missed_frames += 1
+            if self.right_missed_frames > self.TRACKING_RESET_FRAMES:
+                self.last_right_x = None
 
         lx = [p[0] for p in selected_left_points]
         ly = [p[1] for p in selected_left_points]
@@ -485,8 +535,13 @@ class MarcosLaneDetector_Advanced(LaneDetector):
                 self.prev_left_fit = final_left_fit
                 self.prev_right_fit = final_right_fit
 
-        # --- NIVEL 2: MONO_DERECHA (Si falló Nivel 1, intentar solo con derecha) ---
-        if detection_mode == "NONE" and right_fit_current is not None:
+        # Si hubo rechazo por salto en un lado, no permitimos MONO en ese lado.
+        # Priorizamos "no detección" sobre reconstrucciones potencialmente falsas.
+        right_mono_blocked = right_rejected_by_jump
+        left_mono_blocked = left_rejected_by_jump
+
+        # --- NIVEL 2: MONO_DERECHA (si no hubo incoherencia de tracking en derecha) ---
+        if detection_mode == "NONE" and right_fit_current is not None and not right_mono_blocked:
             detection_mode = "MONO_RIGHT"
             final_right_fit = right_fit_current
             
@@ -499,8 +554,8 @@ class MarcosLaneDetector_Advanced(LaneDetector):
             self.prev_left_fit = final_left_fit
             self.prev_right_fit = final_right_fit
 
-        # --- NIVEL 3: MONO_IZQUIERDA (Si falló Nivel 2, intentar solo con izquierda) ---
-        if detection_mode == "NONE" and left_fit_current is not None:
+        # --- NIVEL 3: MONO_IZQUIERDA (si no hubo incoherencia de tracking en izquierda) ---
+        if detection_mode == "NONE" and left_fit_current is not None and not left_mono_blocked:
             detection_mode = "MONO_LEFT"
             final_left_fit = left_fit_current
             
