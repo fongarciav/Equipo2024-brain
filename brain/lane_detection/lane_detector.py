@@ -73,13 +73,20 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         self.MIN_CLUSTER_POINTS = 6
         self.USE_WORLD_COORDINATES_FOR_ORDERING = False
         self.DEBUG_LANE_CLUSTER_SELECTION = False
+        self.ENABLE_TEMPORAL_CLUSTER_MATCHING = True
+        self.CLUSTER_MATCH_Y_SAMPLES = np.array([480, 420, 360, 300], dtype=np.float32)
+        self.CLUSTER_MATCH_MAX_COST = 180.0
+        self.CLUSTER_SWAP_PENALTY = 40.0
 
-        # --- Threshold automático por ROI de referencia (bloque compartido) ---
-        self.AUTO_THR_REF_X_NORM = 0.5
+        # --- Threshold automático por múltiples ROIs + suavizado temporal ---
+        self.AUTO_THR_REF_X_NORMS = [0.2, 0.5, 0.8]
         self.AUTO_THR_REF_Y_FROM_BOTTOM_PX = 8
         self.AUTO_THR_REF_ROI_SIZE = 41
         self.AUTO_THR_BG_PERCENTILE = 90.0
         self.AUTO_THR_OFFSET = 45
+        self.AUTO_THR_TEMPORAL_ALPHA = 0.30
+        self.AUTO_THR_MAX_DELTA_PER_FRAME = 12
+        self.prev_auto_threshold = None
         
         # --- Parámetros de Control ---
         # La Ganancia o peso que le das a la anticipación.
@@ -137,32 +144,52 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         def _clamp(v, lo, hi):
             return max(lo, min(hi, v))
 
-        def _compute_auto_threshold_from_ref_roi(gray):
-            """
-            Calcula threshold automático usando un bloque de referencia que debe caer en suelo negro.
-            Basado en el bloque de referencia compartido por el usuario.
-            """
+        def _compute_auto_threshold_from_multi_roi(gray):
+            """Calcula threshold con múltiples ROIs inferiores y estadística robusta."""
             h, w = gray.shape[:2]
-            cx = int(_clamp(self.AUTO_THR_REF_X_NORM, 0.0, 1.0) * (w - 1))
             cy = int(_clamp(h - 1 - self.AUTO_THR_REF_Y_FROM_BOTTOM_PX, 0, h - 1))
-
             r = max(1, self.AUTO_THR_REF_ROI_SIZE // 2)
-            x0 = _clamp(cx - r, 0, w - 1)
-            x1 = _clamp(cx + r, 0, w - 1)
-            y0 = _clamp(cy - r, 0, h - 1)
-            y1 = _clamp(cy + r, 0, h - 1)
 
-            roi = gray[y0:y1 + 1, x0:x1 + 1]
-            if roi.size == 0:
-                t = 128
-            else:
+            rois = []
+            bg_values = []
+            for x_norm in self.AUTO_THR_REF_X_NORMS:
+                cx = int(_clamp(x_norm, 0.0, 1.0) * (w - 1))
+                x0 = _clamp(cx - r, 0, w - 1)
+                x1 = _clamp(cx + r, 0, w - 1)
+                y0 = _clamp(cy - r, 0, h - 1)
+                y1 = _clamp(cy + r, 0, h - 1)
+
+                roi = gray[y0:y1 + 1, x0:x1 + 1]
+                if roi.size == 0:
+                    continue
+
                 bg = float(np.percentile(roi, _clamp(self.AUTO_THR_BG_PERCENTILE, 0.0, 100.0)))
-                t = int(round(bg + float(self.AUTO_THR_OFFSET)))
+                bg_values.append(bg)
+                rois.append((x0, y0, x1, y1))
 
-            t = int(_clamp(t, 0, 255))
-            return t, (x0, y0, x1, y1)
+            if len(bg_values) == 0:
+                raw_thr = 128
+            else:
+                robust_bg = float(np.median(bg_values))
+                raw_thr = int(round(robust_bg + float(self.AUTO_THR_OFFSET)))
 
-        auto_thr, auto_thr_roi = _compute_auto_threshold_from_ref_roi(gray_transformed_frame)
+            raw_thr = int(_clamp(raw_thr, 0, 255))
+            return raw_thr, rois
+
+        raw_auto_thr, auto_thr_rois = _compute_auto_threshold_from_multi_roi(gray_transformed_frame)
+
+        if self.prev_auto_threshold is None:
+            auto_thr = raw_auto_thr
+        else:
+            alpha = float(_clamp(self.AUTO_THR_TEMPORAL_ALPHA, 0.0, 1.0))
+            ema_thr = (1.0 - alpha) * float(self.prev_auto_threshold) + alpha * float(raw_auto_thr)
+            delta_max = float(max(0, self.AUTO_THR_MAX_DELTA_PER_FRAME))
+            low = float(self.prev_auto_threshold) - delta_max
+            high = float(self.prev_auto_threshold) + delta_max
+            auto_thr = int(round(_clamp(ema_thr, low, high)))
+
+        auto_thr = int(_clamp(auto_thr, 0, 255))
+        self.prev_auto_threshold = auto_thr
         _, mask = cv2.threshold(gray_transformed_frame, auto_thr, 255, cv2.THRESH_BINARY)
 
         # --- Histograma (debug) ---
@@ -235,6 +262,8 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         selected_right_points = []
         left_base = -1
         right_base = -1
+        selected_left_score = None
+        selected_right_score = None
 
         if len(all_points) >= self.DBSCAN_MIN_SAMPLES:
             X = np.array(all_points, dtype=np.float32)
@@ -250,11 +279,19 @@ class MarcosLaneDetector_Advanced(LaneDetector):
                     continue
 
                 centroid_x = float(np.mean(pts[:, 0]))
+                cluster_fit = None
+                if support >= self.MIN_POINTS_FOR_FIT:
+                    try:
+                        cluster_fit = np.polyfit(pts[:, 1], pts[:, 0], 2)
+                    except np.linalg.LinAlgError:
+                        cluster_fit = None
+
                 clusters.append({
                     'label_id': int(label_id),
                     'points': pts,
                     'centroid_x': centroid_x,
-                    'support': support
+                    'support': support,
+                    'fit': cluster_fit
                 })
 
             if self.DEBUG_LANE_CLUSTER_SELECTION:
@@ -262,19 +299,72 @@ class MarcosLaneDetector_Advanced(LaneDetector):
                 for c in clusters:
                     print(f"  label={c['label_id']} support={c['support']} centroid_x={c['centroid_x']:.1f}")
 
+            # Selección ego-lane con continuidad temporal:
+            # 1) calcular costo cluster<->historial (prev_left_fit / prev_right_fit)
+            # 2) penalizar swaps de lado abruptos
+            # 3) elegir asignación de menor costo total (izquierda y derecha)
             left_cluster = None
             right_cluster = None
+            reference_center_x = 0.0 if self.USE_WORLD_COORDINATES_FOR_ORDERING else (w / 2)
 
-            if len(clusters) == 1:
-                reference_center_x = 0.0 if self.USE_WORLD_COORDINATES_FOR_ORDERING else (w / 2)
-                if clusters[0]['centroid_x'] < reference_center_x:
-                    left_cluster = clusters[0]
-                else:
-                    right_cluster = clusters[0]
-            elif len(clusters) >= 2:
-                clusters_sorted = sorted(clusters, key=lambda c: c['centroid_x'])
-                left_cluster = clusters_sorted[0]
-                right_cluster = clusters_sorted[-1]
+            def _fit_distance_cost(candidate_fit, prev_fit):
+                if candidate_fit is None or prev_fit is None:
+                    return float('inf')
+                y_samples = self.CLUSTER_MATCH_Y_SAMPLES
+                x_candidate = candidate_fit[0] * y_samples**2 + candidate_fit[1] * y_samples + candidate_fit[2]
+                x_prev = prev_fit[0] * y_samples**2 + prev_fit[1] * y_samples + prev_fit[2]
+                return float(np.mean(np.abs(x_candidate - x_prev)))
+
+            def _side_penalty(side, centroid_x):
+                if side == 'L':
+                    return 0.0 if centroid_x < reference_center_x else self.CLUSTER_SWAP_PENALTY
+                return 0.0 if centroid_x >= reference_center_x else self.CLUSTER_SWAP_PENALTY
+
+            def _cluster_cost_for_side(cluster, side):
+                prev_fit = self.prev_left_fit if side == 'L' else self.prev_right_fit
+                temporal_cost = _fit_distance_cost(cluster['fit'], prev_fit)
+                if not np.isfinite(temporal_cost):
+                    temporal_cost = abs(cluster['centroid_x'] - reference_center_x)
+                return temporal_cost + _side_penalty(side, cluster['centroid_x'])
+
+            if self.ENABLE_TEMPORAL_CLUSTER_MATCHING and len(clusters) > 0:
+                left_candidates = sorted(
+                    [(_cluster_cost_for_side(c, 'L'), idx, c) for idx, c in enumerate(clusters)],
+                    key=lambda t: t[0]
+                )
+                right_candidates = sorted(
+                    [(_cluster_cost_for_side(c, 'R'), idx, c) for idx, c in enumerate(clusters)],
+                    key=lambda t: t[0]
+                )
+
+                for cost, idx, candidate in left_candidates:
+                    if self.prev_left_fit is not None and cost > self.CLUSTER_MATCH_MAX_COST:
+                        continue
+                    left_cluster = candidate
+                    selected_left_score = cost
+                    left_selected_idx = idx
+                    break
+
+                for cost, idx, candidate in right_candidates:
+                    if self.prev_right_fit is not None and cost > self.CLUSTER_MATCH_MAX_COST:
+                        continue
+                    if left_cluster is not None and idx == left_selected_idx:
+                        continue
+                    right_cluster = candidate
+                    selected_right_score = cost
+                    break
+
+            if left_cluster is None or right_cluster is None:
+                left_side_clusters = [c for c in clusters if c['centroid_x'] < reference_center_x]
+                right_side_clusters = [c for c in clusters if c['centroid_x'] >= reference_center_x]
+
+                if left_cluster is None and left_side_clusters:
+                    left_cluster = min(left_side_clusters, key=lambda c: abs(reference_center_x - c['centroid_x']))
+                    selected_left_score = abs(reference_center_x - left_cluster['centroid_x'])
+
+                if right_cluster is None and right_side_clusters:
+                    right_cluster = min(right_side_clusters, key=lambda c: abs(c['centroid_x'] - reference_center_x))
+                    selected_right_score = abs(reference_center_x - right_cluster['centroid_x'])
 
             if left_cluster is not None:
                 selected_left_points = [tuple(map(int, p)) for p in left_cluster['points']]
@@ -288,6 +378,8 @@ class MarcosLaneDetector_Advanced(LaneDetector):
 
             if self.DEBUG_LANE_CLUSTER_SELECTION:
                 print(f"[DBSCAN] selected_left={None if left_cluster is None else left_cluster['label_id']} selected_right={None if right_cluster is None else right_cluster['label_id']}")
+                if selected_left_score is not None or selected_right_score is not None:
+                    print(f"[DBSCAN] score_left={selected_left_score} score_right={selected_right_score}")
 
             # Overlay de centroides de clusters
             for c in clusters:
@@ -344,7 +436,7 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         cv2.putText(msk, f'Auto thr: {auto_thr}', (10, stats_y),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
         stats_y += 30
-        cv2.putText(msk, f'ROI: {auto_thr_roi}', (10, stats_y),
+        cv2.putText(msk, f'ROIs: {auto_thr_rois}', (10, stats_y),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
         stats_y += 30
         left_status = 'VALID' if left_base != -1 else 'INVALID'
@@ -352,6 +444,12 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         cv2.putText(msk, f'Validation: L={left_status} R={right_status}',
                    (10, stats_y), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
                    (0, 255, 0) if left_status == 'VALID' and right_status == 'VALID' else (0, 255, 255), 2)
+        stats_y += 30
+        score_left_text = "-" if selected_left_score is None else f"{selected_left_score:.1f}"
+        score_right_text = "-" if selected_right_score is None else f"{selected_right_score:.1f}"
+        cv2.putText(msk, f'Scores: L={score_left_text} R={score_right_text}',
+                   (10, stats_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                   (180, 255, 180), 1)
 
     # --- Polyfit y Lógica de Estimación ---
         left_fit_current = None
