@@ -98,15 +98,18 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         
         # --- Puntos de perspectiva (de tu nuevo script) ---
         # Puntos Origen (SRC) - ROI
-        # Trapecio ampliado para capturar más FOV lateral en curvas cerradas.
-        self.tl = (100, 190)
-        self.bl = (0, 470)
-        self.tr = (540, 190)
-        self.br = (640, 470)
+        # Trapecio ampliado de forma conservadora para no romper el umbral automático.
+        # Mantener el borde inferior en y=450 evita incluir capó/suelo cercano en el warp.
+        self.tl = (130, 185)
+        self.bl = (20, 450)
+        self.tr = (510, 185)
+        self.br = (620, 450)
         self.pts1 = np.float32([self.tl, self.bl, self.tr, self.br])
         
         # Puntos Destino (DST) - VISTA CENITAL
-        self.pts2 = np.float32([[0, 0], [0, 480], [640, 0], [640, 480]])
+        # Trapecio en destino para obtener bird view con bordes negros laterales.
+        # Orden: top-left, bottom-left, top-right, bottom-right.
+        self.pts2 = np.float32([[160, 0], [0, 480], [480, 0], [640, 480]])
         
         # Matrices de transformación
         self.matrix = cv2.getPerspectiveTransform(self.pts1, self.pts2)
