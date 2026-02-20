@@ -77,6 +77,7 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         self.CLUSTER_MATCH_Y_SAMPLES = np.array([480, 420, 360, 300], dtype=np.float32)
         self.CLUSTER_MATCH_MAX_COST = 180.0
         self.CLUSTER_SWAP_PENALTY = 40.0
+        self.CLUSTER_CENTER_DEADBAND_PX = 15.0
 
         # --- Threshold automático por múltiples ROIs + suavizado temporal ---
         self.AUTO_THR_REF_X_NORMS = [0.2, 0.5, 0.8]
@@ -316,9 +317,12 @@ class MarcosLaneDetector_Advanced(LaneDetector):
                 return float(np.mean(np.abs(x_candidate - x_prev)))
 
             def _side_penalty(side, centroid_x):
+                deadband = float(max(0.0, self.CLUSTER_CENTER_DEADBAND_PX))
+                if abs(centroid_x - reference_center_x) <= deadband:
+                    return 0.0
                 if side == 'L':
                     return 0.0 if centroid_x < reference_center_x else self.CLUSTER_SWAP_PENALTY
-                return 0.0 if centroid_x >= reference_center_x else self.CLUSTER_SWAP_PENALTY
+                return 0.0 if centroid_x > reference_center_x else self.CLUSTER_SWAP_PENALTY
 
             def _cluster_cost_for_side(cluster, side):
                 prev_fit = self.prev_left_fit if side == 'L' else self.prev_right_fit
@@ -355,8 +359,10 @@ class MarcosLaneDetector_Advanced(LaneDetector):
                     break
 
             if left_cluster is None or right_cluster is None:
-                left_side_clusters = [c for c in clusters if c['centroid_x'] < reference_center_x]
-                right_side_clusters = [c for c in clusters if c['centroid_x'] >= reference_center_x]
+                deadband = float(max(0.0, self.CLUSTER_CENTER_DEADBAND_PX))
+                left_side_clusters = [c for c in clusters if c['centroid_x'] < (reference_center_x - deadband)]
+                right_side_clusters = [c for c in clusters if c['centroid_x'] > (reference_center_x + deadband)]
+                neutral_clusters = [c for c in clusters if abs(c['centroid_x'] - reference_center_x) <= deadband]
 
                 if left_cluster is None and left_side_clusters:
                     left_cluster = min(left_side_clusters, key=lambda c: abs(reference_center_x - c['centroid_x']))
@@ -365,6 +371,16 @@ class MarcosLaneDetector_Advanced(LaneDetector):
                 if right_cluster is None and right_side_clusters:
                     right_cluster = min(right_side_clusters, key=lambda c: abs(c['centroid_x'] - reference_center_x))
                     selected_right_score = abs(reference_center_x - right_cluster['centroid_x'])
+
+                if left_cluster is None and neutral_clusters:
+                    left_cluster = min(neutral_clusters, key=lambda c: _cluster_cost_for_side(c, 'L'))
+                    selected_left_score = _cluster_cost_for_side(left_cluster, 'L')
+
+                if right_cluster is None and neutral_clusters:
+                    remaining_neutral = [c for c in neutral_clusters if left_cluster is None or c['label_id'] != left_cluster['label_id']]
+                    if remaining_neutral:
+                        right_cluster = min(remaining_neutral, key=lambda c: _cluster_cost_for_side(c, 'R'))
+                        selected_right_score = _cluster_cost_for_side(right_cluster, 'R')
 
             if left_cluster is not None:
                 selected_left_points = [tuple(map(int, p)) for p in left_cluster['points']]
@@ -581,33 +597,46 @@ class MarcosLaneDetector_Advanced(LaneDetector):
                 self.prev_left_fit = final_left_fit
                 self.prev_right_fit = final_right_fit
 
-        # --- NIVEL 2: MONO_DERECHA (Si falló Nivel 1, intentar solo con derecha) ---
-        if detection_mode == "NONE" and right_fit_current is not None:
-            detection_mode = "MONO_RIGHT"
-            final_right_fit = right_fit_current
-            
-            # Reconstruir izquierda
-            curvature = abs(get_curvature_angle(final_right_fit))
-            lane_width = self.LANE_WIDTH_PX if curvature >= self.CURVATURE_THRESHOLD else (self.LANE_WIDTH_PX - self.STRAIGHT_LANE_WIDTH_REDUCTION)
-            final_left_fit = final_right_fit - [0, 0, lane_width]
-            
-            # Actualizar memoria (forzamos porque es nuestra mejor estimación actual)
-            self.prev_left_fit = final_left_fit
-            self.prev_right_fit = final_right_fit
+        # --- NIVEL 2/3: MONO SIMÉTRICO (sin prioridad fija por lado) ---
+        if detection_mode == "NONE":
+            mono_candidates = []
 
-        # --- NIVEL 3: MONO_IZQUIERDA (Si falló Nivel 2, intentar solo con izquierda) ---
-        if detection_mode == "NONE" and left_fit_current is not None:
-            detection_mode = "MONO_LEFT"
-            final_left_fit = left_fit_current
-            
-            # Reconstruir derecha
-            curvature = abs(get_curvature_angle(final_left_fit))
-            lane_width = self.LANE_WIDTH_PX if curvature >= self.CURVATURE_THRESHOLD else (self.LANE_WIDTH_PX - self.STRAIGHT_LANE_WIDTH_REDUCTION)
-            final_right_fit = final_left_fit + [0, 0, lane_width]
-            
-            # Actualizar memoria
-            self.prev_left_fit = final_left_fit
-            self.prev_right_fit = final_right_fit
+            def _fit_temporal_distance(candidate_fit, prev_fit):
+                if candidate_fit is None:
+                    return float('inf')
+                if prev_fit is None:
+                    return 0.0
+                y_samples = self.CLUSTER_MATCH_Y_SAMPLES
+                x_candidate = candidate_fit[0] * y_samples**2 + candidate_fit[1] * y_samples + candidate_fit[2]
+                x_prev = prev_fit[0] * y_samples**2 + prev_fit[1] * y_samples + prev_fit[2]
+                return float(np.mean(np.abs(x_candidate - x_prev)))
+
+            if right_fit_current is not None:
+                mono_right_fit = right_fit_current
+                curvature = abs(get_curvature_angle(mono_right_fit))
+                lane_width = self.LANE_WIDTH_PX if curvature >= self.CURVATURE_THRESHOLD else (self.LANE_WIDTH_PX - self.STRAIGHT_LANE_WIDTH_REDUCTION)
+                reconstructed_left = mono_right_fit - [0, 0, lane_width]
+                right_score = _fit_temporal_distance(mono_right_fit, self.prev_right_fit)
+                left_score = _fit_temporal_distance(reconstructed_left, self.prev_left_fit)
+                mono_candidates.append((right_score + left_score, "MONO_RIGHT", reconstructed_left, mono_right_fit))
+
+            if left_fit_current is not None:
+                mono_left_fit = left_fit_current
+                curvature = abs(get_curvature_angle(mono_left_fit))
+                lane_width = self.LANE_WIDTH_PX if curvature >= self.CURVATURE_THRESHOLD else (self.LANE_WIDTH_PX - self.STRAIGHT_LANE_WIDTH_REDUCTION)
+                reconstructed_right = mono_left_fit + [0, 0, lane_width]
+                left_score = _fit_temporal_distance(mono_left_fit, self.prev_left_fit)
+                right_score = _fit_temporal_distance(reconstructed_right, self.prev_right_fit)
+                mono_candidates.append((left_score + right_score, "MONO_LEFT", mono_left_fit, reconstructed_right))
+
+            if mono_candidates:
+                mono_candidates.sort(key=lambda item: item[0])
+                _, selected_mode, selected_left, selected_right = mono_candidates[0]
+                detection_mode = selected_mode
+                final_left_fit = selected_left
+                final_right_fit = selected_right
+                self.prev_left_fit = final_left_fit
+                self.prev_right_fit = final_right_fit
 
         # --- NIVEL 4: MEMORIA (Si falló todo, usar memoria si existe y está habilitada) ---
         if detection_mode == "NONE":
