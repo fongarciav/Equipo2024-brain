@@ -6,6 +6,7 @@ Following SRP: This module orchestrates the interaction between detector, conver
 
 import threading
 import time
+from collections import deque
 
 # Import lane following modules (relative imports since we're in lane_detection)
 from .lane_detector import LaneDetector
@@ -24,7 +25,11 @@ class AutoPilotController:
                  lane_detector: LaneDetector,
                  pid_kp: float = 0.06, pid_ki: float = 0.002, 
                  pid_kd: float = 0.02, max_angle: float = 30.0, deadband: float = 6.0,
-                 max_change: float = 20.0):
+                 max_change: float = 20.0,
+                 hold_last_value_frames: int = 8,
+                 safety_timeout_frames: int = 15,
+                 max_steering_change_per_cycle: float = 8.0,
+                 diagnostics_history_size: int = 300):
         """
         Initialize the auto-pilot controller.
         
@@ -38,6 +43,10 @@ class AutoPilotController:
             max_angle: Maximum steering angle in degrees (default: 30.0)
             deadband: Deadband angle in degrees (default: 6.0)
             max_change: Maximum allowed change in angle deviation between frames (default: 20.0)
+            hold_last_value_frames: Number of frames to keep using last valid lane angle when detection is missing
+            safety_timeout_frames: Number of consecutive missing frames before forcing safe steering mode
+            max_steering_change_per_cycle: Max steering angle delta (deg) allowed per control cycle
+            diagnostics_history_size: Number of recent diagnostic records to keep in memory
         """
         self.video_streamer = video_streamer
         self.command_sender = command_sender
@@ -60,6 +69,9 @@ class AutoPilotController:
         self.pid_kd = pid_kd
         self.max_angle = max_angle
         self.deadband = deadband
+        self.hold_last_value_frames = max(0, int(hold_last_value_frames))
+        self.safety_timeout_frames = max(self.hold_last_value_frames, int(safety_timeout_frames))
+        self.max_steering_change_per_cycle = max(0.0, float(max_steering_change_per_cycle))
         
         # Time tracking for PID dt calculation
         self.last_time = time.time()
@@ -74,6 +86,14 @@ class AutoPilotController:
         self.last_servo_angle = None
         self.command_count = 0
         self.error_count = 0
+
+        # Continuity and safety state
+        self.last_valid_angle_deg = None
+        self.frames_without_lane = 0
+        self.last_sent_steering_angle = None
+
+        # Runtime diagnostics ring buffer
+        self.recent_diagnostics = deque(maxlen=max(10, int(diagnostics_history_size)))
         
         # Debug images storage
         self.last_debug_images = None
@@ -123,6 +143,8 @@ class AutoPilotController:
             # Reset controllers to avoid jumps
             self.pid_controller.reset()
             self.filter_controller.reset()
+            self.frames_without_lane = 0
+            self.last_sent_steering_angle = None
             print("[AutoPilotController] Resumed")
 
     def _control_loop(self):
@@ -165,22 +187,46 @@ class AutoPilotController:
                     continue
                 
                 # Handle no lanes detected
-                
-                # Handle no lanes detected
-                if angle_deviation_deg is None:
-                    self.pid_controller.reset()
-                    self.filter_controller.reset()
-                    time.sleep(0.033)
-                    continue
-                
-                # Filter outliers
-                filtered_angle = self.filter_controller.filter(angle_deviation_deg)
-                if filtered_angle is None:
-                    print(f"[Filter] Rejected outlier: {angle_deviation_deg}")
-                    time.sleep(0.033)
-                    continue
-                    
-                angle_deviation_deg = filtered_angle
+                raw_angle_deviation = angle_deviation_deg
+                filtered_angle = None
+                used_angle = None
+                hold_active = False
+                safe_mode_active = False
+
+                if raw_angle_deviation is not None:
+                    filtered_angle = self.filter_controller.filter(raw_angle_deviation)
+                    if filtered_angle is not None:
+                        used_angle = filtered_angle
+                        with self.lock:
+                            self.last_valid_angle_deg = filtered_angle
+                            self.frames_without_lane = 0
+                    else:
+                        print(f"[Filter] Rejected outlier: {raw_angle_deviation}")
+                        with self.lock:
+                            self.frames_without_lane += 1
+                else:
+                    with self.lock:
+                        self.frames_without_lane += 1
+
+                if used_angle is None:
+                    with self.lock:
+                        current_missing = self.frames_without_lane
+                        last_valid_angle = self.last_valid_angle_deg
+
+                    if current_missing <= self.hold_last_value_frames and last_valid_angle is not None:
+                        used_angle = last_valid_angle
+                        hold_active = True
+                    else:
+                        # Neutral steering when no valid measurement is available.
+                        used_angle = 0.0
+                        safe_mode_active = True
+                        if current_missing > self.safety_timeout_frames:
+                            # Prolonged loss: clear dynamic state and keep neutral command.
+                            self.pid_controller.reset()
+                            self.filter_controller.reset()
+                            with self.lock:
+                                self.last_valid_angle_deg = None
+                                self.last_sent_steering_angle = None
                 
                 # Calculate dt for PID
                 current_time = time.time()
@@ -196,10 +242,21 @@ class AutoPilotController:
                 
                 # Compute PID output (negate deviation for PID error)
                 # Positive deviation (lane to right) → positive steering (turn right)
-                pid_error = -angle_deviation_deg
+                pid_error = -used_angle
                 #print(f"Original angle deviation: {angle_deviation_deg}")
                 steering_angle = self.pid_controller.compute(pid_error, dt)
                 #print(f"PID Controller: Steering angle: {steering_angle}")
+
+                # Explicit slew-rate limiter on steering output to prevent abrupt changes.
+                with self.lock:
+                    prev_sent_steering = self.last_sent_steering_angle
+                if prev_sent_steering is not None:
+                    delta = steering_angle - prev_sent_steering
+                    max_delta = self.max_steering_change_per_cycle
+                    if delta > max_delta:
+                        steering_angle = prev_sent_steering + max_delta
+                    elif delta < -max_delta:
+                        steering_angle = prev_sent_steering - max_delta
                 
                 # Check again before sending command (stop might have been called)
                 with self.lock:
@@ -231,6 +288,21 @@ class AutoPilotController:
                     # Just update steering angle for dashboard, even if we didn't send command
                     with self.lock:
                         self.last_steering_angle = steering_angle
+
+                with self.lock:
+                    self.last_sent_steering_angle = steering_angle
+                    self.recent_diagnostics.append({
+                        'ts': current_time,
+                        'raw_angle': raw_angle_deviation,
+                        'filtered_angle': filtered_angle,
+                        'used_angle': used_angle,
+                        'hold_active': hold_active,
+                        'safe_mode_active': safe_mode_active,
+                        'frames_without_lane': self.frames_without_lane,
+                        'steering_angle': steering_angle,
+                        'servo_angle': servo_angle,
+                        'command_sent': should_send
+                    })
                 
                 # Control loop rate (~30 FPS)
                 time.sleep(0.033)
@@ -248,7 +320,12 @@ class AutoPilotController:
                 'last_steering_angle': self.last_steering_angle,
                 'last_servo_angle': self.last_servo_angle,
                 'command_count': self.command_count,
-                'error_count': self.error_count
+                'error_count': self.error_count,
+                'frames_without_lane': self.frames_without_lane,
+                'hold_last_value_frames': self.hold_last_value_frames,
+                'safety_timeout_frames': self.safety_timeout_frames,
+                'max_steering_change_per_cycle': self.max_steering_change_per_cycle,
+                'last_diagnostic': self.recent_diagnostics[-1] if self.recent_diagnostics else None
             }
     
     def update_pid_parameters(self, kp: float = None, ki: float = None, kd: float = None, 

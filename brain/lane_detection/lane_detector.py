@@ -98,10 +98,11 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         
         # --- Puntos de perspectiva (de tu nuevo script) ---
         # Puntos Origen (SRC) - ROI
-        self.tl = (160, 180)
-        self.bl = (0, 450)
-        self.tr = (480, 180)
-        self.br = (640, 450)
+        # Trapecio ampliado para capturar más FOV lateral en curvas cerradas.
+        self.tl = (100, 190)
+        self.bl = (0, 470)
+        self.tr = (540, 190)
+        self.br = (640, 470)
         self.pts1 = np.float32([self.tl, self.bl, self.tr, self.br])
         
         # Puntos Destino (DST) - VISTA CENITAL
@@ -133,6 +134,15 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         # --- Redimensionar y aplicar Vista Cenital ---
         frame = cv2.resize(frame, (640, 480))
         original_frame = frame.copy() # Guardar el original para el final
+
+        def _draw_source_trapezoid(front_img):
+            """Draw perspective source ROI on frontal image for debug calibration."""
+            debug_front = front_img.copy()
+            roi_pts = np.array([self.tl, self.bl, self.br, self.tr], dtype=np.int32)
+            cv2.polylines(debug_front, [roi_pts], isClosed=True, color=(0, 0, 255), thickness=2)
+            return debug_front
+
+        original_with_roi = _draw_source_trapezoid(original_frame)
         
         # use cv2.cuda.warpPerspective
         transformed_frame = cv2.warpPerspective(frame, self.matrix, (640, 480))
@@ -444,10 +454,6 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         if len(ry) >= self.MIN_POINTS_FOR_FIT:
             try: right_fit_current = np.polyfit(ry, rx, 2)
             except np.linalg.LinAlgError: pass
-        
-        if len(ry) >= self.MIN_POINTS_FOR_FIT:
-            try: right_fit_current = np.polyfit(ry, rx, 2)
-            except np.linalg.LinAlgError: pass
 
         # ==============================================================================
         # [NUEVO] FILTRO DE POSICIÓN (ZONA DE EXCLUSIÓN)
@@ -581,14 +587,14 @@ class MarcosLaneDetector_Advanced(LaneDetector):
                 cv2.putText(bird_view_with_lines, no_lane_text, (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
                 
                 debug_images = {
-                    "original": original_frame,
+                    "original": original_with_roi,
                     "bird_view_raw": transformed_frame.copy(),
                     "bird_view_lines": bird_view_with_lines,
                     "cenital": transformed_frame,
                     "mask": mask,
                     "histogram": histogram_viz,
                     "sliding_windows": msk,
-                    "final_result": original_frame
+                    "final_result": original_with_roi
                 }
                 return None, debug_images
 
@@ -771,6 +777,7 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         # Invertir la perspectiva
         original_perpective_lane_image = cv2.warpPerspective(transformed_frame, self.inv_matrix, (640, 480))
         result = cv2.addWeighted(original_frame, 1, original_perpective_lane_image, 0.5, 0)
+        result_with_roi = _draw_source_trapezoid(result)
         
         # Agregar texto a la vista aérea con líneas
         # Ajustado Y +40px para no solapar con el indicador de Pausa/Frame
@@ -820,14 +827,14 @@ class MarcosLaneDetector_Advanced(LaneDetector):
 
         # Empaquetar imágenes de depuración para mostrarlas fuera
         debug_images = {
-            "original": original_frame,
+            "original": original_with_roi,
             "bird_view_raw": bird_view_raw,  # Vista aérea sin procesar
             "bird_view_lines": bird_view_with_lines,  # Vista aérea con líneas dibujadas
             "cenital": transformed_frame, # Muestra el overlay verde
             "mask": mask,
             "histogram": histogram_viz,  # Histogram visualization
             "sliding_windows": msk,
-            "final_result": result
+            "final_result": result_with_roi
         }
 
         return angle_desviacion_deg, debug_images
