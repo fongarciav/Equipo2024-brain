@@ -78,12 +78,15 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         self.CLUSTER_MATCH_MAX_COST = 180.0
         self.CLUSTER_SWAP_PENALTY = 40.0
 
-        # --- Threshold automático por ROI de referencia (bloque compartido) ---
-        self.AUTO_THR_REF_X_NORM = 0.5
+        # --- Threshold automático por múltiples ROIs + suavizado temporal ---
+        self.AUTO_THR_REF_X_NORMS = [0.2, 0.5, 0.8]
         self.AUTO_THR_REF_Y_FROM_BOTTOM_PX = 8
         self.AUTO_THR_REF_ROI_SIZE = 41
         self.AUTO_THR_BG_PERCENTILE = 90.0
         self.AUTO_THR_OFFSET = 45
+        self.AUTO_THR_TEMPORAL_ALPHA = 0.30
+        self.AUTO_THR_MAX_DELTA_PER_FRAME = 12
+        self.prev_auto_threshold = None
         
         # --- Parámetros de Control ---
         # La Ganancia o peso que le das a la anticipación.
@@ -141,32 +144,52 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         def _clamp(v, lo, hi):
             return max(lo, min(hi, v))
 
-        def _compute_auto_threshold_from_ref_roi(gray):
-            """
-            Calcula threshold automático usando un bloque de referencia que debe caer en suelo negro.
-            Basado en el bloque de referencia compartido por el usuario.
-            """
+        def _compute_auto_threshold_from_multi_roi(gray):
+            """Calcula threshold con múltiples ROIs inferiores y estadística robusta."""
             h, w = gray.shape[:2]
-            cx = int(_clamp(self.AUTO_THR_REF_X_NORM, 0.0, 1.0) * (w - 1))
             cy = int(_clamp(h - 1 - self.AUTO_THR_REF_Y_FROM_BOTTOM_PX, 0, h - 1))
-
             r = max(1, self.AUTO_THR_REF_ROI_SIZE // 2)
-            x0 = _clamp(cx - r, 0, w - 1)
-            x1 = _clamp(cx + r, 0, w - 1)
-            y0 = _clamp(cy - r, 0, h - 1)
-            y1 = _clamp(cy + r, 0, h - 1)
 
-            roi = gray[y0:y1 + 1, x0:x1 + 1]
-            if roi.size == 0:
-                t = 128
-            else:
+            rois = []
+            bg_values = []
+            for x_norm in self.AUTO_THR_REF_X_NORMS:
+                cx = int(_clamp(x_norm, 0.0, 1.0) * (w - 1))
+                x0 = _clamp(cx - r, 0, w - 1)
+                x1 = _clamp(cx + r, 0, w - 1)
+                y0 = _clamp(cy - r, 0, h - 1)
+                y1 = _clamp(cy + r, 0, h - 1)
+
+                roi = gray[y0:y1 + 1, x0:x1 + 1]
+                if roi.size == 0:
+                    continue
+
                 bg = float(np.percentile(roi, _clamp(self.AUTO_THR_BG_PERCENTILE, 0.0, 100.0)))
-                t = int(round(bg + float(self.AUTO_THR_OFFSET)))
+                bg_values.append(bg)
+                rois.append((x0, y0, x1, y1))
 
-            t = int(_clamp(t, 0, 255))
-            return t, (x0, y0, x1, y1)
+            if len(bg_values) == 0:
+                raw_thr = 128
+            else:
+                robust_bg = float(np.median(bg_values))
+                raw_thr = int(round(robust_bg + float(self.AUTO_THR_OFFSET)))
 
-        auto_thr, auto_thr_roi = _compute_auto_threshold_from_ref_roi(gray_transformed_frame)
+            raw_thr = int(_clamp(raw_thr, 0, 255))
+            return raw_thr, rois
+
+        raw_auto_thr, auto_thr_rois = _compute_auto_threshold_from_multi_roi(gray_transformed_frame)
+
+        if self.prev_auto_threshold is None:
+            auto_thr = raw_auto_thr
+        else:
+            alpha = float(_clamp(self.AUTO_THR_TEMPORAL_ALPHA, 0.0, 1.0))
+            ema_thr = (1.0 - alpha) * float(self.prev_auto_threshold) + alpha * float(raw_auto_thr)
+            delta_max = float(max(0, self.AUTO_THR_MAX_DELTA_PER_FRAME))
+            low = float(self.prev_auto_threshold) - delta_max
+            high = float(self.prev_auto_threshold) + delta_max
+            auto_thr = int(round(_clamp(ema_thr, low, high)))
+
+        auto_thr = int(_clamp(auto_thr, 0, 255))
+        self.prev_auto_threshold = auto_thr
         _, mask = cv2.threshold(gray_transformed_frame, auto_thr, 255, cv2.THRESH_BINARY)
 
         # --- Histograma (debug) ---
@@ -413,7 +436,7 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         cv2.putText(msk, f'Auto thr: {auto_thr}', (10, stats_y),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
         stats_y += 30
-        cv2.putText(msk, f'ROI: {auto_thr_roi}', (10, stats_y),
+        cv2.putText(msk, f'ROIs: {auto_thr_rois}', (10, stats_y),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
         stats_y += 30
         left_status = 'VALID' if left_base != -1 else 'INVALID'
