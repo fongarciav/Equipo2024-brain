@@ -21,6 +21,7 @@ from .strategies import DefaultStopStrategy, EnterIntersectionStrategy, Increase
 
 class SignController:
     """Orchestrates sign detection and command sending."""
+    DEFAULT_RESUME_SPEED = 120
     
     def __init__(self, sign_detector: SignDetector, command_sender: CommandSender, event_callback=None, autopilot_controller=None):
         """
@@ -47,6 +48,8 @@ class SignController:
         self.error_count = 0
         self.current_speed = 0
         self.last_speed_before_stop = 0  # Right now, default speed from esp32 at boot is zero, so if not last speed before stop is set, it will be zero
+        self.pending_resume_at = None
+        self.pending_resume_speed = None
         
         # Cooldowns (to prevent spamming commands)
         self.last_stop_time = 0
@@ -67,6 +70,8 @@ class SignController:
                 return False
             
             self.is_running = True
+            self.pending_resume_at = None
+            self.pending_resume_speed = None
             self.thread = threading.Thread(target=self._control_loop, daemon=True)
             self.thread.start()
             print("[SignController] Started")
@@ -79,6 +84,8 @@ class SignController:
                 return False
             
             self.is_running = False
+            self.pending_resume_at = None
+            self.pending_resume_speed = None
             print("[SignController] Stopping...")
         
         if self.thread and self.thread.is_alive():
@@ -86,13 +93,54 @@ class SignController:
             print("[SignController] Stopped")
         
         return True
+
+    def schedule_speed_resume(self, delay_seconds: float) -> int:
+        """
+        Schedule a speed restore after STOP without blocking the control loop.
+
+        Args:
+            delay_seconds: Delay before restoring speed.
+
+        Returns:
+            The speed value that will be used for resume.
+        """
+        delay_seconds = max(0.0, float(delay_seconds))
+        with self.lock:
+            resume_speed = self.last_speed_before_stop
+            if resume_speed <= 0:
+                resume_speed = self.DEFAULT_RESUME_SPEED
+            resume_speed = int(max(0, min(255, resume_speed)))
+            self.pending_resume_speed = resume_speed
+            self.pending_resume_at = time.time() + delay_seconds
+            return resume_speed
     
     def _control_loop(self):
         """Main control loop running in background thread."""
         while True:
+            resume_speed_to_send = None
             with self.lock:
                 if not self.is_running:
                     break
+                if (
+                    self.pending_resume_at is not None
+                    and self.pending_resume_speed is not None
+                    and time.time() >= self.pending_resume_at
+                ):
+                    resume_speed_to_send = self.pending_resume_speed
+                    self.pending_resume_at = None
+                    self.pending_resume_speed = None
+                    self.last_command = f"speed:{resume_speed_to_send} (resume)"
+
+            if resume_speed_to_send is not None:
+                sent = self.command_sender.send_speed_command(resume_speed_to_send)
+                if sent:
+                    with self.lock:
+                        self.current_speed = resume_speed_to_send
+                if self.event_callback:
+                    self.event_callback("speed_resumed", {
+                        "speed": resume_speed_to_send,
+                        "sent": bool(sent)
+                    })
             
             try:
                 # 1. Get latest detections
@@ -136,12 +184,19 @@ class SignController:
     def get_status(self) -> dict:
         """Get current status of the sign controller."""
         with self.lock:
+            resume_in_seconds = None
+            if self.pending_resume_at is not None:
+                resume_in_seconds = max(0.0, self.pending_resume_at - time.time())
             return {
                 'is_running': self.is_running,
                 'command_count': self.command_count,
                 'error_count': self.error_count,
                 'last_command': self.last_command,
-                'current_speed': self.current_speed
+                'current_speed': self.current_speed,
+                'last_speed_before_stop': self.last_speed_before_stop,
+                'resume_pending': self.pending_resume_at is not None,
+                'resume_speed': self.pending_resume_speed,
+                'resume_in_seconds': resume_in_seconds
             }
 
     def update_current_speed(self, speed: int):
