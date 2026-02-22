@@ -379,6 +379,24 @@
                     >0</span
                   >
                 </div>
+                <div
+                  style="
+                    display: flex;
+                    justify-content: space-between;
+                    align-items: center;
+                    margin-bottom: 8px;
+                  "
+                >
+                  <span style="color: #fff">Memory mode:</span>
+                  <label class="switch" style="transform: scale(0.85)">
+                    <input
+                      type="checkbox"
+                      id="memory-mode-toggle"
+                      onchange="toggleMemoryMode(this.checked)"
+                    />
+                    <span class="slider"></span>
+                  </label>
+                </div>
 
                 <div
                   style="
@@ -1783,11 +1801,57 @@
         }, 300);
       }
 
+      async function loadMemoryMode() {
+        try {
+          const response = await fetch(`${getBaseURL()}/autopilot/memory_mode`, {
+            method: "GET",
+            headers: { "Content-Type": "application/json" },
+          });
+
+          if (response.ok) {
+            const data = await response.json();
+            const toggleEl = document.getElementById("memory-mode-toggle");
+            if (toggleEl) {
+              toggleEl.checked = !!data.enabled;
+            }
+          }
+        } catch (error) {
+          log(`Error loading memory mode: ${error.message}`, "error");
+        }
+      }
+
+      async function toggleMemoryMode(enabled) {
+        try {
+          const response = await fetch(`${getBaseURL()}/autopilot/memory_mode`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ enabled: !!enabled }),
+          });
+
+          if (response.ok) {
+            const data = await response.json();
+            const toggleEl = document.getElementById("memory-mode-toggle");
+            if (toggleEl) {
+              toggleEl.checked = !!data.enabled;
+            }
+            log(`Memory mode ${data.enabled ? "enabled" : "disabled"}`, "success");
+          } else {
+            const errorData = await response.json().catch(() => ({}));
+            log(`Failed to update memory mode: ${errorData.error || response.status}`, "error");
+            await loadMemoryMode();
+          }
+        } catch (error) {
+          log(`Error updating memory mode: ${error.message}`, "error");
+          await loadMemoryMode();
+        }
+      }
+
       // Initialize unified event stream
       initEventStream();
 
       // Load PID parameters on page load
       loadPIDParameters();
+      loadMemoryMode();
 
       // Initialize - refresh ports on load (connection status will be checked after ports load)
       log("Dashboard initialized. Select UART port and click Connect.", "info");
