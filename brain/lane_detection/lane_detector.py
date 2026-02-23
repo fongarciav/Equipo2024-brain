@@ -265,6 +265,8 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         right_base = -1
         selected_left_score = None
         selected_right_score = None
+        left_errors = []
+        right_errors = []
 
         if len(all_points) >= self.DBSCAN_MIN_SAMPLES:
             X = np.array(all_points, dtype=np.float32)
@@ -294,6 +296,10 @@ class MarcosLaneDetector_Advanced(LaneDetector):
                     'support': support,
                     'fit': cluster_fit
                 })
+
+            if len(clusters) == 0:
+                left_errors.append("ERR_NO_VALID_CLUSTERS")
+                right_errors.append("ERR_NO_VALID_CLUSTERS")
 
             if self.DEBUG_LANE_CLUSTER_SELECTION:
                 print(f"[DBSCAN] valid_clusters={len(clusters)}")
@@ -332,6 +338,10 @@ class MarcosLaneDetector_Advanced(LaneDetector):
                 return temporal_cost + _side_penalty(side, cluster['centroid_x'])
 
             if self.ENABLE_TEMPORAL_CLUSTER_MATCHING and len(clusters) > 0:
+                left_cost_rejected = False
+                right_cost_rejected = False
+                same_cluster_conflict = False
+
                 left_candidates = sorted(
                     [(_cluster_cost_for_side(c, 'L'), idx, c) for idx, c in enumerate(clusters)],
                     key=lambda t: t[0]
@@ -343,6 +353,7 @@ class MarcosLaneDetector_Advanced(LaneDetector):
 
                 for cost, idx, candidate in left_candidates:
                     if self.prev_left_fit is not None and cost > self.CLUSTER_MATCH_MAX_COST:
+                        left_cost_rejected = True
                         continue
                     left_cluster = candidate
                     selected_left_score = cost
@@ -351,12 +362,22 @@ class MarcosLaneDetector_Advanced(LaneDetector):
 
                 for cost, idx, candidate in right_candidates:
                     if self.prev_right_fit is not None and cost > self.CLUSTER_MATCH_MAX_COST:
+                        right_cost_rejected = True
                         continue
                     if left_cluster is not None and idx == left_selected_idx:
+                        same_cluster_conflict = True
                         continue
                     right_cluster = candidate
                     selected_right_score = cost
                     break
+
+                if left_cluster is None and left_cost_rejected:
+                    left_errors.append("ERR_TEMPORAL_COST_TOO_HIGH")
+                if right_cluster is None and right_cost_rejected:
+                    right_errors.append("ERR_TEMPORAL_COST_TOO_HIGH")
+                if same_cluster_conflict:
+                    left_errors.append("ERR_SAME_CLUSTER_CONFLICT")
+                    right_errors.append("ERR_SAME_CLUSTER_CONFLICT")
 
             if left_cluster is None or right_cluster is None:
                 deadband = float(max(0.0, self.CLUSTER_CENTER_DEADBAND_PX))
@@ -382,6 +403,15 @@ class MarcosLaneDetector_Advanced(LaneDetector):
                         right_cluster = min(remaining_neutral, key=lambda c: _cluster_cost_for_side(c, 'R'))
                         selected_right_score = _cluster_cost_for_side(right_cluster, 'R')
 
+                if left_cluster is None and len(left_side_clusters) == 0:
+                    left_errors.append("ERR_SIDE_BAND_EMPTY")
+                if right_cluster is None and len(right_side_clusters) == 0:
+                    right_errors.append("ERR_SIDE_BAND_EMPTY")
+                if left_cluster is None and len(neutral_clusters) == 0:
+                    left_errors.append("ERR_NEUTRAL_EMPTY")
+                if right_cluster is None and len(neutral_clusters) == 0:
+                    right_errors.append("ERR_NEUTRAL_EMPTY")
+
             if left_cluster is not None:
                 selected_left_points = [tuple(map(int, p)) for p in left_cluster['points']]
                 left_base = int(round(left_cluster['centroid_x']))
@@ -391,6 +421,11 @@ class MarcosLaneDetector_Advanced(LaneDetector):
                 selected_right_points = [tuple(map(int, p)) for p in right_cluster['points']]
                 right_base = int(round(right_cluster['centroid_x']))
                 cluster_debug_info.append(('R', right_cluster['label_id'], right_cluster['centroid_x']))
+
+            if left_cluster is None and len(left_errors) == 0:
+                left_errors.append("ERR_LEFT_NOT_ASSIGNED")
+            if right_cluster is None and len(right_errors) == 0:
+                right_errors.append("ERR_RIGHT_NOT_ASSIGNED")
 
             if self.DEBUG_LANE_CLUSTER_SELECTION:
                 print(f"[DBSCAN] selected_left={None if left_cluster is None else left_cluster['label_id']} selected_right={None if right_cluster is None else right_cluster['label_id']}")
@@ -413,6 +448,9 @@ class MarcosLaneDetector_Advanced(LaneDetector):
                 cv2.circle(msk, (right_base, 56), 6, (255, 0, 0), -1)
                 cv2.putText(msk, f"R{right_cluster['label_id']}", (right_base + 6, 58),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 0, 0), 1)
+        else:
+            left_errors.append("ERR_NO_POINTS_FOR_DBSCAN")
+            right_errors.append("ERR_NO_POINTS_FOR_DBSCAN")
 
         lx = [p[0] for p in selected_left_points]
         ly = [p[1] for p in selected_left_points]
@@ -466,6 +504,18 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         cv2.putText(msk, f'Scores: L={score_left_text} R={score_right_text}',
                    (10, stats_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
                    (180, 255, 180), 1)
+        stats_y += 25
+        if len(left_errors) > 0:
+            left_error_text = ",".join(left_errors[:2])
+            cv2.putText(msk, f'L ERR: {left_error_text}',
+                       (10, stats_y), cv2.FONT_HERSHEY_SIMPLEX, 0.45,
+                       (0, 140, 255), 1)
+            stats_y += 20
+        if len(right_errors) > 0:
+            right_error_text = ",".join(right_errors[:2])
+            cv2.putText(msk, f'R ERR: {right_error_text}',
+                       (10, stats_y), cv2.FONT_HERSHEY_SIMPLEX, 0.45,
+                       (0, 140, 255), 1)
 
     # --- Polyfit y Lógica de Estimación ---
         left_fit_current = None
