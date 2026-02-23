@@ -403,6 +403,7 @@
                     display: grid;
                     grid-template-columns: 1fr 1fr;
                     gap: 4px;
+                    margin-bottom: 4px;
                   "
                 >
                   <button
@@ -510,6 +511,7 @@
                     display: grid;
                     grid-template-columns: 1fr 1fr;
                     gap: 4px;
+                    margin-bottom: 4px;
                   "
                 >
                   <button
@@ -527,6 +529,13 @@
                     STOP
                   </button>
                 </div>
+                <button
+                  class="btn btn-secondary"
+                  onclick="copySignDetectionDiagnostics()"
+                  style="font-size: 10px; padding: 4px; width: 100%"
+                >
+                  COPY DIAGNOSTICS
+                </button>
               </div>
             </div>
           </div>
@@ -1697,6 +1706,33 @@
             statusEl.textContent = "Error";
             statusEl.style.color = "#dc3545";
           }
+        }
+      }
+
+      async function copySignDetectionDiagnostics() {
+        try {
+          const r = await fetch(`${getBaseURL()}/health`, { cache: "no-cache" });
+          const data = await r.json();
+
+          const payload = {
+            timestamp: new Date().toISOString(),
+            base_url: getBaseURL(),
+            uart_connected: data.uart_connected,
+            uart_port: data.uart_port,
+            serial_reader_running: data.serial_reader_running,
+            video_streamer_initialized: data.video_streamer_initialized,
+            sign_detection_status: data.sign_detection_status,
+          };
+
+          const text = JSON.stringify(payload, null, 2);
+          if (navigator.clipboard && window.isSecureContext) {
+            await navigator.clipboard.writeText(text);
+            log("Sign detection diagnostics copied to clipboard", "success");
+          } else {
+            window.prompt("Copy diagnostics:", text);
+          }
+        } catch (error) {
+          log(`Error collecting diagnostics: ${error.message}`, "error");
         }
       }
 
