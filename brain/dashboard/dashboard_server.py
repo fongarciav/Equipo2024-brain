@@ -1469,6 +1469,30 @@ def sign_detection_start():
     
     # Try to initialize if not already initialized
     if sign_detection_controller is None:
+        # Fast pre-checks to fail early instead of entering async init that will never succeed
+        if SignDetector is None or SignController is None:
+            status = {
+                'error': 'Sign detection modules not available',
+                'details': {
+                    'modules_available': {
+                        'SignDetector': SignDetector is not None,
+                        'SignController': SignController is not None,
+                        'VideoStreamer': VideoStreamer is not None,
+                    }
+                },
+                'suggestions': ['Check sign_vision dependencies and imports']
+            }
+            if import_errors:
+                status['details']['import_errors'] = import_errors
+            return jsonify(status), 503
+
+        if not serial_conn or not serial_conn.is_open:
+            return jsonify({
+                'error': 'Sign detection controller not initialized',
+                'details': {'serial_connected': False},
+                'suggestions': ['Connect UART port first']
+            }), 503
+
         # Initialize in background because YOLO loading/export can block for a long time
         sign_detection_initializing = True
         sign_detection_init_error = None
