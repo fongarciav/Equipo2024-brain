@@ -165,6 +165,7 @@ command_sender = None
 sign_detector = None
 sign_detection_controller = None
 sign_detection_initializing = False  # True while loading YOLO model in background
+sign_detection_init_error = None
 
 app = Flask(__name__, static_folder=SCRIPT_DIR)
 CORS(app)  # Enable CORS for all routes
@@ -937,6 +938,32 @@ def initialize_sign_detection_if_needed():
     else:
         return False
 
+
+def initialize_and_start_sign_detection_async():
+    """Initialize sign detection in background and start it when ready."""
+    global sign_detection_initializing, sign_detection_init_error, sign_detection_controller, sign_detector
+
+    try:
+        initialized = initialize_sign_detection_if_needed()
+        if not initialized:
+            sign_detection_init_error = 'Sign detection controller not initialized'
+            return
+
+        # Start both the detector (eye) and controller (brain) once initialized
+        detector_success = sign_detector.start()
+        controller_success = sign_detection_controller.start()
+
+        if not (detector_success or controller_success):
+            sign_detection_init_error = 'Sign detection already running'
+            return
+
+        sign_detection_init_error = None
+    except Exception as e:
+        sign_detection_init_error = f'Error initializing sign detection: {e}'
+        print(f"[Dashboard] {sign_detection_init_error}", file=sys.stderr)
+    finally:
+        sign_detection_initializing = False
+
 @app.route('/uart/connect', methods=['POST'])
 def uart_connect():
     """Connect to Nucleo (STM32) via UART."""
@@ -1431,51 +1458,44 @@ def autopilot_set_memory_mode():
 @app.route('/sign_detection/start', methods=['POST'])
 def sign_detection_start():
     """Start the sign detection controller."""
-    global sign_detection_controller, sign_detector
+    global sign_detection_controller, sign_detector, sign_detection_initializing, sign_detection_init_error
+
+    # Avoid duplicate initialization requests while model is loading in background
+    if sign_detection_initializing:
+        return jsonify({
+            'status': 'initializing',
+            'message': 'Sign detection is initializing in background',
+        }), 202
     
     # Try to initialize if not already initialized
     if sign_detection_controller is None:
-        initialized = initialize_sign_detection_if_needed()
-        if not initialized:
-            # Get detailed status for error message
-            status = {
-                'error': 'Sign detection controller not initialized',
-                'details': {
-                    'modules_available': {
-                        'SignDetector': SignDetector is not None,
-                        'SignController': SignController is not None,
-                        'VideoStreamer': VideoStreamer is not None
-                    },
-                    'serial_connected': serial_conn is not None and serial_conn.is_open if serial_conn else False,
-                    'video_streamer_initialized': video_streamer is not None
-                },
-                'suggestions': []
-            }
-            
-            # Add import errors if available
-            if import_errors:
-                status['details']['import_errors'] = import_errors
-            
-            if not status['details']['serial_connected']:
-                status['suggestions'].append('Connect UART port first')
-            if not status['details']['video_streamer_initialized']:
-                if not status['details']['modules_available']['VideoStreamer']:
-                    status['suggestions'].append('Install autopilot modules: pip install opencv-python numpy')
-                else:
-                    status['suggestions'].append('Connect camera USB device')
-            if not status['details']['modules_available']['SignDetector']:
-                status['suggestions'].append('Sign detection modules not found - check that sign_vision module is available')
-            
-            return jsonify(status), 503
-    
+        # Initialize in background because YOLO loading/export can block for a long time
+        sign_detection_initializing = True
+        sign_detection_init_error = None
+        thread = threading.Thread(target=initialize_and_start_sign_detection_async, daemon=True)
+        thread.start()
+
+        return jsonify({
+            'status': 'initializing',
+            'message': 'Sign detection initialization started in background',
+        }), 202
+
+    # Existing controller instance: start immediately
+    if sign_detection_init_error is not None:
+        return jsonify({
+            'error': sign_detection_init_error,
+            'suggestions': ['Review dashboard_server logs for initialization details']
+        }), 503
+
     # Start both the detector (eye) and controller (brain)
     detector_success = sign_detector.start()
     controller_success = sign_detection_controller.start()
-    
+
     if detector_success or controller_success:
         return jsonify({'status': 'ok', 'message': 'Sign detection started'})
     else:
         return jsonify({'error': 'Sign detection already running'}), 400
+
 
 @app.route('/sign_detection/stop', methods=['POST'])
 def sign_detection_stop():
@@ -1566,6 +1586,14 @@ def health():
     sign_detection_status_info = None
     if sign_detection_controller is not None:
         sign_detection_status_info = sign_detection_controller.get_status()
+
+    if sign_detection_status_info is None and sign_detection_initializing:
+        sign_detection_status_info = {'initializing': True}
+
+    if sign_detection_status_info is not None:
+        sign_detection_status_info['initializing'] = sign_detection_initializing
+        if sign_detection_init_error is not None:
+            sign_detection_status_info['error'] = sign_detection_init_error
     
     return jsonify({
         'status': 'ok',

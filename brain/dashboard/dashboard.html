@@ -1700,12 +1700,13 @@
       }
 
       function updateSignDetectionStatusUI(data) {
-        if (data.error) {
+        if (data.error || (data.status && data.status.error)) {
           const statusEl = document.getElementById("sign-detection-status");
           if (statusEl) {
-            statusEl.textContent = "Not Initialized";
+            statusEl.textContent = "Error";
             statusEl.style.color = "#ffc107";
           }
+          log(data.error || data.status.error, "error");
           return;
         }
 
