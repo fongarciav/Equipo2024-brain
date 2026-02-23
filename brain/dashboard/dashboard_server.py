@@ -685,7 +685,7 @@ def stop_autopilot_status_broadcast():
 
 def sign_detection_status_broadcast_worker():
     """Background thread that broadcasts sign detection status to SSE clients."""
-    global sign_detection_status_broadcast_running, sign_detection_controller, event_clients, sign_detector
+    global sign_detection_status_broadcast_running, sign_detection_controller, event_clients, sign_detector, sign_detection_initializing, sign_detection_init_error
     
     while sign_detection_status_broadcast_running:
         try:
@@ -710,12 +710,28 @@ def sign_detection_status_broadcast_worker():
                     'timestamp': time.time()
                 }
             else:
-                # Controller not initialized
-                status_data = {
-                    'type': 'sign_detection_status',
-                    'error': 'Sign detection controller not initialized',
-                    'timestamp': time.time()
-                }
+                # Controller not initialized yet: distinguish between background init vs real error
+                if sign_detection_initializing:
+                    status_data = {
+                        'type': 'sign_detection_status',
+                        'status': {'initializing': True},
+                        'timestamp': time.time()
+                    }
+                elif sign_detection_init_error is not None:
+                    status_data = {
+                        'type': 'sign_detection_status',
+                        'status': {
+                            'initializing': False,
+                            'error': sign_detection_init_error,
+                        },
+                        'timestamp': time.time()
+                    }
+                else:
+                    status_data = {
+                        'type': 'sign_detection_status',
+                        'error': 'Sign detection controller not initialized',
+                        'timestamp': time.time()
+                    }
             
             # Broadcast to unified event clients
             with event_clients_lock:
