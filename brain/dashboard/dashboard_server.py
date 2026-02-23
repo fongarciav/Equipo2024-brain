@@ -946,7 +946,19 @@ def initialize_and_start_sign_detection_async():
     try:
         initialized = initialize_sign_detection_if_needed()
         if not initialized:
-            sign_detection_init_error = 'Sign detection controller not initialized'
+            details = {
+                'modules_available': {
+                    'SignDetector': SignDetector is not None,
+                    'SignController': SignController is not None,
+                    'VideoStreamer': VideoStreamer is not None,
+                },
+                'serial_connected': serial_conn is not None and serial_conn.is_open if serial_conn else False,
+                'video_streamer_initialized': video_streamer is not None,
+            }
+            if import_errors:
+                details['import_errors'] = import_errors
+            sign_detection_init_error = f'Sign detection controller not initialized: {details}'
+            print(f"[Dashboard] {sign_detection_init_error}", file=sys.stderr)
             return
 
         # Start both the detector (eye) and controller (brain) once initialized
@@ -1613,6 +1625,10 @@ def health():
 
     if sign_detection_status_info is None and sign_detection_initializing:
         sign_detection_status_info = {'initializing': True}
+
+    # Surface async initialization errors even when controller was never created
+    if sign_detection_status_info is None and sign_detection_init_error is not None:
+        sign_detection_status_info = {'initializing': False, 'error': sign_detection_init_error}
 
     if sign_detection_status_info is not None:
         sign_detection_status_info['initializing'] = sign_detection_initializing
