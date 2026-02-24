@@ -10,13 +10,19 @@ class DefaultStopStrategy(SignStrategy):
         lock,
         cooldown=5.0,
         min_confidence=0.6,
-        activation_distance=0.5,
-        stop_duration=3.0
+        activation_distance=3.0,
+        stop_duration=3.0,
+        k=0.8,
+        offset=0.25
     ):
         super().__init__(controller, lock, min_confidence, activation_distance)
         self.last_activation_time = 0
         self.cooldown = cooldown
         self.stop_duration = stop_duration
+        self.k = float(k)
+        self.offset = float(offset)
+        # Keep conversion aligned with CommandSender.SPEED_MM_S_MAX = 500
+        self.speed_mm_s_max = 500.0
         
     def execute(self, detection: dict) -> bool:
         """
@@ -30,6 +36,29 @@ class DefaultStopStrategy(SignStrategy):
         
         # Check cooldown
         if current_time - self.last_activation_time < self.cooldown:
+            return False
+
+        distance = detection.get('distance')
+        if distance is None:
+            print("[STOP] distance=None -> skipping STOP")
+            return False
+
+        with self.lock:
+            current_speed_ui = int(self.controller.current_speed)
+
+        v_mm_s = (current_speed_ui / 255.0) * self.speed_mm_s_max
+        v_m_s = v_mm_s / 1000.0
+        braking_distance = (self.k * v_m_s) + self.offset
+
+        print(
+            f"[STOP] v_ui={current_speed_ui}, "
+            f"v_m_s={v_m_s:.3f}, "
+            f"distance={float(distance):.3f}, "
+            f"braking_distance={braking_distance:.3f}"
+        )
+
+        if float(distance) > braking_distance:
+            print("[STOP] Sign is farther than braking distance -> skipping STOP")
             return False
             
         label = detection['class'].lower()
