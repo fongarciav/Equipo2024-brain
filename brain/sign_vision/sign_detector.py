@@ -77,6 +77,8 @@ class SignDetector:
             return None
         
         engine_path = self.model_path.replace('.pt', '.engine')
+        print(f"[SignDetector] model_path: {self.model_path}")
+        print(f"[SignDetector] engine_path: {engine_path}, exists? {os.path.exists(engine_path)}")
         
         # Prioritize engine if exists
         if os.path.exists(engine_path):
