@@ -90,6 +90,14 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         self.CLUSTER_SWAP_PENALTY = 40.0
         self.CLUSTER_CENTER_DEADBAND_PX = 15.0
 
+        # --- Track locking fuerte (anti-swap) ---
+        self.TRACK_LOCK_MAX_RESIDUAL = 18.0
+        self.TRACK_LOST_MAX = 8
+        self.TRACK_LOCK_SIDE_MARGIN_PX = 20.0
+        self.TRACK_LOCK_MAX_BASE_SHIFT_PX = 120.0
+        self.left_lost_count = 0
+        self.right_lost_count = 0
+
         # --- Threshold automático por múltiples ROIs + suavizado temporal ---
         self.AUTO_THR_REF_X_NORMS = [0.2, 0.5, 0.8]
         self.AUTO_THR_REF_Y_FROM_BOTTOM_PX = 8
@@ -114,8 +122,8 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         # Antes:
         #   tl=(160,180), tr=(480,180)
         # Ahora:
-        self.tl = (0, 180)
-        self.tr = (640, 180)
+        self.tl = (0, 140)
+        self.tr = (640, 140)
         self.bl = (0, 450)
         self.br = (640, 450)
         self.pts1 = np.float32([self.tl, self.bl, self.tr, self.br])
@@ -309,6 +317,14 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         x_prev = prev_fit[0] * y * y + prev_fit[1] * y + prev_fit[2]
         return float(np.mean(np.abs(x - x_prev)))
 
+    def _residual_vs_prev(self, fit, prev_fit):
+        if fit is None or prev_fit is None:
+            return float("inf")
+        y_samples = np.array([480, 420, 360, 300], dtype=np.float32)
+        x1 = fit[0] * y_samples**2 + fit[1] * y_samples + fit[2]
+        x2 = prev_fit[0] * y_samples**2 + prev_fit[1] * y_samples + prev_fit[2]
+        return float(np.mean(np.abs(x1 - x2)))
+
     # ======================================================================
     # -------------------------- MAIN PIPELINE ------------------------------
     # ======================================================================
@@ -416,93 +432,130 @@ class MarcosLaneDetector_Advanced(LaneDetector):
 
         reference_center_x = w / 2.0
 
-        # Selección con matching temporal + penalización por lado
+        # Selección con track locking fuerte (sin swap de lado)
         left_cand = None
         right_cand = None
 
-        def _side_penalty(side, centroid_x):
-            deadband = float(max(0.0, self.CLUSTER_CENTER_DEADBAND_PX))
-            if abs(centroid_x - reference_center_x) <= deadband:
-                return 0.0
-            if side == 'L':
-                return 0.0 if centroid_x < reference_center_x else float(self.CLUSTER_SWAP_PENALTY)
-            return 0.0 if centroid_x > reference_center_x else float(self.CLUSTER_SWAP_PENALTY)
+        def _fit_x_at_bottom(fit):
+            if fit is None:
+                return None
+            y_ref = 480.0
+            return float(fit[0] * y_ref * y_ref + fit[1] * y_ref + fit[2])
 
-        def _cost_for_side(cand, side):
-            prev_fit = self.prev_left_fit if side == 'L' else self.prev_right_fit
-            if self.ENABLE_TEMPORAL_CLUSTER_MATCHING and prev_fit is not None:
-                temporal = self._temporal_residual_cost_points_to_prevfit(cand['points'], prev_fit)
-                if not np.isfinite(temporal):
-                    temporal = float('inf')
+        def _pick_best_for_track(side, prev_fit, used_indices):
+            best_idx = None
+            best_cost = float('inf')
+            prev_bottom_x = _fit_x_at_bottom(prev_fit)
+            side_margin = float(max(0.0, self.TRACK_LOCK_SIDE_MARGIN_PX))
+            max_shift = float(max(1.0, self.TRACK_LOCK_MAX_BASE_SHIFT_PX))
+            for i, cand in enumerate(candidates):
+                if i in used_indices:
+                    continue
+
+                cand_fit = cand.get('fit')
+                cand_bottom_x = _fit_x_at_bottom(cand_fit)
+                if cand_bottom_x is None:
+                    continue
+
+                if side == 'L' and cand_bottom_x > (reference_center_x + side_margin):
+                    continue
+                if side == 'R' and cand_bottom_x < (reference_center_x - side_margin):
+                    continue
+
+                if prev_bottom_x is not None and abs(cand_bottom_x - prev_bottom_x) > max_shift:
+                    continue
+
+                residual = self._residual_vs_prev(cand_fit, prev_fit)
+                if residual < best_cost:
+                    best_cost = residual
+                    best_idx = i
+
+            if best_idx is None or best_cost >= float(self.TRACK_LOCK_MAX_RESIDUAL):
+                return None, None, None
+            return best_idx, candidates[best_idx], float(best_cost)
+
+        used_indices = set()
+
+        # Solo primer frame: bootstrap geométrico
+        if self.prev_left_fit is None and self.prev_right_fit is None:
+            if len(candidates) == 0:
+                left_errors.append("ERR_NO_RANSAC_CANDIDATES")
+                right_errors.append("ERR_NO_RANSAC_CANDIDATES")
+            elif len(candidates) == 1:
+                c = candidates[0]
+                if c['centroid_x'] <= reference_center_x:
+                    left_cand = c
+                    selected_left_score = abs(float(c['centroid_x']) - reference_center_x)
+                else:
+                    right_cand = c
+                    selected_right_score = abs(float(c['centroid_x']) - reference_center_x)
             else:
-                temporal = float('inf')
+                sorted_candidates = sorted(candidates, key=lambda cc: cc['centroid_x'])
+                left_cand = sorted_candidates[0]
+                right_cand = sorted_candidates[-1]
+                selected_left_score = abs(float(left_cand['centroid_x']) - reference_center_x)
+                selected_right_score = abs(float(right_cand['centroid_x']) - reference_center_x)
+        else:
+            # Sin cross-assignment: cada track solo busca su mismo lado
+            if self.prev_left_fit is not None:
+                idx, cand, cost = _pick_best_for_track('L', self.prev_left_fit, used_indices)
+                if cand is not None:
+                    left_cand = cand
+                    selected_left_score = cost
+                    used_indices.add(idx)
+                else:
+                    left_errors.append("ERR_LEFT_TRACK_LOCK")
+            else:
+                left_errors.append("ERR_LEFT_TRACK_MISSING")
 
-            # fallback si no hay temporal: distancia al centro
-            if not np.isfinite(temporal) or temporal == float('inf'):
-                temporal = abs(float(cand['centroid_x']) - reference_center_x)
+            if self.prev_right_fit is not None:
+                idx, cand, cost = _pick_best_for_track('R', self.prev_right_fit, used_indices)
+                if cand is not None:
+                    right_cand = cand
+                    selected_right_score = cost
+                    used_indices.add(idx)
+                else:
+                    right_errors.append("ERR_RIGHT_TRACK_LOCK")
+            else:
+                right_errors.append("ERR_RIGHT_TRACK_MISSING")
 
-            return float(temporal) + _side_penalty(side, float(cand['centroid_x']))
-
-        # Asignación óptima (bruteforce) con hasta 2 candidatos
         if len(candidates) == 0:
             left_errors.append("ERR_NO_RANSAC_CANDIDATES")
             right_errors.append("ERR_NO_RANSAC_CANDIDATES")
-        elif len(candidates) == 1:
-            c = candidates[0]
-            deadband = float(max(0.0, self.CLUSTER_CENTER_DEADBAND_PX))
-            if c['centroid_x'] < (reference_center_x - deadband):
-                left_cand = c
-                selected_left_score = _cost_for_side(c, 'L')
-            elif c['centroid_x'] > (reference_center_x + deadband):
-                right_cand = c
-                selected_right_score = _cost_for_side(c, 'R')
-            else:
-                # neutro: asignar al lado con menor costo
-                cL = _cost_for_side(c, 'L')
-                cR = _cost_for_side(c, 'R')
-                if cL <= cR:
-                    left_cand = c
-                    selected_left_score = cL
-                else:
-                    right_cand = c
-                    selected_right_score = cR
-                left_errors.append("WARN_SINGLE_NEUTRAL_CAND")
-                right_errors.append("WARN_SINGLE_NEUTRAL_CAND")
-        else:
-            c0, c1 = candidates[0], candidates[1]
-
-            # dos posibles asignaciones
-            cost_L0_R1 = _cost_for_side(c0, 'L') + _cost_for_side(c1, 'R')
-            cost_L1_R0 = _cost_for_side(c1, 'L') + _cost_for_side(c0, 'R')
-
-            if cost_L0_R1 <= cost_L1_R0:
-                left_cand, right_cand = c0, c1
-                selected_left_score = _cost_for_side(c0, 'L')
-                selected_right_score = _cost_for_side(c1, 'R')
-            else:
-                left_cand, right_cand = c1, c0
-                selected_left_score = _cost_for_side(c1, 'L')
-                selected_right_score = _cost_for_side(c0, 'R')
-
-            # sanity: evitar que ambos queden del mismo lado con fuerte penalización
-            deadband = float(max(0.0, self.CLUSTER_CENTER_DEADBAND_PX))
-            if left_cand is not None and left_cand['centroid_x'] > (reference_center_x + deadband):
-                left_errors.append("WARN_LEFT_ASSIGNED_RIGHT_SIDE")
-            if right_cand is not None and right_cand['centroid_x'] < (reference_center_x - deadband):
-                right_errors.append("WARN_RIGHT_ASSIGNED_LEFT_SIDE")
 
         # Convertir a puntos seleccionados + bases
+        left_matched = False
+        right_matched = False
         if left_cand is not None:
             selected_left_points = [tuple(map(int, p)) for p in left_cand['points']]
             left_base = int(round(left_cand['centroid_x']))
+            left_matched = True
         else:
             left_errors.append("ERR_LEFT_NOT_ASSIGNED")
 
         if right_cand is not None:
             selected_right_points = [tuple(map(int, p)) for p in right_cand['points']]
             right_base = int(round(right_cand['centroid_x']))
+            right_matched = True
         else:
             right_errors.append("ERR_RIGHT_NOT_ASSIGNED")
+
+        # tracking robusto sin depender de MEMORY global
+        if left_matched and left_cand.get('fit') is not None:
+            self.prev_left_fit = left_cand['fit']
+            self.left_lost_count = 0
+        else:
+            self.left_lost_count += 1
+            if self.left_lost_count > self.TRACK_LOST_MAX:
+                self.prev_left_fit = None
+
+        if right_matched and right_cand.get('fit') is not None:
+            self.prev_right_fit = right_cand['fit']
+            self.right_lost_count = 0
+        else:
+            self.right_lost_count += 1
+            if self.right_lost_count > self.TRACK_LOST_MAX:
+                self.prev_right_fit = None
 
         # debug overlay centroides y candidatos
         if left_cand is not None:
