@@ -2,7 +2,6 @@ import cv2
 import numpy as np
 import math
 from abc import ABC, abstractmethod
-from sklearn.cluster import DBSCAN
 
 # ======================================================================
 # --- CLASE BASE PARA DETECTORES DE CARRIL ---
@@ -10,21 +9,22 @@ from sklearn.cluster import DBSCAN
 
 class LaneDetector(ABC):
     """Clase base abstracta para estrategias de detección de carriles."""
-    
+
     @abstractmethod
     def get_lane_metrics(self, frame):
         """
         Detectar carriles y retornar ángulo de desviación.
-        
+
         Args:
             frame: Frame de entrada de la cámara (numpy array)
-            
+
         Returns:
             tuple: (angle_deviation_deg, debug_images)
                 - angle_deviation_deg: Ángulo de desviación en grados (float o None)
                 - debug_images: Diccionario de imágenes de depuración (dict o None)
         """
         pass
+
 
 # ======================================================================
 # --- IMPLEMENTACIONES DE DETECTORES DE CARRIL ---
@@ -34,11 +34,19 @@ class MarcosLaneDetector_Advanced(LaneDetector):
     """
     Detector de carriles que solo maneja la lógica de detección.
     Retorna angle_desviacion_deg (ángulo de desviación) para control PID.
+
+    CAMBIOS IMPLEMENTADOS:
+    1) ROI BEV usa todo el ancho (trapecio con top ancho completo).
+       + Threshold auto multi-ROI robusto: descarta ROIs outliers por MAD.
+    2) Aumenta slices (SLIDING_WINDOW_HEIGHT más chico).
+       (EPS variable NO implementado aún, como pediste.)
+    3) SOLO RANSAC (sin DBSCAN) para extraer hasta 2 carriles desde all_points.
+    4) Matching temporal: costo por residual punto->prev_fit (no por comparar coeficientes).
     """
-    
+
     def __init__(self, threshold):
         # --- Parámetros de la lógica de tu NUEVO script ---
-        self.LANE_WIDTH_PX = 800 # ¡CALIBRAR ESTE VALOR! Ancho del carril en píxeles en vista cenital
+        self.LANE_WIDTH_PX = 800  # ¡CALIBRAR ESTE VALOR! Ancho del carril en píxeles en vista cenital
         self.prev_left_fit = None
         self.prev_right_fit = None
         self.ENABLE_MEMORY_MODE = True  # Permite habilitar/deshabilitar fallback MEMORY
@@ -47,143 +55,305 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         self.ENABLE_MIN_LANE_DISTANCE_CHECK = True  # Permite desactivar chequeo de distancia mínima en STEREO
         self.ENABLE_HARD_SIDE_POINT_FILTER = False  # Modo limpio: no descartar puntos por cruzar el centro
         self.ENABLE_BASE_EXCLUSION_FILTER = False  # Modo limpio: no invalidar fits por base en lado opuesto
-        
+
         # --- Parámetros de cálculo de ángulos ---
         self.LOOKAHEAD_DISTANCE = 250  # Distancia hacia adelante para calcular dirección (px)
         self.CURVATURE_THRESHOLD = 10.0  # Grados: menor a esto se considera recto
         self.STRAIGHT_LANE_WIDTH_REDUCTION = 60  # Reducción de píxeles para rectas
-        
-        # --- Parámetros de ventanas deslizantes ---
-        self.SLIDING_WINDOW_START_Y = 472  # Posición Y inicial para sliding windows (desde abajo)
-        self.SLIDING_WINDOW_HEIGHT = 20  # Altura de cada slice para mejorar conectividad de DBSCAN
-        self.SLIDING_WINDOW_WIDTH = 50  # Ancho a cada lado del centro de la ventana
-        self.SLIDING_WINDOW_EXPANDED_WIDTH = 150  # Ancho expandido para búsqueda ampliada
-        self.ENABLE_EXPANDED_SEARCH = False  # Habilitar/deshabilitar búsqueda expandida
-        self.HISTOGRAM_PEAK_THRESHOLD = 3000  # Umbral mínimo para considerar un pico de histograma válido
-        self.HISTOGRAM_SMOOTH_KERNEL_SIZE = 9  # Kernel 1D para suavizar histograma antes de detectar picos
+
+        # --- Parámetros de slices (AUMENTADO: más slices -> menor altura por slice) ---
+        self.SLIDING_WINDOW_START_Y = 472
+        self.SLIDING_WINDOW_HEIGHT = 10  # antes 20 -> más slices
+        self.SLIDING_WINDOW_WIDTH = 50
+        self.SLIDING_WINDOW_EXPANDED_WIDTH = 150
+        self.ENABLE_EXPANDED_SEARCH = False
+        self.HISTOGRAM_PEAK_THRESHOLD = 3000
+        self.HISTOGRAM_SMOOTH_KERNEL_SIZE = 9
 
         # --- Parámetros de slices por hemisferio ---
         self.HEMISLICE_MIN_CONTOUR_AREA = 20
         self.HEMISLICE_MAX_JUMP_PX = 120
         self.HEMISLICE_TREND_TOLERANCE_PX = 90
 
-        # --- Parámetros DBSCAN (selección de carriles por clustering) ---
-        self.DBSCAN_EPS = 35
-        self.DBSCAN_MIN_SAMPLES = 3
-        self.MIN_CLUSTER_POINTS = 6
-        self.USE_WORLD_COORDINATES_FOR_ORDERING = False
-        self.DEBUG_LANE_CLUSTER_SELECTION = False
+        # --- RANSAC (reemplaza DBSCAN) ---
+        self.RANSAC_DEGREE = 2
+        self.RANSAC_MAX_ITERS = 220
+        self.RANSAC_INLIER_THRESH_PX = 10.0
+        self.RANSAC_MIN_INLIERS = 14
+        self.RANSAC_REFIT_MIN_INLIERS = 8
 
-        # --- Threshold automático por ROI de referencia (bloque compartido) ---
-        self.AUTO_THR_REF_X_NORM = 0.5
+        # --- Selección ego-lane / tracking temporal ---
+        self.DEBUG_LANE_CLUSTER_SELECTION = False  # reutilizo flag para debug selección (ahora ransac)
+        self.ENABLE_TEMPORAL_CLUSTER_MATCHING = True
+        self.CLUSTER_MATCH_Y_SAMPLES = np.array([480, 420, 360, 300], dtype=np.float32)  # se usa para side penalty, etc.
+        self.CLUSTER_MATCH_MAX_COST = 180.0
+        self.CLUSTER_SWAP_PENALTY = 40.0
+        self.CLUSTER_CENTER_DEADBAND_PX = 15.0
+
+        # --- Threshold automático por múltiples ROIs + suavizado temporal ---
+        self.AUTO_THR_REF_X_NORMS = [0.2, 0.5, 0.8]
         self.AUTO_THR_REF_Y_FROM_BOTTOM_PX = 8
         self.AUTO_THR_REF_ROI_SIZE = 41
         self.AUTO_THR_BG_PERCENTILE = 90.0
         self.AUTO_THR_OFFSET = 45
-        
+        self.AUTO_THR_TEMPORAL_ALPHA = 0.30
+        self.AUTO_THR_MAX_DELTA_PER_FRAME = 12
+
+        # NUEVO: rechazo de outliers en bg_values (MAD)
+        self.AUTO_THR_OUTLIER_K = 3.0
+        self.AUTO_THR_OUTLIER_FALLBACK_T = 18.0
+
+        self.prev_auto_threshold = None
+
         # --- Parámetros de Control ---
-        # La Ganancia o peso que le das a la anticipación.
-        # Función: Es una perilla de ajuste (tuning).
-        # Valor alto (ej: 1.0): El auto "corta" las curvas agresivamente.
-        # Valor bajo (ej: 0.2): El auto entra tarde a las curvas y depende más de corregir cuando ya se salió un poco.
-        # TODO: Ajustar este valor desde el web server.
-        self.curvature_factor = 0.5  # Factor para combinar curvatura
-        self.error_factor = 0.3  # Factor para combinar error posicional
-        
-        # --- Puntos de perspectiva (de tu nuevo script) ---
-        # Puntos Origen (SRC) - ROI
-        self.tl = (160, 180)
+        self.curvature_factor = 0.5
+        self.error_factor = 0.3
+
+        # --- Puntos de perspectiva ---
+        # CAMBIO (1): ROI usa todo el ancho arriba (top full width)
+        # Antes:
+        #   tl=(160,180), tr=(480,180)
+        # Ahora:
+        self.tl = (0, 180)
+        self.tr = (640, 180)
         self.bl = (0, 450)
-        self.tr = (480, 180)
         self.br = (640, 450)
         self.pts1 = np.float32([self.tl, self.bl, self.tr, self.br])
-        
-        # Puntos Destino (DST) - VISTA CENITAL
         self.pts2 = np.float32([[0, 0], [0, 480], [640, 0], [640, 480]])
-        
-        # Matrices de transformación
         self.matrix = cv2.getPerspectiveTransform(self.pts1, self.pts2)
         self.inv_matrix = cv2.getPerspectiveTransform(self.pts2, self.pts1)
 
         # --- Valores de color HSV ---
-        # El threshold controla el valor mínimo de brillo (V) en HSV
-        self.hsv_lower = np.array([0, 0, threshold]) # L-H, L-S, L-V (threshold usado aquí)
-        self.hsv_upper = np.array([255, 50, 255]) # U-H, U-S, U-V
+        self.hsv_lower = np.array([0, 0, threshold])
+        self.hsv_upper = np.array([255, 50, 255])
 
-    def get_lane_metrics(self, frame):
-        """
-        Detect lanes and return deviation angle.
-        
-        Args:
-            frame: Input frame from camera
-            
-        Returns:
-            tuple: (angle_desviacion_deg, debug_images)
-                - angle_desviacion_deg: Angle of deviation in degrees (positive = lane to right, negative = lane to left)
-                - debug_images: Dictionary of debug images
-            If no lanes found, returns (0, debug_images)
-        """
-        
-        # --- Redimensionar y aplicar Vista Cenital ---
-        frame = cv2.resize(frame, (640, 480))
-        original_frame = frame.copy() # Guardar el original para el final
-        
-        # use cv2.cuda.warpPerspective
-        transformed_frame = cv2.warpPerspective(frame, self.matrix, (640, 480))
-        
-        # --- Detección de color + threshold automático por ROI de referencia ---
-        gray_transformed_frame = cv2.cvtColor(transformed_frame, cv2.COLOR_BGR2GRAY)
+    # -----------------------------
+    # Helpers robustos / RANSAC
+    # -----------------------------
 
-        def _clamp(v, lo, hi):
-            return max(lo, min(hi, v))
+    @staticmethod
+    def _clamp(v, lo, hi):
+        return max(lo, min(hi, v))
 
-        def _compute_auto_threshold_from_ref_roi(gray):
-            """
-            Calcula threshold automático usando un bloque de referencia que debe caer en suelo negro.
-            Basado en el bloque de referencia compartido por el usuario.
-            """
-            h, w = gray.shape[:2]
-            cx = int(_clamp(self.AUTO_THR_REF_X_NORM, 0.0, 1.0) * (w - 1))
-            cy = int(_clamp(h - 1 - self.AUTO_THR_REF_Y_FROM_BOTTOM_PX, 0, h - 1))
+    def _compute_auto_threshold_from_multi_roi(self, gray):
+        """Calcula threshold con múltiples ROIs inferiores, robusto + rechazo outliers (MAD)."""
+        h, w = gray.shape[:2]
+        cy = int(self._clamp(h - 1 - self.AUTO_THR_REF_Y_FROM_BOTTOM_PX, 0, h - 1))
+        r = max(1, self.AUTO_THR_REF_ROI_SIZE // 2)
 
-            r = max(1, self.AUTO_THR_REF_ROI_SIZE // 2)
-            x0 = _clamp(cx - r, 0, w - 1)
-            x1 = _clamp(cx + r, 0, w - 1)
-            y0 = _clamp(cy - r, 0, h - 1)
-            y1 = _clamp(cy + r, 0, h - 1)
+        rois = []
+        bg_values = []
+
+        for x_norm in self.AUTO_THR_REF_X_NORMS:
+            cx = int(self._clamp(x_norm, 0.0, 1.0) * (w - 1))
+            x0 = self._clamp(cx - r, 0, w - 1)
+            x1 = self._clamp(cx + r, 0, w - 1)
+            y0 = self._clamp(cy - r, 0, h - 1)
+            y1 = self._clamp(cy + r, 0, h - 1)
 
             roi = gray[y0:y1 + 1, x0:x1 + 1]
             if roi.size == 0:
-                t = 128
-            else:
-                bg = float(np.percentile(roi, _clamp(self.AUTO_THR_BG_PERCENTILE, 0.0, 100.0)))
-                t = int(round(bg + float(self.AUTO_THR_OFFSET)))
+                continue
 
-            t = int(_clamp(t, 0, 255))
-            return t, (x0, y0, x1, y1)
+            bg = float(np.percentile(roi, self._clamp(self.AUTO_THR_BG_PERCENTILE, 0.0, 100.0)))
+            bg_values.append(bg)
+            rois.append((x0, y0, x1, y1))
 
-        auto_thr, auto_thr_roi = _compute_auto_threshold_from_ref_roi(gray_transformed_frame)
+        if len(bg_values) == 0:
+            raw_thr = 128
+            return raw_thr, rois
+
+        bg_values = np.array(bg_values, dtype=np.float32)
+        m = float(np.median(bg_values))
+        mad = float(np.median(np.abs(bg_values - m)))
+
+        if mad <= 1e-6:
+            # fallback simple
+            T = float(max(0.0, self.AUTO_THR_OUTLIER_FALLBACK_T))
+            keep = np.abs(bg_values - m) <= T
+        else:
+            k = float(max(0.5, self.AUTO_THR_OUTLIER_K))
+            keep = np.abs(bg_values - m) <= (k * mad)
+
+        filtered = bg_values[keep]
+        if filtered.size == 0:
+            robust_bg = m
+        else:
+            robust_bg = float(np.median(filtered))
+
+        raw_thr = int(round(robust_bg + float(self.AUTO_THR_OFFSET)))
+        raw_thr = int(self._clamp(raw_thr, 0, 255))
+        return raw_thr, rois
+
+    @staticmethod
+    def _poly_eval_x_of_y(fit, y):
+        return fit[0] * y * y + fit[1] * y + fit[2]
+
+    def _ransac_fit_quadratic_x_of_y(self, pts_xy):
+        """
+        RANSAC para ajustar x(y) cuadrático.
+        pts_xy: array Nx2 con columnas [x, y] (float32/float64)
+        Retorna: (best_fit, inlier_mask)
+        """
+        if pts_xy is None or len(pts_xy) < self.MIN_POINTS_FOR_FIT:
+            return None, None
+
+        pts = np.asarray(pts_xy, dtype=np.float32)
+        x = pts[:, 0]
+        y = pts[:, 1]
+
+        n = len(pts)
+        if n < 3:
+            return None, None
+
+        best_inliers = None
+        best_fit = None
+        best_score = -1
+        best_err = float("inf")
+
+        thr = float(max(1.0, self.RANSAC_INLIER_THRESH_PX))
+        iters = int(max(20, self.RANSAC_MAX_ITERS))
+
+        rng = np.random.default_rng()
+
+        for _ in range(iters):
+            # sample 3 unique points
+            idx = rng.choice(n, size=3, replace=False)
+            ys = y[idx]
+            xs = x[idx]
+            try:
+                fit = np.polyfit(ys, xs, 2)
+            except np.linalg.LinAlgError:
+                continue
+            # residuals
+            x_hat = fit[0] * y * y + fit[1] * y + fit[2]
+            res = np.abs(x - x_hat)
+            inliers = res <= thr
+            cnt = int(np.sum(inliers))
+            if cnt > best_score:
+                best_score = cnt
+                best_inliers = inliers
+                best_fit = fit
+                best_err = float(np.mean(res[inliers])) if cnt > 0 else float("inf")
+            elif cnt == best_score and cnt > 0:
+                err = float(np.mean(res[inliers]))
+                if err < best_err:
+                    best_err = err
+                    best_inliers = inliers
+                    best_fit = fit
+
+        if best_fit is None or best_inliers is None:
+            return None, None
+
+        if int(np.sum(best_inliers)) < int(self.RANSAC_MIN_INLIERS):
+            return None, None
+
+        # Refit con inliers (más estable)
+        inlier_pts = pts[best_inliers]
+        if len(inlier_pts) >= int(self.RANSAC_REFIT_MIN_INLIERS):
+            try:
+                best_fit = np.polyfit(inlier_pts[:, 1], inlier_pts[:, 0], 2)
+            except np.linalg.LinAlgError:
+                pass
+
+        return best_fit, best_inliers
+
+    def _extract_two_lanes_ransac(self, all_points_xy):
+        """
+        Extrae hasta 2 carriles usando RANSAC iterativo:
+        - Ajusta un carril
+        - Remueve inliers
+        - Ajusta el segundo
+
+        Retorna lista de candidatos: [{'fit', 'points', 'centroid_x', 'support'}]
+        """
+        if all_points_xy is None or len(all_points_xy) < max(self.RANSAC_MIN_INLIERS, 6):
+            return []
+
+        pts = np.array(all_points_xy, dtype=np.float32)
+        remaining = pts.copy()
+
+        candidates = []
+        for _ in range(2):
+            fit, inliers = self._ransac_fit_quadratic_x_of_y(remaining)
+            if fit is None or inliers is None:
+                break
+            inlier_pts = remaining[inliers]
+            support = int(len(inlier_pts))
+            if support < self.MIN_POINTS_FOR_FIT:
+                break
+            centroid_x = float(np.mean(inlier_pts[:, 0]))
+            candidates.append({
+                'fit': fit,
+                'points': inlier_pts,
+                'centroid_x': centroid_x,
+                'support': support
+            })
+            # remove inliers
+            remaining = remaining[~inliers]
+            if len(remaining) < max(self.RANSAC_MIN_INLIERS, 6):
+                break
+
+        return candidates
+
+    def _temporal_residual_cost_points_to_prevfit(self, pts_xy, prev_fit):
+        """
+        CAMBIO (4): costo temporal como residual punto->prev_fit:
+            mean(|x_pts - prevfit(y_pts)|)
+        """
+        if prev_fit is None or pts_xy is None or len(pts_xy) == 0:
+            return float('inf')
+        pts = np.asarray(pts_xy, dtype=np.float32)
+        y = pts[:, 1]
+        x = pts[:, 0]
+        x_prev = prev_fit[0] * y * y + prev_fit[1] * y + prev_fit[2]
+        return float(np.mean(np.abs(x - x_prev)))
+
+    # ======================================================================
+    # -------------------------- MAIN PIPELINE ------------------------------
+    # ======================================================================
+
+    def get_lane_metrics(self, frame):
+        # --- Redimensionar y aplicar Vista Cenital ---
+        frame = cv2.resize(frame, (640, 480))
+        original_frame = frame.copy()
+
+        transformed_frame = cv2.warpPerspective(frame, self.matrix, (640, 480))
+
+        # --- Threshold automático por ROI robusto ---
+        gray_transformed_frame = cv2.cvtColor(transformed_frame, cv2.COLOR_BGR2GRAY)
+        raw_auto_thr, auto_thr_rois = self._compute_auto_threshold_from_multi_roi(gray_transformed_frame)
+
+        if self.prev_auto_threshold is None:
+            auto_thr = raw_auto_thr
+        else:
+            alpha = float(self._clamp(self.AUTO_THR_TEMPORAL_ALPHA, 0.0, 1.0))
+            ema_thr = (1.0 - alpha) * float(self.prev_auto_threshold) + alpha * float(raw_auto_thr)
+            delta_max = float(max(0, self.AUTO_THR_MAX_DELTA_PER_FRAME))
+            low = float(self.prev_auto_threshold) - delta_max
+            high = float(self.prev_auto_threshold) + delta_max
+            auto_thr = int(round(self._clamp(ema_thr, low, high)))
+
+        auto_thr = int(self._clamp(auto_thr, 0, 255))
+        self.prev_auto_threshold = auto_thr
         _, mask = cv2.threshold(gray_transformed_frame, auto_thr, 255, cv2.THRESH_BINARY)
 
         # --- Histograma (debug) ---
-        histogram = np.sum(mask[mask.shape[0]//2:, :], axis=0)
+        histogram = np.sum(mask[mask.shape[0] // 2:, :], axis=0)
         midpoint = int(histogram.shape[0] / 2)
 
-        # --- Slices por hemisferio con validación de coherencia ---
+        # --- Slices: extraer candidatos y construir all_points ---
         y = self.SLIDING_WINDOW_START_Y
-        lx, ly, rx, ry = [], [], [], []
         msk = cv2.cvtColor(mask.copy(), cv2.COLOR_GRAY2BGR)
         h, w = mask.shape[:2]
 
-        # Draw histogram visualization
         histogram_viz = np.zeros((100, mask.shape[1], 3), dtype=np.uint8)
         histogram_normalized = (histogram / histogram.max() * 100).astype(int) if histogram.max() > 0 else histogram
         for i, hv in enumerate(histogram_normalized):
             if hv > 0:
-                cv2.line(histogram_viz, (i, 100), (i, 100 - hv), (255, 255, 255), 1)
+                cv2.line(histogram_viz, (i, 100), (i, 100 - int(hv)), (255, 255, 255), 1)
         cv2.line(histogram_viz, (midpoint, 0), (midpoint, 100), (0, 255, 255), 2)
 
-        window_results = {'left': [], 'right': []}
         window_index = 0
 
         def _extract_candidates(contours):
@@ -195,15 +365,12 @@ class MarcosLaneDetector_Advanced(LaneDetector):
                 M = cv2.moments(contour)
                 if M['m00'] == 0:
                     continue
-
                 cx = int(M['m10'] / M['m00'])
                 cy_local = int(M['m01'] / M['m00'])
                 candidates.append((cx, cy_local, area))
             return candidates
 
         all_points = []
-        cluster_debug_info = []
-        labels = None
 
         while y > 0:
             y0 = max(0, y - self.SLIDING_WINDOW_HEIGHT)
@@ -216,158 +383,206 @@ class MarcosLaneDetector_Advanced(LaneDetector):
             found_any = len(candidates) > 0
             for cx, cy_local, _ in candidates:
                 point_y = y0 + cy_local
-                all_points.append((cx, point_y))
-                cv2.circle(msk, (cx, point_y), 2, (180, 180, 180), -1)
-
-            window_results['left'].append((found_any, False))
-            window_results['right'].append((found_any, False))
+                all_points.append((float(cx), float(point_y)))
+                cv2.circle(msk, (int(cx), int(point_y)), 2, (180, 180, 180), -1)
 
             slice_color = (0, 255, 0) if found_any else (0, 0, 255)
             cv2.rectangle(msk, (0, y1), (w - 1, y0), slice_color, 1)
             cv2.line(msk, (midpoint, y0), (midpoint, y1), (80, 80, 80), 1)
             cv2.putText(msk, f'S{window_index}', (8, max(15, y0 + 15)),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
 
             y -= self.SLIDING_WINDOW_HEIGHT
             window_index += 1
 
+        # ======================================================================
+        # 3) SOLO RANSAC (sin DBSCAN): extraer hasta 2 carriles
+        # ======================================================================
         selected_left_points = []
         selected_right_points = []
         left_base = -1
         right_base = -1
+        selected_left_score = None
+        selected_right_score = None
+        left_errors = []
+        right_errors = []
 
-        if len(all_points) >= self.DBSCAN_MIN_SAMPLES:
-            X = np.array(all_points, dtype=np.float32)
-            labels = DBSCAN(eps=self.DBSCAN_EPS, min_samples=self.DBSCAN_MIN_SAMPLES).fit(X).labels_
+        candidates = self._extract_two_lanes_ransac(all_points)
 
-            clusters = []
-            for label_id in np.unique(labels):
-                if label_id == -1:
-                    continue
-                pts = X[labels == label_id]
-                support = len(pts)
-                if support < self.MIN_CLUSTER_POINTS:
-                    continue
+        if self.DEBUG_LANE_CLUSTER_SELECTION:
+            print(f"[RANSAC] candidates={len(candidates)}")
+            for i, c in enumerate(candidates):
+                print(f"  cand{i}: support={c['support']} centroid_x={c['centroid_x']:.1f}")
 
-                centroid_x = float(np.mean(pts[:, 0]))
-                clusters.append({
-                    'label_id': int(label_id),
-                    'points': pts,
-                    'centroid_x': centroid_x,
-                    'support': support
-                })
+        reference_center_x = w / 2.0
 
-            if self.DEBUG_LANE_CLUSTER_SELECTION:
-                print(f"[DBSCAN] valid_clusters={len(clusters)}")
-                for c in clusters:
-                    print(f"  label={c['label_id']} support={c['support']} centroid_x={c['centroid_x']:.1f}")
+        # Selección con matching temporal + penalización por lado
+        left_cand = None
+        right_cand = None
 
-            # Selección ego-lane inspirada en el paper:
-            # 1) dividir clusters por lado respecto al centro del vehículo
-            # 2) si hay múltiples por lado, elegir el más cercano al centro (no extremos)
-            left_cluster = None
-            right_cluster = None
-            reference_center_x = 0.0 if self.USE_WORLD_COORDINATES_FOR_ORDERING else (w / 2)
+        def _side_penalty(side, centroid_x):
+            deadband = float(max(0.0, self.CLUSTER_CENTER_DEADBAND_PX))
+            if abs(centroid_x - reference_center_x) <= deadband:
+                return 0.0
+            if side == 'L':
+                return 0.0 if centroid_x < reference_center_x else float(self.CLUSTER_SWAP_PENALTY)
+            return 0.0 if centroid_x > reference_center_x else float(self.CLUSTER_SWAP_PENALTY)
 
-            left_side_clusters = [c for c in clusters if c['centroid_x'] < reference_center_x]
-            right_side_clusters = [c for c in clusters if c['centroid_x'] >= reference_center_x]
+        def _cost_for_side(cand, side):
+            prev_fit = self.prev_left_fit if side == 'L' else self.prev_right_fit
+            if self.ENABLE_TEMPORAL_CLUSTER_MATCHING and prev_fit is not None:
+                temporal = self._temporal_residual_cost_points_to_prevfit(cand['points'], prev_fit)
+                if not np.isfinite(temporal):
+                    temporal = float('inf')
+            else:
+                temporal = float('inf')
 
-            if left_side_clusters:
-                left_cluster = min(left_side_clusters, key=lambda c: abs(reference_center_x - c['centroid_x']))
+            # fallback si no hay temporal: distancia al centro
+            if not np.isfinite(temporal) or temporal == float('inf'):
+                temporal = abs(float(cand['centroid_x']) - reference_center_x)
 
-            if right_side_clusters:
-                right_cluster = min(right_side_clusters, key=lambda c: abs(c['centroid_x'] - reference_center_x))
+            return float(temporal) + _side_penalty(side, float(cand['centroid_x']))
 
-            if left_cluster is not None:
-                selected_left_points = [tuple(map(int, p)) for p in left_cluster['points']]
-                left_base = int(round(left_cluster['centroid_x']))
-                cluster_debug_info.append(('L', left_cluster['label_id'], left_cluster['centroid_x']))
+        # Asignación óptima (bruteforce) con hasta 2 candidatos
+        if len(candidates) == 0:
+            left_errors.append("ERR_NO_RANSAC_CANDIDATES")
+            right_errors.append("ERR_NO_RANSAC_CANDIDATES")
+        elif len(candidates) == 1:
+            c = candidates[0]
+            deadband = float(max(0.0, self.CLUSTER_CENTER_DEADBAND_PX))
+            if c['centroid_x'] < (reference_center_x - deadband):
+                left_cand = c
+                selected_left_score = _cost_for_side(c, 'L')
+            elif c['centroid_x'] > (reference_center_x + deadband):
+                right_cand = c
+                selected_right_score = _cost_for_side(c, 'R')
+            else:
+                # neutro: asignar al lado con menor costo
+                cL = _cost_for_side(c, 'L')
+                cR = _cost_for_side(c, 'R')
+                if cL <= cR:
+                    left_cand = c
+                    selected_left_score = cL
+                else:
+                    right_cand = c
+                    selected_right_score = cR
+                left_errors.append("WARN_SINGLE_NEUTRAL_CAND")
+                right_errors.append("WARN_SINGLE_NEUTRAL_CAND")
+        else:
+            c0, c1 = candidates[0], candidates[1]
 
-            if right_cluster is not None:
-                selected_right_points = [tuple(map(int, p)) for p in right_cluster['points']]
-                right_base = int(round(right_cluster['centroid_x']))
-                cluster_debug_info.append(('R', right_cluster['label_id'], right_cluster['centroid_x']))
+            # dos posibles asignaciones
+            cost_L0_R1 = _cost_for_side(c0, 'L') + _cost_for_side(c1, 'R')
+            cost_L1_R0 = _cost_for_side(c1, 'L') + _cost_for_side(c0, 'R')
 
-            if self.DEBUG_LANE_CLUSTER_SELECTION:
-                print(f"[DBSCAN] selected_left={None if left_cluster is None else left_cluster['label_id']} selected_right={None if right_cluster is None else right_cluster['label_id']}")
+            if cost_L0_R1 <= cost_L1_R0:
+                left_cand, right_cand = c0, c1
+                selected_left_score = _cost_for_side(c0, 'L')
+                selected_right_score = _cost_for_side(c1, 'R')
+            else:
+                left_cand, right_cand = c1, c0
+                selected_left_score = _cost_for_side(c1, 'L')
+                selected_right_score = _cost_for_side(c0, 'R')
 
-            # Overlay de centroides de clusters
-            for c in clusters:
-                cx = int(round(c['centroid_x']))
-                cy = 30 + 18 * c['label_id']
-                cv2.circle(msk, (cx, 20), 5, (255, 255, 0), -1)
-                cv2.putText(msk, f"C{c['label_id']}:{c['support']}", (cx + 6, 24),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.35, (255, 255, 0), 1)
+            # sanity: evitar que ambos queden del mismo lado con fuerte penalización
+            deadband = float(max(0.0, self.CLUSTER_CENTER_DEADBAND_PX))
+            if left_cand is not None and left_cand['centroid_x'] > (reference_center_x + deadband):
+                left_errors.append("WARN_LEFT_ASSIGNED_RIGHT_SIDE")
+            if right_cand is not None and right_cand['centroid_x'] < (reference_center_x - deadband):
+                right_errors.append("WARN_RIGHT_ASSIGNED_LEFT_SIDE")
 
-            if left_cluster is not None:
-                cv2.circle(msk, (left_base, 38), 6, (0, 0, 255), -1)
-                cv2.putText(msk, f"L{left_cluster['label_id']}", (left_base + 6, 40),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
-            if right_cluster is not None:
-                cv2.circle(msk, (right_base, 56), 6, (255, 0, 0), -1)
-                cv2.putText(msk, f"R{right_cluster['label_id']}", (right_base + 6, 58),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 0, 0), 1)
+        # Convertir a puntos seleccionados + bases
+        if left_cand is not None:
+            selected_left_points = [tuple(map(int, p)) for p in left_cand['points']]
+            left_base = int(round(left_cand['centroid_x']))
+        else:
+            left_errors.append("ERR_LEFT_NOT_ASSIGNED")
 
-        lx = [p[0] for p in selected_left_points]
-        ly = [p[1] for p in selected_left_points]
-        rx = [p[0] for p in selected_right_points]
-        ry = [p[1] for p in selected_right_points]
+        if right_cand is not None:
+            selected_right_points = [tuple(map(int, p)) for p in right_cand['points']]
+            right_base = int(round(right_cand['centroid_x']))
+        else:
+            right_errors.append("ERR_RIGHT_NOT_ASSIGNED")
 
-        raw_left_base = left_base
-        raw_right_base = right_base
-        left_base = raw_left_base
-        right_base = raw_right_base
+        # debug overlay centroides y candidatos
+        if left_cand is not None:
+            cv2.circle(msk, (left_base, 38), 6, (0, 0, 255), -1)
+            cv2.putText(msk, "L", (left_base + 6, 40),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
+        if right_cand is not None:
+            cv2.circle(msk, (right_base, 56), 6, (255, 0, 0), -1)
+            cv2.putText(msk, "R", (right_base + 6, 58),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
 
+        # histogram markers
         if left_base != -1:
             cv2.circle(histogram_viz, (left_base, 50), 8, (0, 0, 255), -1)
         if right_base != -1:
             cv2.circle(histogram_viz, (right_base, 50), 8, (255, 0, 0), -1)
 
-        # Draw connecting lines between detected points to show trajectory
-        if len(lx) > 1:
-            for i in range(len(lx)-1):
-                cv2.line(msk, (lx[i], ly[i]), (lx[i+1], ly[i+1]), (0, 255, 255), 1)
-        if len(rx) > 1:
-            for i in range(len(rx)-1):
-                cv2.line(msk, (rx[i], ry[i]), (rx[i+1], ry[i+1]), (0, 255, 255), 1)
+        # line connections (debug)
+        lx = [p[0] for p in selected_left_points]
+        ly = [p[1] for p in selected_left_points]
+        rx = [p[0] for p in selected_right_points]
+        ry = [p[1] for p in selected_right_points]
 
-        # Add statistics overlay
+        if len(lx) > 1:
+            for i in range(len(lx) - 1):
+                cv2.line(msk, (lx[i], ly[i]), (lx[i + 1], ly[i + 1]), (0, 255, 255), 1)
+        if len(rx) > 1:
+            for i in range(len(rx) - 1):
+                cv2.line(msk, (rx[i], ry[i]), (rx[i + 1], ry[i + 1]), (0, 255, 255), 1)
+
+        # stats overlay
         stats_y = 70
         cv2.putText(msk, f'Left points: {len(lx)}', (10, stats_y),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
         stats_y += 30
         cv2.putText(msk, f'Right points: {len(rx)}', (10, stats_y),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
         stats_y += 30
-        valid_clusters_count = len(set(labels)) - (1 if labels is not None and -1 in labels else 0) if labels is not None else 0
-        cv2.putText(msk, f'Valid clusters: {valid_clusters_count}', (10, stats_y),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+        cv2.putText(msk, f'Candidates: {len(candidates)}', (10, stats_y),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
         stats_y += 30
         cv2.putText(msk, f'Auto thr: {auto_thr}', (10, stats_y),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
         stats_y += 30
-        cv2.putText(msk, f'ROI: {auto_thr_roi}', (10, stats_y),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+        cv2.putText(msk, f'ROIs: {auto_thr_rois}', (10, stats_y),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
         stats_y += 30
         left_status = 'VALID' if left_base != -1 else 'INVALID'
         right_status = 'VALID' if right_base != -1 else 'INVALID'
         cv2.putText(msk, f'Validation: L={left_status} R={right_status}',
-                   (10, stats_y), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
-                   (0, 255, 0) if left_status == 'VALID' and right_status == 'VALID' else (0, 255, 255), 2)
+                    (10, stats_y), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+                    (0, 255, 0) if left_status == 'VALID' and right_status == 'VALID' else (0, 255, 255), 2)
+        stats_y += 30
+        score_left_text = "-" if selected_left_score is None else f"{selected_left_score:.1f}"
+        score_right_text = "-" if selected_right_score is None else f"{selected_right_score:.1f}"
+        cv2.putText(msk, f'Scores: L={score_left_text} R={score_right_text}',
+                    (10, stats_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                    (180, 255, 180), 1)
+        stats_y += 25
+        if len(left_errors) > 0:
+            left_error_text = ",".join(left_errors[:2])
+            cv2.putText(msk, f'L ERR: {left_error_text}',
+                        (10, stats_y), cv2.FONT_HERSHEY_SIMPLEX, 0.45,
+                        (0, 140, 255), 1)
+            stats_y += 20
+        if len(right_errors) > 0:
+            right_error_text = ",".join(right_errors[:2])
+            cv2.putText(msk, f'R ERR: {right_error_text}',
+                        (10, stats_y), cv2.FONT_HERSHEY_SIMPLEX, 0.45,
+                        (0, 140, 255), 1)
 
-    # --- Polyfit y Lógica de Estimación ---
+        # ======================================================================
+        # --- Polyfit y Lógica de Estimación ---
+        # ======================================================================
         left_fit_current = None
         right_fit_current = None
-        
-        # ==============================================================================
-        # --- FILTRO DE SANIDAD DE PUNTOS CRUDOS (HARD PARTITION) ---
-        # ==============================================================================
-        # Antes de calcular nada, eliminamos puntos que cruzaron la frontera central.
-        # Esto impide que la ventana Derecha "robe" puntos de la línea Izquierda.
-        
-        MIDPOINT_X = 320  # Mitad de la imagen (640 / 2)
 
-        # 1. Filtrar puntos por lado (opcional, desactivado por defecto en modo limpio)
+        MIDPOINT_X = 320  # Mitad de la imagen (640/2)
+
+        # 1. Filtrar puntos por lado (opcional)
         if self.ENABLE_HARD_SIDE_POINT_FILTER:
             if len(lx) > 0:
                 valid_l = [(x, y) for x, y in zip(lx, ly) if x < MIDPOINT_X]
@@ -385,52 +600,39 @@ class MarcosLaneDetector_Advanced(LaneDetector):
                 else:
                     rx, ry = [], []
 
-        # ==============================================================================
-        
-        if len(lx) >= self.MIN_POINTS_FOR_FIT:
-            try: left_fit_current = np.polyfit(ly, lx, 2)
-            except np.linalg.LinAlgError: pass
+        if len(ly) >= self.MIN_POINTS_FOR_FIT:
+            try:
+                left_fit_current = np.polyfit(ly, lx, 2)
+            except np.linalg.LinAlgError:
+                pass
 
         if len(ry) >= self.MIN_POINTS_FOR_FIT:
-            try: right_fit_current = np.polyfit(ry, rx, 2)
-            except np.linalg.LinAlgError: pass
-        
-        if len(ry) >= self.MIN_POINTS_FOR_FIT:
-            try: right_fit_current = np.polyfit(ry, rx, 2)
-            except np.linalg.LinAlgError: pass
+            try:
+                right_fit_current = np.polyfit(ry, rx, 2)
+            except np.linalg.LinAlgError:
+                pass
 
-        # ==============================================================================
         # [NUEVO] FILTRO DE POSICIÓN (ZONA DE EXCLUSIÓN)
-        # ==============================================================================
-        # Esto evita que puntos a la izquierda sean identificados como carril derecho
-        
-        MIDPOINT_X = 320  # Mitad de tu imagen (640 / 2)
-        
-        # 1-2. Validación de base por lado (opcional, desactivada por defecto en modo limpio)
         if self.ENABLE_BASE_EXCLUSION_FILTER:
             if left_fit_current is not None:
-                lx_base = left_fit_current[0]*480**2 + left_fit_current[1]*480 + left_fit_current[2]
+                lx_base = left_fit_current[0] * 480**2 + left_fit_current[1] * 480 + left_fit_current[2]
                 if lx_base > MIDPOINT_X:
                     print(f"🚫 RECHAZADO: Falso Izquierdo en zona derecha (x={int(lx_base)})")
                     left_fit_current = None
 
             if right_fit_current is not None:
-                rx_base = right_fit_current[0]*480**2 + right_fit_current[1]*480 + right_fit_current[2]
+                rx_base = right_fit_current[0] * 480**2 + right_fit_current[1] * 480 + right_fit_current[2]
                 if rx_base < MIDPOINT_X:
                     print(f"🚫 RECHAZADO: Falso Derecho en zona izquierda (x={int(rx_base)})")
                     right_fit_current = None
 
-        # Función auxiliar para calcular distancia entre dos líneas en la posición y=480
         def get_line_distance(fit1, fit2):
-            """Calcular distancia horizontal entre dos ajustes polinomiales en y=480"""
             y_ref = 480
-            x1 = fit1[0]*y_ref**2 + fit1[1]*y_ref + fit1[2]
-            x2 = fit2[0]*y_ref**2 + fit2[1]*y_ref + fit2[2]
+            x1 = fit1[0] * y_ref**2 + fit1[1] * y_ref + fit1[2]
+            x2 = fit2[0] * y_ref**2 + fit2[1] * y_ref + fit2[2]
             return abs(x2 - x1)
-        
-        # Función auxiliar para calcular ángulo de curvatura inline
+
         def get_curvature_angle(fit):
-            """Calcular ángulo de curvatura desde ajuste polinomial"""
             y_current = 480
             y_ahead = max(0, 480 - self.LOOKAHEAD_DISTANCE)
             x_current = fit[0] * y_current**2 + fit[1] * y_current + fit[2]
@@ -439,39 +641,34 @@ class MarcosLaneDetector_Advanced(LaneDetector):
             dy = y_ahead - y_current
             angle_rad = math.atan2(dx, -dy)
             return math.degrees(angle_rad)
-        
-        # Función de Sanity Check para intersección de líneas
+
         def lines_intersect(fit1, fit2, y_start=0, y_end=480):
-            """Verifica si dos polinomios cuadráticos se cruzan en el rango [y_start, y_end]"""
-            # Diferencia de polinomios: f1(y) - f2(y) = (a1-a2)y^2 + (b1-b2)y + (c1-c2) = 0
             a = fit1[0] - fit2[0]
             b = fit1[1] - fit2[1]
             c = fit1[2] - fit2[2]
-            
-            if abs(a) < 1e-6: # Casi lineales
-                if abs(b) < 1e-6: return False # Paralelas
+
+            if abs(a) < 1e-6:
+                if abs(b) < 1e-6:
+                    return False
                 y_intersect = -c / b
                 return y_start <= y_intersect <= y_end
-            
-            # Ecuación cuadrática
-            delta = b**2 - 4*a*c
-            if delta < 0: return False # No hay intersección real
-            
+
+            delta = b**2 - 4 * a * c
+            if delta < 0:
+                return False
+
             sqrt_delta = math.sqrt(delta)
-            y1 = (-b + sqrt_delta) / (2*a)
-            y2 = (-b - sqrt_delta) / (2*a)
-            
+            y1 = (-b + sqrt_delta) / (2 * a)
+            y2 = (-b - sqrt_delta) / (2 * a)
             return (y_start <= y1 <= y_end) or (y_start <= y2 <= y_end)
 
         # =========================================================
         # --- LÓGICA DE DECISIÓN (ÁRBOL JERÁRQUICO) ---
         # =========================================================
-        
         detection_mode = "NONE"
         final_left_fit = None
         final_right_fit = None
-        
-        # --- NIVEL 1: ESTEREO (Ambas líneas detectadas y válidas) ---
+
         if left_fit_current is not None and right_fit_current is not None:
             distance = get_line_distance(left_fit_current, right_fit_current)
             intersect = lines_intersect(left_fit_current, right_fit_current)
@@ -481,50 +678,60 @@ class MarcosLaneDetector_Advanced(LaneDetector):
                 detection_mode = "STEREO"
                 final_left_fit = left_fit_current
                 final_right_fit = right_fit_current
-                # Actualizar memoria
                 self.prev_left_fit = final_left_fit
                 self.prev_right_fit = final_right_fit
 
-        # --- NIVEL 2: MONO_DERECHA (Si falló Nivel 1, intentar solo con derecha) ---
-        if detection_mode == "NONE" and right_fit_current is not None:
-            detection_mode = "MONO_RIGHT"
-            final_right_fit = right_fit_current
-            
-            # Reconstruir izquierda
-            curvature = abs(get_curvature_angle(final_right_fit))
-            lane_width = self.LANE_WIDTH_PX if curvature >= self.CURVATURE_THRESHOLD else (self.LANE_WIDTH_PX - self.STRAIGHT_LANE_WIDTH_REDUCTION)
-            final_left_fit = final_right_fit - [0, 0, lane_width]
-            
-            # Actualizar memoria (forzamos porque es nuestra mejor estimación actual)
-            self.prev_left_fit = final_left_fit
-            self.prev_right_fit = final_right_fit
+        if detection_mode == "NONE":
+            mono_candidates = []
 
-        # --- NIVEL 3: MONO_IZQUIERDA (Si falló Nivel 2, intentar solo con izquierda) ---
-        if detection_mode == "NONE" and left_fit_current is not None:
-            detection_mode = "MONO_LEFT"
-            final_left_fit = left_fit_current
-            
-            # Reconstruir derecha
-            curvature = abs(get_curvature_angle(final_left_fit))
-            lane_width = self.LANE_WIDTH_PX if curvature >= self.CURVATURE_THRESHOLD else (self.LANE_WIDTH_PX - self.STRAIGHT_LANE_WIDTH_REDUCTION)
-            final_right_fit = final_left_fit + [0, 0, lane_width]
-            
-            # Actualizar memoria
-            self.prev_left_fit = final_left_fit
-            self.prev_right_fit = final_right_fit
+            def _fit_temporal_distance(candidate_fit, prev_fit):
+                if candidate_fit is None:
+                    return float('inf')
+                if prev_fit is None:
+                    return 0.0
+                y_samples = self.CLUSTER_MATCH_Y_SAMPLES
+                x_candidate = candidate_fit[0] * y_samples**2 + candidate_fit[1] * y_samples + candidate_fit[2]
+                x_prev = prev_fit[0] * y_samples**2 + prev_fit[1] * y_samples + prev_fit[2]
+                return float(np.mean(np.abs(x_candidate - x_prev)))
 
-        # --- NIVEL 4: MEMORIA (Si falló todo, usar memoria si existe y está habilitada) ---
+            if right_fit_current is not None:
+                mono_right_fit = right_fit_current
+                curvature = abs(get_curvature_angle(mono_right_fit))
+                lane_width = self.LANE_WIDTH_PX if curvature >= self.CURVATURE_THRESHOLD else (self.LANE_WIDTH_PX - self.STRAIGHT_LANE_WIDTH_REDUCTION)
+                reconstructed_left = mono_right_fit - [0, 0, lane_width]
+                right_score = _fit_temporal_distance(mono_right_fit, self.prev_right_fit)
+                left_score = _fit_temporal_distance(reconstructed_left, self.prev_left_fit)
+                mono_candidates.append((right_score + left_score, "MONO_RIGHT", reconstructed_left, mono_right_fit))
+
+            if left_fit_current is not None:
+                mono_left_fit = left_fit_current
+                curvature = abs(get_curvature_angle(mono_left_fit))
+                lane_width = self.LANE_WIDTH_PX if curvature >= self.CURVATURE_THRESHOLD else (self.LANE_WIDTH_PX - self.STRAIGHT_LANE_WIDTH_REDUCTION)
+                reconstructed_right = mono_left_fit + [0, 0, lane_width]
+                left_score = _fit_temporal_distance(mono_left_fit, self.prev_left_fit)
+                right_score = _fit_temporal_distance(reconstructed_right, self.prev_right_fit)
+                mono_candidates.append((left_score + right_score, "MONO_LEFT", mono_left_fit, reconstructed_right))
+
+            if mono_candidates:
+                mono_candidates.sort(key=lambda item: item[0])
+                _, selected_mode, selected_left, selected_right = mono_candidates[0]
+                detection_mode = selected_mode
+                final_left_fit = selected_left
+                final_right_fit = selected_right
+                self.prev_left_fit = final_left_fit
+                self.prev_right_fit = final_right_fit
+
         if detection_mode == "NONE":
             if self.ENABLE_MEMORY_MODE and self.prev_left_fit is not None and self.prev_right_fit is not None:
                 detection_mode = "MEMORY"
                 final_left_fit = self.prev_left_fit
                 final_right_fit = self.prev_right_fit
             else:
-                # FALLO TOTAL: No hay nada que hacer
                 bird_view_with_lines = transformed_frame.copy()
                 no_lane_text = "NO LANE DETECTED" if self.ENABLE_MEMORY_MODE else "NO LANE DETECTED (MEMORY OFF)"
-                cv2.putText(bird_view_with_lines, no_lane_text, (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-                
+                cv2.putText(bird_view_with_lines, no_lane_text, (10, 40),
+                            cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+
                 debug_images = {
                     "original": original_frame,
                     "bird_view_raw": transformed_frame.copy(),
@@ -537,240 +744,194 @@ class MarcosLaneDetector_Advanced(LaneDetector):
                 }
                 return None, debug_images
 
-        # Asignar los fits finales para el resto del cálculo
         left_fit = final_left_fit
         right_fit = final_right_fit
-        
+
         # --- CÁLCULO DEL ÁNGULO DE DESVIACIÓN ---
-        # Calculamos el centro del carril como la línea amarilla
-        center_fit = [(left_fit[0] + right_fit[0]) / 2, 
-                      (left_fit[1] + right_fit[1]) / 2, 
+        center_fit = [(left_fit[0] + right_fit[0]) / 2,
+                      (left_fit[1] + right_fit[1]) / 2,
                       (left_fit[2] + right_fit[2]) / 2]
-        
-        # Posición del carro
+
         y_car = 480
         car_position_x = 320
-        
-        # Calcular el error posicional: diferencia entre el centro del carril y la posición del auto
-        lane_center = center_fit[0]*y_car**2 + center_fit[1]*y_car + center_fit[2]
+
+        lane_center = center_fit[0] * y_car**2 + center_fit[1] * y_car + center_fit[2]
         error_pixels = lane_center - car_position_x
-        
-        # Calcular el ángulo de curvatura del carril (dirección hacia adelante)
+
         y_current = y_car
-        y_ahead = max(0, y_car - self.LOOKAHEAD_DISTANCE)  # Hacia arriba en la imagen (dirección del vehículo)
-        
-        # Calcular las posiciones x en ambos puntos
+        y_ahead = max(0, y_car - self.LOOKAHEAD_DISTANCE)
+
         x_current = center_fit[0] * y_current**2 + center_fit[1] * y_current + center_fit[2]
         x_ahead = center_fit[0] * y_ahead**2 + center_fit[1] * y_ahead + center_fit[2]
-        
-        # Calcular el ángulo de la línea entre estos dos puntos
+
         dx = x_ahead - x_current
-        dy = y_ahead - y_current  # Será negativo (y_ahead < y_current)
-        
-        # El ángulo se calcula como atan2(dx, -dy) porque:
-        # - El vehículo avanza hacia arriba (y disminuye)
-        # - Necesitamos negar dy para que represente la dirección de avance
-        # - atan2 maneja correctamente los signos en todos los cuadrantes
+        dy = y_ahead - y_current
         angle_rad = math.atan2(dx, -dy)
         curvature_angle_deg = math.degrees(angle_rad)
-        
-        # Limitar el ángulo de curvatura al rango válido (para visualización)
         curvature_angle_deg = max(min(curvature_angle_deg, 30), -30)
-        
-        # --- CALCULAR ERROR ANGULAR USANDO ARCTAN ---
-        # Convertir el error posicional (píxeles) a error angular usando arctan
-        # Error positivo = carril a la derecha del auto → ángulo positivo
-        # Error negativo = carril a la izquierda del auto → ángulo negativo
+
         error_angle_rad = math.atan2(error_pixels, self.LOOKAHEAD_DISTANCE)
         error_angle_deg = math.degrees(error_angle_rad)
-        
-        # Combinar el error angular con el ángulo de curvatura
-        # El error angular corrige la posición, el ángulo de curvatura anticipa la dirección
+
         angle_desviacion_deg = self.error_factor * error_angle_deg + self.curvature_factor * curvature_angle_deg
-        
-        # Limitar el ángulo de desviación al rango válido
         angle_desviacion_deg = max(min(angle_desviacion_deg, 30), -30)
 
-        # --- 6. Visualización ---
-        # Vista aérea sin procesar (solo la transformación)
+        # --- Visualización ---
         bird_view_raw = transformed_frame.copy()
-        
-        # Vista aérea con líneas dibujadas (sin overlay verde)
         bird_view_with_lines = transformed_frame.copy()
+
         plot_y = np.linspace(0, 479, 480)
-        plot_x_left = left_fit[0]*plot_y**2 + left_fit[1]*plot_y + left_fit[2]
-        plot_x_right = right_fit[0]*plot_y**2 + right_fit[1]*plot_y + right_fit[2]
-        
-        # --- Definir colores según el modo de detección ---
-        color_left = (0, 0, 255)   # Rojo por defecto (Real)
-        color_right = (255, 0, 0)  # Azul por defecto (Real)
-        color_reconstructed = (150, 150, 150) # Gris para líneas reconstruidas/virtuales
-        color_memory = (0, 255, 255) # Amarillo para memoria
-        
+        plot_x_left = left_fit[0] * plot_y**2 + left_fit[1] * plot_y + left_fit[2]
+        plot_x_right = right_fit[0] * plot_y**2 + right_fit[1] * plot_y + right_fit[2]
+
+        color_left = (0, 0, 255)
+        color_right = (255, 0, 0)
+        color_reconstructed = (150, 150, 150)
+        color_memory = (0, 255, 255)
+
         if detection_mode == "STEREO":
-            color_left = (0, 0, 255)   # Real
-            color_right = (255, 0, 0)  # Real
+            color_left = (0, 0, 255)
+            color_right = (255, 0, 0)
         elif detection_mode == "MONO_RIGHT":
-            color_left = color_reconstructed # Reconstruida
-            color_right = (255, 0, 0)  # Real
+            color_left = color_reconstructed
+            color_right = (255, 0, 0)
         elif detection_mode == "MONO_LEFT":
-            color_left = (0, 0, 255)   # Real
-            color_right = color_reconstructed # Reconstruida
+            color_left = (0, 0, 255)
+            color_right = color_reconstructed
         elif detection_mode == "MEMORY":
             color_left = color_memory
             color_right = color_memory
-            
-        # Dibujar las líneas del carril en la vista aérea
-        # Convertir puntos a formato polylines (int32)
+
         pts_left = np.vstack((plot_x_left, plot_y)).astype(np.int32).T
         pts_right = np.vstack((plot_x_right, plot_y)).astype(np.int32).T
-        
         cv2.polylines(bird_view_with_lines, [pts_left], False, color_left, 3)
         cv2.polylines(bird_view_with_lines, [pts_right], False, color_right, 3)
-        
-        # Dibujar el centro del carril
+
         center_line_x = (plot_x_left + plot_x_right) / 2
-        for i in range(len(plot_y)-1):
-            cv2.line(bird_view_with_lines, 
-                    (int(center_line_x[i]), int(plot_y[i])), 
-                    (int(center_line_x[i+1]), int(plot_y[i+1])), 
-                    (0, 255, 255), 2)  # Línea amarilla para el centro
-        
-        # Dibujar la posición del auto (centro de la imagen)
-        cv2.circle(bird_view_with_lines, (320, 480), 10, (0, 255, 0), -1)  # Círculo verde para el auto
-        
-        # Mostrar el MODO DE DETECCIÓN en la pantalla
-        cv2.putText(bird_view_with_lines, f"MODE: {detection_mode}", (10, 260), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
-        
-        # =========================================================
-        
-        # =========================================================
-        # --- VISUALIZACION ---
-        # =========================================================
-        # 1. Dibujar el centro del carril en la posición del auto
+        for i in range(len(plot_y) - 1):
+            cv2.line(bird_view_with_lines,
+                     (int(center_line_x[i]), int(plot_y[i])),
+                     (int(center_line_x[i + 1]), int(plot_y[i + 1])),
+                     (0, 255, 255), 2)
+
+        cv2.circle(bird_view_with_lines, (320, 480), 10, (0, 255, 0), -1)
+        cv2.putText(bird_view_with_lines, f"MODE: {detection_mode}", (10, 260),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+
         lane_center_int = int(lane_center)
-        cv2.circle(bird_view_with_lines, (lane_center_int, y_car), 8, (255, 255, 0), -1)  # Círculo cyan para lane center
-        
-        # 2. Dibujar el punto de lookahead en el centro del carril
+        cv2.circle(bird_view_with_lines, (lane_center_int, y_car), 8, (255, 255, 0), -1)
+
         x_ahead_int = int(x_ahead)
         y_ahead_int = int(y_ahead)
-        cv2.circle(bird_view_with_lines, (x_ahead_int, y_ahead_int), 8, (255, 0, 255), -1)  # Círculo magenta para lookahead
-        
-        # 3. Dibujar línea de dirección desde posición actual hasta lookahead
+        cv2.circle(bird_view_with_lines, (x_ahead_int, y_ahead_int), 8, (255, 0, 255), -1)
+
         x_current_int = int(x_current)
-        cv2.line(bird_view_with_lines, (x_current_int, y_car), (x_ahead_int, y_ahead_int), (255, 128, 0), 3)  # Línea azul claro
-        
-        # 4. Dibujar línea de error posicional (desde car_position_x hasta lane_center)
-        cv2.line(bird_view_with_lines, (car_position_x, y_car), (lane_center_int, y_car), (0, 0, 255), 10)  # Línea roja horizontal
-        
-        # 5. Agregar flechas para indicar dirección
-        
-        # A. Flecha de CURVATURA (Anticipación) - Magenta
-        # Muestra hacia dónde va el carril en el futuro
+        cv2.line(bird_view_with_lines, (x_current_int, y_car), (x_ahead_int, y_ahead_int), (255, 128, 0), 3)
+        cv2.line(bird_view_with_lines, (car_position_x, y_car), (lane_center_int, y_car), (0, 0, 255), 10)
+
         arrow_length = 40
-        # Nota: curvature_angle_deg es en grados, angle_rad es en radianes
-        # Necesitamos convertir curvature_angle_deg a radianes para el cálculo de coordenadas
         curv_rad = math.radians(curvature_angle_deg)
         curv_end_x = int(x_ahead_int + arrow_length * math.sin(curv_rad))
         curv_end_y = int(y_ahead_int - arrow_length * math.cos(curv_rad))
-        cv2.arrowedLine(bird_view_with_lines, (x_ahead_int, y_ahead_int), (curv_end_x, curv_end_y), (255, 0, 255), 2, tipLength=0.3)
-        # Mostrar valor de curvatura cerca de la flecha magenta
-        cv2.putText(bird_view_with_lines, f'{curvature_angle_deg:.1f} deg', (curv_end_x + 10, curv_end_y), 
+        cv2.arrowedLine(bird_view_with_lines, (x_ahead_int, y_ahead_int), (curv_end_x, curv_end_y),
+                        (255, 0, 255), 2, tipLength=0.3)
+        cv2.putText(bird_view_with_lines, f'{curvature_angle_deg:.1f} deg', (curv_end_x + 10, curv_end_y),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 1)
 
-        # B. Flecha de ERROR ANGULAR (Corrección de Posición) - Rojo
-        # Muestra cuánto debemos girar solo para corregir la posición actual (sin mirar adelante)
-        # La dibujamos desde el coche
         err_rad = math.radians(error_angle_deg)
         err_end_x = int(car_position_x + arrow_length * math.sin(err_rad))
         err_end_y = int(y_car - arrow_length * math.cos(err_rad))
-        cv2.arrowedLine(bird_view_with_lines, (car_position_x, y_car), (err_end_x, err_end_y), (0, 0, 255), 2, tipLength=0.3)
-        # Mostrar el valor de error angular cerca de la flecha roja
-        cv2.putText(bird_view_with_lines, f'{error_angle_deg:.1f} deg', (err_end_x + 10, err_end_y), 
+        cv2.arrowedLine(bird_view_with_lines, (car_position_x, y_car), (err_end_x, err_end_y),
+                        (0, 0, 255), 2, tipLength=0.3)
+        cv2.putText(bird_view_with_lines, f'{error_angle_deg:.1f} deg', (err_end_x + 10, err_end_y),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
-        
-        # 6. Visualizar el ángulo de desviación FINAL (angle_desviacion_deg) desde la posición del auto
-        # Esta es la dirección que el auto debe tomar
+
         deviation_arrow_length = 80
         deviation_angle_rad = math.radians(angle_desviacion_deg)
         deviation_arrow_end_x = int(car_position_x + deviation_arrow_length * math.sin(deviation_angle_rad))
         deviation_arrow_end_y = int(y_car - deviation_arrow_length * math.cos(deviation_angle_rad))
-        cv2.arrowedLine(bird_view_with_lines, (car_position_x, y_car - 15), (deviation_arrow_end_x, deviation_arrow_end_y), (0, 165, 255), 3, tipLength=0.25)
-        
-        # Agregar texto del ángulo cerca de la flecha
+        cv2.arrowedLine(bird_view_with_lines, (car_position_x, y_car - 15),
+                        (deviation_arrow_end_x, deviation_arrow_end_y),
+                        (0, 165, 255), 3, tipLength=0.25)
+
         text_offset_x = int(car_position_x + (deviation_arrow_length * 0.6) * math.sin(deviation_angle_rad))
         text_offset_y = int(y_car - 15 - (deviation_arrow_length * 0.6) * math.cos(deviation_angle_rad))
-        cv2.putText(bird_view_with_lines, f'{angle_desviacion_deg:.1f}°', (text_offset_x + 10, text_offset_y), 
+        cv2.putText(bird_view_with_lines, f'{angle_desviacion_deg:.1f}°', (text_offset_x + 10, text_offset_y),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 165, 255), 2)
-        
-        # Vista aérea con overlay verde (la original)
+
         overlay = transformed_frame.copy()
         points_left = np.array([np.transpose(np.vstack([plot_x_left, plot_y]))])
         points_right = np.array([np.flipud(np.transpose(np.vstack([plot_x_right, plot_y])))])
         quad_points = np.hstack((points_left, points_right)).astype(np.int32)
 
         cv2.fillPoly(overlay, [quad_points], (0, 255, 0))
-        cv2.addWeighted(overlay, 0.4, transformed_frame, 0.8, 0, transformed_frame) # Dibujar área en cenital
+        cv2.addWeighted(overlay, 0.4, transformed_frame, 0.8, 0, transformed_frame)
 
-        # Invertir la perspectiva
         original_perpective_lane_image = cv2.warpPerspective(transformed_frame, self.inv_matrix, (640, 480))
         result = cv2.addWeighted(original_frame, 1, original_perpective_lane_image, 0.5, 0)
-        
-        # Agregar texto a la vista aérea con líneas
-        # Ajustado Y +40px para no solapar con el indicador de Pausa/Frame
-        cv2.putText(bird_view_with_lines, f'Result: {angle_desviacion_deg:.2f} deg', (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
-        cv2.putText(bird_view_with_lines, f'error_angle_deg: {error_angle_deg:.2f} deg', (10, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-        cv2.putText(bird_view_with_lines, f'curvature_angle_deg: {curvature_angle_deg:.2f} deg', (10, 130), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 255), 2)
-        cv2.putText(bird_view_with_lines, f'Lane Center: {lane_center:.1f}', (10, 160), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
-        cv2.putText(bird_view_with_lines, f'Car Position: {car_position_x}', (10, 190), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-        
-        # Agregar leyenda visual en el lado derecho
+
+        cv2.putText(bird_view_with_lines, f'Result: {angle_desviacion_deg:.2f} deg', (10, 70),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
+        cv2.putText(bird_view_with_lines, f'error_angle_deg: {error_angle_deg:.2f} deg', (10, 100),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+        cv2.putText(bird_view_with_lines, f'curvature_angle_deg: {curvature_angle_deg:.2f} deg', (10, 130),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 255), 2)
+        cv2.putText(bird_view_with_lines, f'Lane Center: {lane_center:.1f}', (10, 160),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
+        cv2.putText(bird_view_with_lines, f'Car Position: {car_position_x}', (10, 190),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+
         legend_x = 420
-        legend_y_start = 70  # Ajustado +40px para no solapar con el indicador de Pausa/Frame
+        legend_y_start = 70
         legend_spacing = 30
         font_scale = 0.5
         font_thickness = 1
-        
-        # Título de la leyenda
-        cv2.putText(bird_view_with_lines, 'Legend:', (legend_x, legend_y_start), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-        
-        # Elementos de la leyenda
+
+        cv2.putText(bird_view_with_lines, 'Legend:', (legend_x, legend_y_start),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+
         y_offset = legend_y_start + legend_spacing
         cv2.circle(bird_view_with_lines, (legend_x + 10, y_offset - 5), 5, (0, 255, 0), -1)
-        cv2.putText(bird_view_with_lines, 'Car Position', (legend_x + 25, y_offset), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), font_thickness)
-        
+        cv2.putText(bird_view_with_lines, 'Car Position', (legend_x + 25, y_offset),
+                    cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), font_thickness)
+
         y_offset += legend_spacing
         cv2.circle(bird_view_with_lines, (legend_x + 10, y_offset - 5), 5, (255, 255, 0), -1)
-        cv2.putText(bird_view_with_lines, 'Lane Center', (legend_x + 25, y_offset), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), font_thickness)
-        
+        cv2.putText(bird_view_with_lines, 'Lane Center', (legend_x + 25, y_offset),
+                    cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), font_thickness)
+
         y_offset += legend_spacing
         cv2.circle(bird_view_with_lines, (legend_x + 10, y_offset - 5), 5, (255, 0, 255), -1)
-        cv2.putText(bird_view_with_lines, f'Lookahead: {self.LOOKAHEAD_DISTANCE}', (legend_x + 25, y_offset), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), font_thickness)
-        
+        cv2.putText(bird_view_with_lines, f'Lookahead: {self.LOOKAHEAD_DISTANCE}', (legend_x + 25, y_offset),
+                    cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), font_thickness)
+
         y_offset += legend_spacing
         cv2.line(bird_view_with_lines, (legend_x + 5, y_offset - 5), (legend_x + 20, y_offset - 5), (255, 128, 0), 2)
-        cv2.putText(bird_view_with_lines, 'Direction', (legend_x + 25, y_offset), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), font_thickness)
-        
+        cv2.putText(bird_view_with_lines, 'Direction', (legend_x + 25, y_offset),
+                    cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), font_thickness)
+
         y_offset += legend_spacing
         cv2.line(bird_view_with_lines, (legend_x + 5, y_offset - 5), (legend_x + 20, y_offset - 5), (0, 0, 255), 2)
-        cv2.putText(bird_view_with_lines, 'Error (px)', (legend_x + 25, y_offset), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), font_thickness)
-        
-        y_offset += legend_spacing
-        cv2.arrowedLine(bird_view_with_lines, (legend_x + 5, y_offset - 5), (legend_x + 20, y_offset - 10), (0, 165, 255), 2, tipLength=0.4)
-        cv2.putText(bird_view_with_lines, 'Result (Stanley)', (legend_x + 25, y_offset), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), font_thickness)
+        cv2.putText(bird_view_with_lines, 'Error (px)', (legend_x + 25, y_offset),
+                    cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), font_thickness)
 
         y_offset += legend_spacing
-        cv2.putText(bird_view_with_lines, f'Lane Width: {self.LANE_WIDTH_PX}px', (legend_x, y_offset), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (200, 200, 200), font_thickness)
+        cv2.arrowedLine(bird_view_with_lines, (legend_x + 5, y_offset - 5), (legend_x + 20, y_offset - 10),
+                        (0, 165, 255), 2, tipLength=0.4)
+        cv2.putText(bird_view_with_lines, 'Result (Stanley)', (legend_x + 25, y_offset),
+                    cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), font_thickness)
 
-        # Empaquetar imágenes de depuración para mostrarlas fuera
+        y_offset += legend_spacing
+        cv2.putText(bird_view_with_lines, f'Lane Width: {self.LANE_WIDTH_PX}px', (legend_x, y_offset),
+                    cv2.FONT_HERSHEY_SIMPLEX, font_scale, (200, 200, 200), font_thickness)
+
         debug_images = {
             "original": original_frame,
-            "bird_view_raw": bird_view_raw,  # Vista aérea sin procesar
-            "bird_view_lines": bird_view_with_lines,  # Vista aérea con líneas dibujadas
-            "cenital": transformed_frame, # Muestra el overlay verde
+            "bird_view_raw": bird_view_raw,
+            "bird_view_lines": bird_view_with_lines,
+            "cenital": transformed_frame,
             "mask": mask,
-            "histogram": histogram_viz,  # Histogram visualization
+            "histogram": histogram_viz,
             "sliding_windows": msk,
             "final_result": result
         }
