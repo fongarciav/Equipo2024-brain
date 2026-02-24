@@ -231,8 +231,7 @@ class SignDetector:
                             distance = None
                             if hasattr(self.video_streamer, 'get_distance') and self.source is None:
                                 distance = self.video_streamer.get_distance(cx, cy)
-                                # if distance is None:
-                                #     print(f"[SignDetector] Warning: get_distance returned None for ({cx}, {cy})")
+                                print(f"[SignDetector] get_distance at ({cx}, {cy}) -> {distance}")
                             # else:
                             #     print("[SignDetector] Video streamer does not support get_distance")
                             

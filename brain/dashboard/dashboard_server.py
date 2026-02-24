@@ -807,6 +807,7 @@ def initialize_autopilot_if_needed():
             if rs_streamer.initialize():
                 video_streamer = rs_streamer
                 print("[Dashboard] RealSense camera initialized successfully.")
+                print(f"[Dashboard] video_streamer type (autopilot): {type(video_streamer)}")
             else:
                 print("[Dashboard] RealSense initialization failed, falling back to standard VideoStreamer.")
         else:
@@ -817,6 +818,8 @@ def initialize_autopilot_if_needed():
             video_streamer = VideoStreamer()
             if not video_streamer.initialize():
                 return False
+            else:
+                print(f"[Dashboard] Using standard VideoStreamer for autopilot: {type(video_streamer)}")
     
     # Initialize autopilot controller
     if video_streamer is not None:
@@ -901,6 +904,7 @@ def initialize_sign_detection_if_needed():
             if rs_streamer.initialize():
                 video_streamer = rs_streamer
                 print("[Dashboard] RealSense camera initialized successfully.")
+                print(f"[Dashboard] video_streamer type (sign_detection): {type(video_streamer)}")
             else:
                 print("[Dashboard] RealSense initialization failed, falling back to standard VideoStreamer.")
         else:
@@ -912,6 +916,8 @@ def initialize_sign_detection_if_needed():
             if not video_streamer.initialize():
                 video_streamer = None
                 return False
+            else:
+                print(f"[Dashboard] Using standard VideoStreamer for sign_detection: {type(video_streamer)}")
     
     # Create sign detection controller if video_streamer is available
     if video_streamer is not None:

@@ -68,6 +68,7 @@ class RealSenseStreamer:
             
             self.is_running = True
             print("[RealSenseStreamer] RealSense initialized successfully")
+            print("[RealSenseStreamer] Streams: depth + color aligned, streamer READY")
             
             # Start capture thread
             self.start_capture()
@@ -143,7 +144,7 @@ class RealSenseStreamer:
                         depth_value = self.current_depth_frame[y, x]
                         # Convert to meters
                         distance = depth_value * self.depth_scale
-                        # print(f"[RealSense] Distance at ({x}, {y}): {distance:.3f}m (Raw: {depth_value})")
+                        print(f"[RealSenseStreamer] Distance at ({x}, {y}): {distance:.3f} m (raw: {depth_value})")
                         return distance
                     else:
                         print(f"[RealSense] Coordinates ({x}, {y}) out of bounds ({width}x{height})")
