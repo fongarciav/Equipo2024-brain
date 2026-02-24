@@ -13,7 +13,7 @@ class DefaultStopStrategy(SignStrategy):
         activation_distance=3.0,
         stop_duration=3.0,
         k=0.8,
-        offset=0.25
+        offset=0.4
     ):
         super().__init__(controller, lock, min_confidence, activation_distance)
         self.last_activation_time = 0
