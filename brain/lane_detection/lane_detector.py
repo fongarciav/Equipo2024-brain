@@ -117,19 +117,20 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         self.curvature_factor = 0.5
         self.error_factor = 0.3
 
-        # --- Puntos de perspectiva ---
-        # CAMBIO (1): ROI usa todo el ancho arriba (top full width)
-        # Antes:
-        #   tl=(160,180), tr=(480,180)
-        # Ahora:
+        # --- Puntos de perspectiva (método tipo homografía + tamaño de salida configurable) ---
+        # Referencia base de calibración (640x480)
+        self.CANONICAL_FRAME_WIDTH = 640
+        self.CANONICAL_FRAME_HEIGHT = 480
+
+        # Trapezoide fuente en coordenadas canónicas
         self.tl = (0, 140)
         self.tr = (640, 140)
         self.bl = (0, 450)
         self.br = (640, 450)
-        self.pts1 = np.float32([self.tl, self.bl, self.tr, self.br])
-        self.pts2 = np.float32([[0, 0], [0, 480], [640, 0], [640, 480]])
-        self.matrix = cv2.getPerspectiveTransform(self.pts1, self.pts2)
-        self.inv_matrix = cv2.getPerspectiveTransform(self.pts2, self.pts1)
+
+        # Tamaño final del BEV (más grande para ver más lejos y usar toda el área)
+        self.BEV_OUTPUT_WIDTH = 960
+        self.BEV_OUTPUT_HEIGHT = 720
 
         # --- Valores de color HSV ---
         self.hsv_lower = np.array([0, 0, threshold])
@@ -142,6 +143,28 @@ class MarcosLaneDetector_Advanced(LaneDetector):
     @staticmethod
     def _clamp(v, lo, hi):
         return max(lo, min(hi, v))
+
+    def _compute_bev_matrices(self, frame_w, frame_h):
+        """Construye homografías usando el mismo método de warpPerspective con tamaño BEV configurable."""
+        sx = float(frame_w) / float(self.CANONICAL_FRAME_WIDTH)
+        sy = float(frame_h) / float(self.CANONICAL_FRAME_HEIGHT)
+
+        pts_src = np.float32([
+            [self.tl[0] * sx, self.tl[1] * sy],
+            [self.bl[0] * sx, self.bl[1] * sy],
+            [self.tr[0] * sx, self.tr[1] * sy],
+            [self.br[0] * sx, self.br[1] * sy],
+        ])
+        pts_dst = np.float32([
+            [0, 0],
+            [0, self.BEV_OUTPUT_HEIGHT],
+            [self.BEV_OUTPUT_WIDTH, 0],
+            [self.BEV_OUTPUT_WIDTH, self.BEV_OUTPUT_HEIGHT],
+        ])
+
+        matrix = cv2.getPerspectiveTransform(pts_src, pts_dst)
+        inv_matrix = cv2.getPerspectiveTransform(pts_dst, pts_src)
+        return matrix, inv_matrix
 
     def _compute_auto_threshold_from_multi_roi(self, gray):
         """Calcula threshold con múltiples ROIs inferiores, robusto + rechazo outliers (MAD)."""
@@ -320,7 +343,7 @@ class MarcosLaneDetector_Advanced(LaneDetector):
     def _residual_vs_prev(self, fit, prev_fit):
         if fit is None or prev_fit is None:
             return float("inf")
-        y_samples = np.array([480, 420, 360, 300], dtype=np.float32)
+        y_samples = self.CLUSTER_MATCH_Y_SAMPLES if hasattr(self, 'CLUSTER_MATCH_Y_SAMPLES') else np.array([480, 420, 360, 300], dtype=np.float32)
         x1 = fit[0] * y_samples**2 + fit[1] * y_samples + fit[2]
         x2 = prev_fit[0] * y_samples**2 + prev_fit[1] * y_samples + prev_fit[2]
         return float(np.mean(np.abs(x1 - x2)))
@@ -330,11 +353,16 @@ class MarcosLaneDetector_Advanced(LaneDetector):
     # ======================================================================
 
     def get_lane_metrics(self, frame):
-        # --- Redimensionar y aplicar Vista Cenital ---
-        frame = cv2.resize(frame, (640, 480))
+        # --- Aplicar Vista Cenital (BEV) usando tamaño de salida configurable ---
         original_frame = frame.copy()
+        frame_h, frame_w = frame.shape[:2]
+        matrix, inv_matrix = self._compute_bev_matrices(frame_w, frame_h)
 
-        transformed_frame = cv2.warpPerspective(frame, self.matrix, (640, 480))
+        transformed_frame = cv2.warpPerspective(
+            frame,
+            matrix,
+            (self.BEV_OUTPUT_WIDTH, self.BEV_OUTPUT_HEIGHT)
+        )
 
         # --- Threshold automático por ROI robusto ---
         gray_transformed_frame = cv2.cvtColor(transformed_frame, cv2.COLOR_BGR2GRAY)
@@ -359,9 +387,18 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         midpoint = int(histogram.shape[0] / 2)
 
         # --- Slices: extraer candidatos y construir all_points ---
-        y = self.SLIDING_WINDOW_START_Y
         msk = cv2.cvtColor(mask.copy(), cv2.COLOR_GRAY2BGR)
         h, w = mask.shape[:2]
+        y = int(self._clamp(self.SLIDING_WINDOW_START_Y * (h / float(self.CANONICAL_FRAME_HEIGHT)),
+                            self.SLIDING_WINDOW_HEIGHT,
+                            h - 1))
+
+        self.CLUSTER_MATCH_Y_SAMPLES = np.array([
+            h - 1,
+            max(0, h - 1 - int(0.125 * h)),
+            max(0, h - 1 - int(0.250 * h)),
+            max(0, h - 1 - int(0.375 * h)),
+        ], dtype=np.float32)
 
         histogram_viz = np.zeros((100, mask.shape[1], 3), dtype=np.uint8)
         histogram_normalized = (histogram / histogram.max() * 100).astype(int) if histogram.max() > 0 else histogram
@@ -439,7 +476,7 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         def _fit_x_at_bottom(fit):
             if fit is None:
                 return None
-            y_ref = 480.0
+            y_ref = float(h - 1)
             return float(fit[0] * y_ref * y_ref + fit[1] * y_ref + fit[2])
 
         def _pick_best_for_track(side, prev_fit, used_indices):
@@ -633,7 +670,7 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         left_fit_current = None
         right_fit_current = None
 
-        MIDPOINT_X = 320  # Mitad de la imagen (640/2)
+        MIDPOINT_X = w // 2
 
         # 1. Filtrar puntos por lado (opcional)
         if self.ENABLE_HARD_SIDE_POINT_FILTER:
@@ -668,26 +705,28 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         # [NUEVO] FILTRO DE POSICIÓN (ZONA DE EXCLUSIÓN)
         if self.ENABLE_BASE_EXCLUSION_FILTER:
             if left_fit_current is not None:
-                lx_base = left_fit_current[0] * 480**2 + left_fit_current[1] * 480 + left_fit_current[2]
+                y_bottom = h - 1
+                lx_base = left_fit_current[0] * y_bottom**2 + left_fit_current[1] * y_bottom + left_fit_current[2]
                 if lx_base > MIDPOINT_X:
                     print(f"🚫 RECHAZADO: Falso Izquierdo en zona derecha (x={int(lx_base)})")
                     left_fit_current = None
 
             if right_fit_current is not None:
-                rx_base = right_fit_current[0] * 480**2 + right_fit_current[1] * 480 + right_fit_current[2]
+                y_bottom = h - 1
+                rx_base = right_fit_current[0] * y_bottom**2 + right_fit_current[1] * y_bottom + right_fit_current[2]
                 if rx_base < MIDPOINT_X:
                     print(f"🚫 RECHAZADO: Falso Derecho en zona izquierda (x={int(rx_base)})")
                     right_fit_current = None
 
         def get_line_distance(fit1, fit2):
-            y_ref = 480
+            y_ref = h - 1
             x1 = fit1[0] * y_ref**2 + fit1[1] * y_ref + fit1[2]
             x2 = fit2[0] * y_ref**2 + fit2[1] * y_ref + fit2[2]
             return abs(x2 - x1)
 
         def get_curvature_angle(fit):
-            y_current = 480
-            y_ahead = max(0, 480 - self.LOOKAHEAD_DISTANCE)
+            y_current = h - 1
+            y_ahead = max(0, (h - 1) - self.LOOKAHEAD_DISTANCE)
             x_current = fit[0] * y_current**2 + fit[1] * y_current + fit[2]
             x_ahead = fit[0] * y_ahead**2 + fit[1] * y_ahead + fit[2]
             dx = x_ahead - x_current
@@ -695,7 +734,9 @@ class MarcosLaneDetector_Advanced(LaneDetector):
             angle_rad = math.atan2(dx, -dy)
             return math.degrees(angle_rad)
 
-        def lines_intersect(fit1, fit2, y_start=0, y_end=480):
+        def lines_intersect(fit1, fit2, y_start=0, y_end=None):
+            if y_end is None:
+                y_end = h - 1
             a = fit1[0] - fit2[0]
             b = fit1[1] - fit2[1]
             c = fit1[2] - fit2[2]
@@ -805,8 +846,8 @@ class MarcosLaneDetector_Advanced(LaneDetector):
                       (left_fit[1] + right_fit[1]) / 2,
                       (left_fit[2] + right_fit[2]) / 2]
 
-        y_car = 480
-        car_position_x = 320
+        y_car = h - 1
+        car_position_x = w // 2
 
         lane_center = center_fit[0] * y_car**2 + center_fit[1] * y_car + center_fit[2]
         error_pixels = lane_center - car_position_x
@@ -833,7 +874,7 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         bird_view_raw = transformed_frame.copy()
         bird_view_with_lines = transformed_frame.copy()
 
-        plot_y = np.linspace(0, 479, 480)
+        plot_y = np.linspace(0, h - 1, h)
         plot_x_left = left_fit[0] * plot_y**2 + left_fit[1] * plot_y + left_fit[2]
         plot_x_right = right_fit[0] * plot_y**2 + right_fit[1] * plot_y + right_fit[2]
 
@@ -867,7 +908,7 @@ class MarcosLaneDetector_Advanced(LaneDetector):
                      (int(center_line_x[i + 1]), int(plot_y[i + 1])),
                      (0, 255, 255), 2)
 
-        cv2.circle(bird_view_with_lines, (320, 480), 10, (0, 255, 0), -1)
+        cv2.circle(bird_view_with_lines, (car_position_x, y_car), 10, (0, 255, 0), -1)
         cv2.putText(bird_view_with_lines, f"MODE: {detection_mode}", (10, 260),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
 
@@ -920,7 +961,7 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         cv2.fillPoly(overlay, [quad_points], (0, 255, 0))
         cv2.addWeighted(overlay, 0.4, transformed_frame, 0.8, 0, transformed_frame)
 
-        original_perpective_lane_image = cv2.warpPerspective(transformed_frame, self.inv_matrix, (640, 480))
+        original_perpective_lane_image = cv2.warpPerspective(transformed_frame, inv_matrix, (frame_w, frame_h))
         result = cv2.addWeighted(original_frame, 1, original_perpective_lane_image, 0.5, 0)
 
         cv2.putText(bird_view_with_lines, f'Result: {angle_desviacion_deg:.2f} deg', (10, 70),
