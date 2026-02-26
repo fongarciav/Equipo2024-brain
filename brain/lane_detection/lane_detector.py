@@ -80,7 +80,7 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         self.CLUSTER_CENTER_DEADBAND_PX = 15.0
 
         # --- Threshold automático por múltiples ROIs + suavizado temporal ---
-        self.AUTO_THR_REF_X_NORMS = [0.2, 0.5, 0.8]
+        self.AUTO_THR_REF_X_NORMS = [0.2, 0.5, 0.6]
         self.AUTO_THR_REF_Y_FROM_BOTTOM_PX = 8
         self.AUTO_THR_REF_ROI_SIZE = 41
         self.AUTO_THR_BG_PERCENTILE = 90.0
@@ -99,14 +99,17 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         self.error_factor = 0.3  # Factor para combinar error posicional
         
         # --- Puntos de perspectiva (de tu nuevo script) ---
-        # Puntos Origen (SRC) - ROI
-        self.tl = (160, 180)
-        self.bl = (0, 450)
-        self.tr = (480, 180)
-        self.br = (640, 450)
+        # Extensión de la base del trapecio fuera del canvas para no perder información en la homografía.
+        # La base del rectángulo supera el ancho de la imagen; zonas sin datos se rellenan en negro.
+        self.HOMOGRAPHY_BASE_EXTENSION_PX = 280  # píxeles que la base se extiende a cada lado (fuera de 0-640)
+        # Puntos Origen (SRC) - ROI: tl/tr sobre la imagen, bl/br extendidos más allá del canvas
+        self.tl = (0, 120)
+        self.tr = (640, 120)
+        self.bl = (0 - self.HOMOGRAPHY_BASE_EXTENSION_PX, 450)
+        self.br = (640 + self.HOMOGRAPHY_BASE_EXTENSION_PX, 450)
         self.pts1 = np.float32([self.tl, self.bl, self.tr, self.br])
         
-        # Puntos Destino (DST) - VISTA CENITAL
+        # Puntos Destino (DST) - VISTA CENITAL (mismo tamaño; bordes sin datos = negro)
         self.pts2 = np.float32([[0, 0], [0, 480], [640, 0], [640, 480]])
         
         # Matrices de transformación
@@ -136,8 +139,12 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         frame = cv2.resize(frame, (640, 480))
         original_frame = frame.copy() # Guardar el original para el final
         
-        # use cv2.cuda.warpPerspective
-        transformed_frame = cv2.warpPerspective(frame, self.matrix, (640, 480))
+        # Vista cenital; zonas que caen fuera del frame original se rellenan con negro
+        transformed_frame = cv2.warpPerspective(
+            frame, self.matrix, (640, 480),
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=(0, 0, 0)
+        )
         
         # --- Detección de color + threshold automático por ROI de referencia ---
         gray_transformed_frame = cv2.cvtColor(transformed_frame, cv2.COLOR_BGR2GRAY)
@@ -888,8 +895,12 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         cv2.fillPoly(overlay, [quad_points], (0, 255, 0))
         cv2.addWeighted(overlay, 0.4, transformed_frame, 0.8, 0, transformed_frame) # Dibujar área en cenital
 
-        # Invertir la perspectiva
-        original_perpective_lane_image = cv2.warpPerspective(transformed_frame, self.inv_matrix, (640, 480))
+        # Invertir la perspectiva; zonas sin datos (por la extensión de la base) en negro
+        original_perpective_lane_image = cv2.warpPerspective(
+            transformed_frame, self.inv_matrix, (640, 480),
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=(0, 0, 0)
+        )
         result = cv2.addWeighted(original_frame, 1, original_perpective_lane_image, 0.5, 0)
         
         # Agregar texto a la vista aérea con líneas
