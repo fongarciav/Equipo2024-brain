@@ -3,3 +3,4 @@ from .stop_strategy import DefaultStopStrategy
 from .intersection_strategy import EnterIntersectionStrategy
 from .increase_speed_and_lane_width_strategy import IncreaseSpeedAndLaneWidthStrategy
 from .crosswalk_strategy import CrosswalkStrategy
+from .parking_strategy import ParkingStrategy

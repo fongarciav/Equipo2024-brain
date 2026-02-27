@@ -21,6 +21,7 @@ from .strategies import (
     EnterIntersectionStrategy,
     IncreaseSpeedAndLaneWidthStrategy,
     CrosswalkStrategy,
+    ParkingStrategy,
 )
 
 
@@ -67,6 +68,7 @@ class SignController:
             'priority': EnterIntersectionStrategy(self, self.lock),
             'onewayroad': IncreaseSpeedAndLaneWidthStrategy(self, self.lock),
             'crosswalk': CrosswalkStrategy(self, self.lock),
+            'parking': ParkingStrategy(self, self.lock),
         }
         
     def start(self):
