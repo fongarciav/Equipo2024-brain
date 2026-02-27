@@ -2,7 +2,11 @@ import threading
 import time
 
 from .base_strategy import SignStrategy
-from command_sender import SERVO_CENTER, SERVO_LEFT, SERVO_RIGHT
+
+# Servo angle constants (must match command_sender.py / angle_converter.py)
+_SERVO_CENTER = 105
+_SERVO_LEFT = 160
+_SERVO_RIGHT = 50
 
 
 class ParkingStrategy(SignStrategy):
@@ -203,27 +207,27 @@ class ParkingStrategy(SignStrategy):
                 elapsed = time.time() - start_t
 
                 if phase == "APPROACH":
-                    self._set_motion(self.approach_speed, "forward", SERVO_CENTER)
+                    self._set_motion(self.approach_speed, "forward", _SERVO_CENTER)
                     if elapsed >= self.approach_time:
                         self._transition_to("BACK_IN")
 
                 elif phase == "BACK_IN":
-                    self._set_motion(self.back_speed, "backward", SERVO_LEFT)
+                    self._set_motion(self.back_speed, "backward", _SERVO_LEFT)
                     if elapsed >= self.back_in_time:
                         self._transition_to("ALIGN")
 
                 elif phase == "ALIGN":
-                    self._set_motion(self.back_speed, "backward", SERVO_RIGHT)
+                    self._set_motion(self.back_speed, "backward", _SERVO_RIGHT)
                     if elapsed >= self.align_time:
                         self._transition_to("CENTER")
 
                 elif phase == "CENTER":
-                    self._set_motion(self.center_speed, "forward", SERVO_CENTER)
+                    self._set_motion(self.center_speed, "forward", _SERVO_CENTER)
                     if elapsed >= self.center_time:
                         self._transition_to("STOP")
 
                 elif phase == "STOP":
-                    self._set_motion(0, "forward", SERVO_CENTER)
+                    self._set_motion(0, "forward", _SERVO_CENTER)
                     with self.lock:
                         self.is_running = False
                         self.is_parked = True
@@ -237,7 +241,7 @@ class ParkingStrategy(SignStrategy):
 
                 else:
                     print(f"[ParkingStrategy] Unknown phase '{phase}' — aborting safely.")
-                    self._set_motion(0, "forward", SERVO_CENTER)
+                    self._set_motion(0, "forward", _SERVO_CENTER)
                     with self.lock:
                         self.is_running = False
                         self.phase = "IDLE"
@@ -248,7 +252,7 @@ class ParkingStrategy(SignStrategy):
         except Exception as exc:
             print(f"[ParkingStrategy] Unexpected error in worker thread: {exc}")
             try:
-                self._set_motion(0, "forward", SERVO_CENTER)
+                self._set_motion(0, "forward", _SERVO_CENTER)
             except Exception:
                 pass
             with self.lock:
