@@ -32,13 +32,14 @@ class ParkingStrategy(SignStrategy):
         cooldown: float = 30.0,
         min_confidence: float = 0.7,
         activation_distance: float = 3.0,
-        approach_speed: int = 80,
-        approach_time: float = 1.5,
-        back_speed: int = 60,
-        back_in_time: float = 2.0,
-        align_time: float = 1.8,
-        center_speed: int = 0,
-        center_time: float = 0,
+        forward_approach_speed: int = 0,
+        forward_approach_duration: float = 0,
+        back_left_speed: int = 60,
+        back_left_duration: float = 2.5,
+        back_right_speed: int = 60,
+        back_right_duration: float = 2,
+        forward_center_speed: int = 0,
+        forward_center_duration: float = 0,
     ):
         """
         Args:
@@ -47,26 +48,28 @@ class ParkingStrategy(SignStrategy):
             cooldown: Minimum seconds between activations.
             min_confidence: Minimum detection confidence to react.
             activation_distance: Maximum distance (m) at which the sign triggers.
-            approach_speed: Forward speed (0–255 UI) during APPROACH phase.
-            approach_time: Duration in seconds of the APPROACH phase.
-            back_speed: Reverse speed (0–255 UI) during BACK_IN and ALIGN phases.
-            back_in_time: Duration in seconds of the BACK_IN phase.
-            align_time: Duration in seconds of the ALIGN phase.
-            center_speed: Forward speed (0–255 UI) during CENTER phase.
-            center_time: Duration in seconds of the CENTER phase.
+            forward_approach_speed: Forward speed (0–255 UI) during APPROACH phase.
+            forward_approach_duration: Duration in seconds of the APPROACH phase.
+            back_left_speed: Reverse speed (0–255 UI) during BACK_IN (steering left).
+            back_left_duration: Duration in seconds of the BACK_IN phase.
+            back_right_speed: Reverse speed (0–255 UI) during ALIGN (steering right).
+            back_right_duration: Duration in seconds of the ALIGN phase.
+            forward_center_speed: Forward speed (0–255 UI) during CENTER phase.
+            forward_center_duration: Duration in seconds of the CENTER phase.
         """
         super().__init__(controller, lock, min_confidence, activation_distance)
         self.cooldown = float(cooldown)
         self.last_activation_time: float = 0.0
 
-        # Tunable timing / speed parameters
-        self.approach_speed = int(max(0, min(255, approach_speed)))
-        self.approach_time = float(approach_time)
-        self.back_speed = int(max(0, min(255, back_speed)))
-        self.back_in_time = float(back_in_time)
-        self.align_time = float(align_time)
-        self.center_speed = int(max(0, min(255, center_speed)))
-        self.center_time = float(center_time)
+        # Tunable timing / speed parameters (named by motion + direction)
+        self.forward_approach_speed = int(max(0, min(255, forward_approach_speed)))
+        self.forward_approach_duration = float(forward_approach_duration)
+        self.back_left_speed = int(max(0, min(255, back_left_speed)))
+        self.back_left_duration = float(back_left_duration)
+        self.back_right_speed = int(max(0, min(255, back_right_speed)))
+        self.back_right_duration = float(back_right_duration)
+        self.forward_center_speed = int(max(0, min(255, forward_center_speed)))
+        self.forward_center_duration = float(forward_center_duration)
 
         # State machine (protected by self.lock)
         self.phase: str = "IDLE"
@@ -207,23 +210,31 @@ class ParkingStrategy(SignStrategy):
                 elapsed = time.time() - start_t
 
                 if phase == "APPROACH":
-                    self._set_motion(self.approach_speed, "forward", _SERVO_CENTER)
-                    if elapsed >= self.approach_time:
+                    self._set_motion(
+                        self.forward_approach_speed,
+                        "forward",
+                        _SERVO_CENTER,
+                    )
+                    if elapsed >= self.forward_approach_duration:
                         self._transition_to("BACK_IN")
 
                 elif phase == "BACK_IN":
-                    self._set_motion(self.back_speed, "backward", _SERVO_LEFT)
-                    if elapsed >= self.back_in_time:
+                    self._set_motion(self.back_left_speed, "backward", _SERVO_LEFT)
+                    if elapsed >= self.back_left_duration:
                         self._transition_to("ALIGN")
 
                 elif phase == "ALIGN":
-                    self._set_motion(self.back_speed, "backward", _SERVO_RIGHT)
-                    if elapsed >= self.align_time:
+                    self._set_motion(self.back_right_speed, "backward", _SERVO_RIGHT)
+                    if elapsed >= self.back_right_duration:
                         self._transition_to("CENTER")
 
                 elif phase == "CENTER":
-                    self._set_motion(self.center_speed, "forward", _SERVO_CENTER)
-                    if elapsed >= self.center_time:
+                    self._set_motion(
+                        self.forward_center_speed,
+                        "forward",
+                        _SERVO_CENTER,
+                    )
+                    if elapsed >= self.forward_center_duration:
                         self._transition_to("STOP")
 
                 elif phase == "STOP":
