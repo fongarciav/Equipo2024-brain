@@ -37,8 +37,8 @@ class ParkingStrategy(SignStrategy):
         back_speed: int = 60,
         back_in_time: float = 2.0,
         align_time: float = 1.8,
-        center_speed: int = 60,
-        center_time: float = 0.5,
+        center_speed: int = 0,
+        center_time: float = 0,
     ):
         """
         Args:
