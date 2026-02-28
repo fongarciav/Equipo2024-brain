@@ -195,7 +195,7 @@
               <input
                 type="range"
                 id="speed-slider"
-                min="0"
+                min="-255"
                 max="255"
                 value="0"
                 oninput="updateSpeed(this.value)"
@@ -1110,22 +1110,30 @@
 
       function updateSpeed(value) {
         // Update UI immediately for user feedback
-        const speed = parseInt(value);
+        const signedSpeed = parseInt(value);
+        const speedMagnitude = Math.abs(signedSpeed);
+        const direction = signedSpeed < 0 ? "backward" : "forward";
         const speedValue = document.getElementById("speed-value");
         const speedDisplay = document.getElementById("speed-display");
 
-        if (speedValue) speedValue.textContent = speed;
+        if (speedValue) speedValue.textContent = signedSpeed;
         if (speedDisplay) {
-          speedDisplay.textContent =
-            speed === 0 ? "Stopped: 0" : `Speed: ${speed}`;
+          if (signedSpeed === 0) {
+            speedDisplay.textContent = "Stopped: 0";
+          } else if (signedSpeed > 0) {
+            speedDisplay.textContent = `Forward: ${signedSpeed}`;
+          } else {
+            speedDisplay.textContent = `Backward: ${signedSpeed}`;
+          }
         }
 
-        // Send command to ESP32
-        if (speed === 0) {
+        // Send command to Nucleo via backend translator
+        if (speedMagnitude === 0) {
           sendCommand("changeSpeed?speed=0&direction=forward");
         } else {
-          // Send command with forward direction by default
-          sendCommand(`changeSpeed?speed=${speed}&direction=forward`);
+          sendCommand(
+            `changeSpeed?speed=${speedMagnitude}&direction=${direction}`
+          );
         }
         // Note: Slider value will be updated again when ESP32 confirms via EVENT:CMD_EXECUTED
       }
@@ -1137,8 +1145,8 @@
         let currentSpeed = parseInt(speedSlider.value);
         let newSpeed = currentSpeed + delta;
 
-        // Clamp to valid range
-        newSpeed = Math.max(0, Math.min(255, newSpeed));
+        // Clamp to valid range (-255 to 255)
+        newSpeed = Math.max(-255, Math.min(255, newSpeed));
 
         // Update slider (which will trigger updateSpeed)
         speedSlider.value = newSpeed;
