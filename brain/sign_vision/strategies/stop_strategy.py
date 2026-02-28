@@ -46,16 +46,13 @@ class DefaultStopStrategy(SignStrategy):
                 "message": msg
             })
         
-        # Save current speed before stopping
-        with self.lock:
-            if self.controller.current_speed > 0:
-                self.controller.last_speed_before_stop = self.controller.current_speed
-        
         # Send stop command
         stop_sent = self.controller.command_sender.send_speed_command(0)
         if stop_sent:
+            # update_current_speed maneja last_speed_before_stop automáticamente:
+            # si speed > 0 lo guarda, si speed == 0 lo conserva intacto.
+            self.controller.update_current_speed(0)
             with self.lock:
-                self.controller.current_speed = 0
                 self.controller.last_command = "speed:0 (stop)"
         else:
             print("[DefaultStopStrategy] Warning: failed to send STOP command")
@@ -75,4 +72,3 @@ class DefaultStopStrategy(SignStrategy):
         self.last_activation_time = current_time
         
         return True
-
