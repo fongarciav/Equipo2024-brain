@@ -13,18 +13,26 @@ class ParkingStrategy(SignStrategy):
     """
     Strategy for parallel parking to the left using a timed phase sequence.
 
-    Phases:
-        APPROACH  → Drive forward slowly to position alongside the parking spot.
-        BACK_IN   → Reverse with full-left steering to swing the rear into the spot.
-        ALIGN     → Reverse with full-right steering to straighten the car.
-        CENTER    → Creep forward to center the car in the spot.
-        STOP      → Halt and mark the maneuver as complete.
+    The sequence was updated to include an initial delay and a multi‑step
+    backing maneuver to match the new requirements.  After the sign is
+    detected the strategy will continue to let the line‑following code run
+    while counting down a fixed wait period.  Once the wait expires the car
+    executes the following timed motions:
 
-    The maneuver runs in a background daemon thread so the SignController
-    control loop is never blocked.  A 30-second cooldown prevents re-triggering
-    while the car is already inside the parking spot.
+        WAIT       → Countdown (35.4 s) while leaving control to the line
+                      detector; no speed commands are issued.
+        BRAKE1     → Stop for 0.5 s before beginning the parking moves.
+        BACK_RIGHT → Reverse for 8 s with full‑right steering.
+        BACK_LEFT  → Continue reversing for 4.5 s with full‑left steering.
+        BRAKE2     → Stop for 0.5 s then prepare for a forward shift.
+        FORWARD_RIGHT → Move forward for 4 s with full‑right steering.
+        BRAKE3     → Stop (0.5 s) and center the wheels.
+        BACK_CENTER → Reverse with wheels centered for 2.5 s.
+        STOP       → Halt, center wheels, and mark maneuver complete.
+
+    A 30‑second cooldown still prevents re-triggering while the car is
+    executing the maneuver.
     """
-
     def __init__(
         self,
         controller,
@@ -32,14 +40,18 @@ class ParkingStrategy(SignStrategy):
         cooldown: float = 30.0,
         min_confidence: float = 0.7,
         activation_distance: float = 3.0,
+        # speeds used during the various motion segments
         forward_approach_speed: int = 0,
-        forward_approach_duration: float = 0,
         back_left_speed: int = 60,
-        back_left_duration: float = 2.5,
         back_right_speed: int = 60,
-        back_right_duration: float = 2,
         forward_center_speed: int = 0,
-        forward_center_duration: float = 0,
+        # configurable durations; most are fixed by the new procedure
+        wait_duration: float = 35.4,
+        brake_duration: float = 0.5,
+        back_right_duration1: float = 8.0,
+        back_left_duration: float = 4.5,
+        forward_right_duration: float = 4.0,
+        back_center_duration: float = 2.5,
     ):
         """
         Args:
@@ -48,28 +60,38 @@ class ParkingStrategy(SignStrategy):
             cooldown: Minimum seconds between activations.
             min_confidence: Minimum detection confidence to react.
             activation_distance: Maximum distance (m) at which the sign triggers.
-            forward_approach_speed: Forward speed (0–255 UI) during APPROACH phase.
-            forward_approach_duration: Duration in seconds of the APPROACH phase.
-            back_left_speed: Reverse speed (0–255 UI) during BACK_IN (steering left).
-            back_left_duration: Duration in seconds of the BACK_IN phase.
-            back_right_speed: Reverse speed (0–255 UI) during ALIGN (steering right).
-            back_right_duration: Duration in seconds of the ALIGN phase.
-            forward_center_speed: Forward speed (0–255 UI) during CENTER phase.
-            forward_center_duration: Duration in seconds of the CENTER phase.
+            forward_approach_speed: Forward speed (0–255 UI) used during the
+                forward‑right segment of the parking sequence.
+            back_left_speed: Reverse speed (0–255 UI) when steering full‑left.
+            back_right_speed: Reverse speed (0–255 UI) when steering full‑right.
+            forward_center_speed: Forward speed (0–255 UI) used if a centered
+                forward motion is required (not used in the current hardcoded
+                sequence but kept for compatibility).
+            wait_duration: Initial countdown duration (seconds) after sign
+                detection during which no commands are sent.
+            brake_duration: How long to hold a full stop between motion phases.
+            back_right_duration1: Time (s) to reverse with wheels full‑right.
+            back_left_duration: Time (s) to reverse with wheels full‑left.
+            forward_right_duration: Time (s) to drive forward with wheels full‑right.
+            back_center_duration: Time (s) to reverse with wheels centered.
         """
         super().__init__(controller, lock, min_confidence, activation_distance)
         self.cooldown = float(cooldown)
         self.last_activation_time: float = 0.0
 
-        # Tunable timing / speed parameters (named by motion + direction)
+        # Tunable speeds for the various motion segments
         self.forward_approach_speed = int(max(0, min(255, forward_approach_speed)))
-        self.forward_approach_duration = float(forward_approach_duration)
         self.back_left_speed = int(max(0, min(255, back_left_speed)))
-        self.back_left_duration = float(back_left_duration)
         self.back_right_speed = int(max(0, min(255, back_right_speed)))
-        self.back_right_duration = float(back_right_duration)
         self.forward_center_speed = int(max(0, min(255, forward_center_speed)))
-        self.forward_center_duration = float(forward_center_duration)
+
+        # Fixed durations used in the updated parking sequence
+        self.wait_duration = float(wait_duration)          # initial countdown
+        self.brake_duration = float(brake_duration)        # applied at three points
+        self.back_right_duration1 = float(back_right_duration1)  # 8 seconds
+        self.back_left_duration = float(back_left_duration)      # 4.5 seconds
+        self.forward_right_duration = float(forward_right_duration)  # 4 seconds
+        self.back_center_duration = float(back_center_duration)  # 2.5 seconds
 
         # State machine (protected by self.lock)
         self.phase: str = "IDLE"
@@ -109,14 +131,15 @@ class ParkingStrategy(SignStrategy):
 
             self.is_running = True
             self.is_parked = False
-            self.phase = "APPROACH"
+            # start in the wait phase so line following remains active
+            self.phase = "WAIT"
             self.phase_start_time = now
 
         label = detection["class"].lower()
         confidence = detection["confidence"]
         msg = (
             f"{label.upper()} DETECTED! ({confidence:.2f}) "
-            "- Starting parallel parking maneuver"
+            f"- Beginning parking countdown ({self.wait_duration}s)"
         )
         print(f"[ParkingStrategy] {msg}")
 
@@ -209,32 +232,44 @@ class ParkingStrategy(SignStrategy):
 
                 elapsed = time.time() - start_t
 
-                if phase == "APPROACH":
-                    self._set_motion(
-                        self.forward_approach_speed,
-                        "forward",
-                        _SERVO_CENTER,
-                    )
-                    if elapsed >= self.forward_approach_duration:
-                        self._transition_to("BACK_IN")
+                if phase == "WAIT":
+                    # do not issue any commands; leave line-following in control
+                    if elapsed >= self.wait_duration:
+                        self._transition_to("BRAKE1")
 
-                elif phase == "BACK_IN":
+                elif phase == "BRAKE1":
+                    self._set_motion(0, "forward", _SERVO_CENTER)
+                    if elapsed >= self.brake_duration:
+                        self._transition_to("BACK_RIGHT")
+
+                elif phase == "BACK_RIGHT":
+                    self._set_motion(self.back_right_speed, "backward", _SERVO_RIGHT)
+                    if elapsed >= self.back_right_duration1:
+                        self._transition_to("BACK_LEFT")
+
+                elif phase == "BACK_LEFT":
                     self._set_motion(self.back_left_speed, "backward", _SERVO_LEFT)
                     if elapsed >= self.back_left_duration:
-                        self._transition_to("ALIGN")
+                        self._transition_to("BRAKE2")
 
-                elif phase == "ALIGN":
-                    self._set_motion(self.back_right_speed, "backward", _SERVO_RIGHT)
-                    if elapsed >= self.back_right_duration:
-                        self._transition_to("CENTER")
+                elif phase == "BRAKE2":
+                    self._set_motion(0, "forward", _SERVO_CENTER)
+                    if elapsed >= self.brake_duration:
+                        self._transition_to("FORWARD_RIGHT")
 
-                elif phase == "CENTER":
-                    self._set_motion(
-                        self.forward_center_speed,
-                        "forward",
-                        _SERVO_CENTER,
-                    )
-                    if elapsed >= self.forward_center_duration:
+                elif phase == "FORWARD_RIGHT":
+                    self._set_motion(self.forward_approach_speed, "forward", _SERVO_RIGHT)
+                    if elapsed >= self.forward_right_duration:
+                        self._transition_to("BRAKE3")
+
+                elif phase == "BRAKE3":
+                    self._set_motion(0, "forward", _SERVO_CENTER)
+                    if elapsed >= self.brake_duration:
+                        self._transition_to("BACK_CENTER")
+
+                elif phase == "BACK_CENTER":
+                    self._set_motion(self.back_left_speed, "backward", _SERVO_CENTER)
+                    if elapsed >= self.back_center_duration:
                         self._transition_to("STOP")
 
                 elif phase == "STOP":

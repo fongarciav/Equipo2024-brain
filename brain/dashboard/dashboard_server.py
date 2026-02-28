@@ -1613,4 +1613,37 @@ def select_port_interactive() -> str:
     for idx, p in enumerate(ports):
         print(f"  [{idx}] {p.device} - {p.description}")
     while True:
-        sel = input("\nSelect port index (or press Enter to skip): "
+        sel = input("\nSelect port index (or press Enter to skip): ")
+        try:
+            if sel.strip() == "":
+                return None  # Skip selection
+
+            index = int(sel)
+            if 0 <= index < len(ports):
+                return ports[index].device
+            else:
+                print("Invalid index, out of range. Please select a valid port index.")
+        except ValueError:
+            print("Invalid input, please enter a number or press Enter to skip.")
+
+
+if __name__ == '__main__':
+    import argparse
+
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description='Flask dashboard server')
+    parser.add_argument('--host', default='0.0.0.0', help='Host to bind to (default: 0.0.0.0)')
+    parser.add_argument('--port', type=int, default=5000, help='Port to bind to (default: 5000)')
+    parser.add_argument('--debug', action='store_true', help='Run in debug mode')
+
+    args = parser.parse_args()
+
+    print(f"Starting Dashboard Server on {args.host}:{args.port}")
+    print(f"Access the dashboard at: http://localhost:{args.port}")
+    print("Press Ctrl+C to stop the server")
+
+    # Run the Flask app
+    try:
+        app.run(host=args.host, port=args.port, debug=args.debug, use_reloader=False)
+    except KeyboardInterrupt:
+        print("\nServer stopped by user")
