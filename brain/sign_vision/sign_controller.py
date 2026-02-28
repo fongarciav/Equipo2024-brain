@@ -28,7 +28,7 @@ from .strategies import (
 class SignController:
     """Orchestrates sign detection and command sending."""
     DEFAULT_RESUME_SPEED = 120
-    
+
     def __init__(self, sign_detector: SignDetector, command_sender: CommandSender, event_callback=None, autopilot_controller=None):
         """
         Initialize the sign controller.
@@ -52,8 +52,8 @@ class SignController:
         self.last_command = None
         self.command_count = 0
         self.error_count = 0
-        self.current_speed = 0
-        self.last_speed_before_stop = 0  # Right now, default speed from esp32 at boot is zero, so if not last speed before stop is set, it will be zero
+        self.current_speed = 0          # Velocidad actual del carro. Se actualiza desde el dashboard y desde las estrategias.
+        self.last_speed_before_stop = 0 # Última velocidad no-cero antes de un stop/slowdown.
         self.pending_resume_at = None
         self.pending_resume_speed = None
         
@@ -106,16 +106,16 @@ class SignController:
         """
         Schedule a speed restore after STOP without blocking the control loop.
 
-        Args:
-            delay_seconds: Delay before restoring speed.
-
-        Returns:
-            The speed value that will be used for resume.
+        Priority for resume speed:
+          1. cruise_speed  (set explicitly by the dashboard / autopilot config)
+          2. last_speed_before_stop  (last non-zero speed seen)
+          3. DEFAULT_RESUME_SPEED   (hard fallback)
         """
         delay_seconds = max(0.0, float(delay_seconds))
         with self.lock:
-            resume_speed = self.last_speed_before_stop
-            if resume_speed <= 0:
+            if self.last_speed_before_stop > 0:
+                resume_speed = self.last_speed_before_stop
+            else:
                 resume_speed = self.DEFAULT_RESUME_SPEED
             resume_speed = int(max(0, min(255, resume_speed)))
             self.pending_resume_speed = resume_speed
@@ -208,14 +208,9 @@ class SignController:
             }
 
     def update_current_speed(self, speed: int):
-        """
-        Update the current speed tracking from external events (e.g. dashboard, serial).
-        This allows the controller to know if the car is stopped or moving,
-        and what speed to resume to.
-        """
+        """Update current speed. Always reflects the real speed of the car.
+        Saves the last positive speed into last_speed_before_stop before setting to 0."""
         with self.lock:
+            if self.current_speed > 0 and speed == 0:
+                self.last_speed_before_stop = self.current_speed
             self.current_speed = speed
-            # If we are moving (speed > 0), remember it for resume
-            if speed > 0:
-                self.last_speed_before_stop = speed
-

@@ -65,17 +65,15 @@ class CrosswalkStrategy(SignStrategy):
                 },
             )
 
-        # Save current speed so the resume mechanism can restore it.
-        with self.lock:
-            if self.controller.current_speed > 0:
-                self.controller.last_speed_before_stop = self.controller.current_speed
-
         # Send the reduced-speed command.
         sent = self.controller.command_sender.send_speed_command(self.slow_speed)
         if not sent:
             print("[CrosswalkStrategy] Warning: failed to send slow-speed command.")
             return False
 
+        # Trigger last_speed_before_stop save via update_current_speed before
+        # overwriting current_speed with slow_speed.
+        self.controller.update_current_speed(0)
         with self.lock:
             self.controller.current_speed = self.slow_speed
             self.controller.last_command = f"speed:{self.slow_speed} (crosswalk slow)"
