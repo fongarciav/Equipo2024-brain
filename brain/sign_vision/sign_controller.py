@@ -102,22 +102,22 @@ class SignController:
         
         return True
 
-    def schedule_speed_resume(self, delay_seconds: float) -> int:
+    def schedule_speed_resume(self, delay_seconds: float, override_speed: int = None) -> int:
         """
-        Schedule a speed restore after STOP without blocking the control loop.
+        Schedule a speed restore after a stop or slowdown.
 
-        Priority for resume speed:
-          1. cruise_speed  (set explicitly by the dashboard / autopilot config)
-          2. last_speed_before_stop  (last non-zero speed seen)
-          3. DEFAULT_RESUME_SPEED   (hard fallback)
+        Args:
+            delay_seconds: Seconds to wait before restoring speed.
+            override_speed: If provided, resume at this exact speed instead of last_speed_before_stop.
         """
         delay_seconds = max(0.0, float(delay_seconds))
         with self.lock:
-            if self.last_speed_before_stop > 0:
+            if override_speed is not None:
+                resume_speed = int(max(0, min(255, override_speed)))
+            elif self.last_speed_before_stop > 0:
                 resume_speed = self.last_speed_before_stop
             else:
                 resume_speed = self.DEFAULT_RESUME_SPEED
-            resume_speed = int(max(0, min(255, resume_speed)))
             self.pending_resume_speed = resume_speed
             self.pending_resume_at = time.time() + delay_seconds
             return resume_speed
