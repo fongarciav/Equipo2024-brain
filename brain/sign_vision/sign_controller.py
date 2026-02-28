@@ -22,6 +22,7 @@ from .strategies import (
     IncreaseSpeedAndLaneWidthStrategy,
     CrosswalkStrategy,
     ParkingStrategy,
+    ChangeSpeedStrategy,
 )
 
 
@@ -69,6 +70,8 @@ class SignController:
             'onewayroad': IncreaseSpeedAndLaneWidthStrategy(self, self.lock),
             'crosswalk': CrosswalkStrategy(self, self.lock),
             'parking': ParkingStrategy(self, self.lock),
+            'highway.entry': ChangeSpeedStrategy(self, self.lock, target_speed=230),
+            'highway.exit': ChangeSpeedStrategy(self, self.lock, target_speed=120),
         }
         
     def start(self):
