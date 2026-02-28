@@ -101,10 +101,10 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         # --- Puntos de perspectiva (de tu nuevo script) ---
         # Extensión de la base del trapecio fuera del canvas para no perder información en la homografía.
         # La base del rectángulo supera el ancho de la imagen; zonas sin datos se rellenan en negro.
-        self.HOMOGRAPHY_BASE_EXTENSION_PX = 280  # píxeles que la base se extiende a cada lado (fuera de 0-640)
+        self.HOMOGRAPHY_BASE_EXTENSION_PX = 400  # píxeles que la base se extiende a cada lado (fuera de 0-640)
         # Puntos Origen (SRC) - ROI: tl/tr sobre la imagen, bl/br extendidos más allá del canvas
-        self.tl = (0, 120)
-        self.tr = (640, 120)
+        self.tl = (0, 100)
+        self.tr = (640, 100)
         self.bl = (0 - self.HOMOGRAPHY_BASE_EXTENSION_PX, 450)
         self.br = (640 + self.HOMOGRAPHY_BASE_EXTENSION_PX, 450)
         self.pts1 = np.float32([self.tl, self.bl, self.tr, self.br])
