@@ -91,6 +91,15 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         self.GUIDED_SEARCH_BAND_HALF_WIDTH_PX = 35
         self.GUIDED_SEARCH_MIN_POINTS = 3
 
+        # --- Clasificación de tipo de línea (sobre mask_raw) ---
+        self.LANE_TYPE_BAND_HALF_WIDTH_PX = 4
+        self.LANE_TYPE_Y_MIN = 40
+        self.LANE_TYPE_Y_MAX = 470
+        self.LANE_TYPE_Y_STEP = 4
+        self.LANE_TYPE_SOLID_COVERAGE_MIN = 0.72
+        self.LANE_TYPE_DASHED_TRANSITIONS_MIN = 4
+        self.LANE_TYPE_DASHED_GAP_MIN = 5
+
         # --- Threshold automático por múltiples ROIs + suavizado temporal ---
         self.AUTO_THR_REF_X_NORMS = [0.2, 0.5, 0.6]
         self.AUTO_THR_REF_Y_FROM_BOTTOM_PX = 8
@@ -505,6 +514,64 @@ class MarcosLaneDetector_Advanced(LaneDetector):
                 guided_points.append((point_x, int(y_val)))
             return guided_points
 
+        def _classify_lane_type(mask_for_type, fit):
+            if fit is None:
+                return "UNKNOWN", {'coverage': 0.0, 'transitions': 0, 'mean_gap': 0.0, 'samples': 0}
+
+            h, w = mask_for_type.shape[:2]
+            band_half = int(max(1, self.LANE_TYPE_BAND_HALF_WIDTH_PX))
+            y_min = int(max(0, self.LANE_TYPE_Y_MIN))
+            y_max = int(min(h - 1, self.LANE_TYPE_Y_MAX))
+            y_step = int(max(1, self.LANE_TYPE_Y_STEP))
+            if y_max <= y_min:
+                return "UNKNOWN", {'coverage': 0.0, 'transitions': 0, 'mean_gap': 0.0, 'samples': 0}
+
+            ys = np.arange(y_max, y_min - 1, -y_step)
+            presence = []
+            for y_val in ys:
+                x_center = int(round(fit[0] * y_val**2 + fit[1] * y_val + fit[2]))
+                x0 = max(0, x_center - band_half)
+                x1 = min(w - 1, x_center + band_half)
+                if x1 <= x0:
+                    presence.append(0)
+                    continue
+                strip = mask_for_type[y_val:y_val + 1, x0:x1 + 1]
+                presence.append(1 if np.any(strip > 0) else 0)
+
+            if len(presence) == 0:
+                return "UNKNOWN", {'coverage': 0.0, 'transitions': 0, 'mean_gap': 0.0, 'samples': 0}
+
+            coverage = float(np.mean(presence))
+            transitions = int(np.sum(np.abs(np.diff(presence)))) if len(presence) > 1 else 0
+
+            # Longitud promedio de gaps (corridas en 0)
+            gaps = []
+            run = 0
+            for pval in presence:
+                if pval == 0:
+                    run += 1
+                elif run > 0:
+                    gaps.append(run)
+                    run = 0
+            if run > 0:
+                gaps.append(run)
+            mean_gap = float(np.mean(gaps)) if len(gaps) > 0 else 0.0
+
+            if coverage >= self.LANE_TYPE_SOLID_COVERAGE_MIN and mean_gap < self.LANE_TYPE_DASHED_GAP_MIN:
+                lane_type = "SOLID"
+            elif transitions >= self.LANE_TYPE_DASHED_TRANSITIONS_MIN and mean_gap >= self.LANE_TYPE_DASHED_GAP_MIN:
+                lane_type = "DASHED"
+            else:
+                lane_type = "UNKNOWN"
+
+            metrics = {
+                'coverage': coverage,
+                'transitions': transitions,
+                'mean_gap': mean_gap,
+                'samples': len(presence)
+            }
+            return lane_type, metrics
+
         lx = [p[0] for p in selected_left_points]
         ly = [p[1] for p in selected_left_points]
         rx = [p[0] for p in selected_right_points]
@@ -783,6 +850,7 @@ class MarcosLaneDetector_Advanced(LaneDetector):
                     "mask_detect": mask_detect,
                     "histogram": histogram_viz,
                     "sliding_windows": msk,
+                    "lane_types": {'left': 'UNKNOWN', 'right': 'UNKNOWN'},
                     "final_result": original_frame
                 }
                 return None, debug_images
@@ -790,6 +858,15 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         # Asignar los fits finales para el resto del cálculo
         left_fit = final_left_fit
         right_fit = final_right_fit
+
+        left_lane_type, left_type_metrics = _classify_lane_type(mask_raw, left_fit)
+        right_lane_type, right_type_metrics = _classify_lane_type(mask_raw, right_fit)
+        lane_types = {
+            'left': left_lane_type,
+            'right': right_lane_type,
+            'left_metrics': left_type_metrics,
+            'right_metrics': right_type_metrics
+        }
         
         # --- CÁLCULO DEL ÁNGULO DE DESVIACIÓN ---
         # Calculamos el centro del carril como la línea amarilla
@@ -892,6 +969,10 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         # Mostrar el MODO DE DETECCIÓN en la pantalla
         cv2.putText(bird_view_with_lines, f"MODE: {detection_mode}", (10, 260), 
                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+        cv2.putText(bird_view_with_lines, f"TYPE L: {left_lane_type}", (10, 290),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+        cv2.putText(bird_view_with_lines, f"TYPE R: {right_lane_type}", (10, 320),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
         
         # =========================================================
         
@@ -1027,6 +1108,7 @@ class MarcosLaneDetector_Advanced(LaneDetector):
             "mask_detect": mask_detect,
             "histogram": histogram_viz,  # Histogram visualization
             "sliding_windows": msk,
+            "lane_types": lane_types,
             "final_result": result
         }
 
