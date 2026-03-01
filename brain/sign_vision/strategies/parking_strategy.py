@@ -38,7 +38,7 @@ class ParkingStrategy(SignStrategy):
         controller,
         lock,
         cooldown: float = 30.0,
-        min_confidence: float = 0.7,
+        min_confidence: float = 0.6,
         activation_distance: float = 3.0,
         # speeds used during the various motion segments
         forward_approach_speed: int = 0,
@@ -46,7 +46,7 @@ class ParkingStrategy(SignStrategy):
         back_right_speed: int = 60,
         forward_center_speed: int = 0,
         # configurable durations; most are fixed by the new procedure
-        wait_duration: float = 35.4,
+        wait_duration: float = 10,
         brake_duration: float = 0.5,
         back_right_duration1: float = 8.0,
         back_left_duration: float = 4.5,
@@ -134,6 +134,10 @@ class ParkingStrategy(SignStrategy):
             # start in the wait phase so line following remains active
             self.phase = "WAIT"
             self.phase_start_time = now
+
+        # Asegurarse que el autopilot esté activo durante la espera
+        if hasattr(self.controller, "autopilot_controller") and self.controller.autopilot_controller:
+            self.controller.autopilot_controller.resume()
 
         label = detection["class"].lower()
         confidence = detection["confidence"]
@@ -233,8 +237,11 @@ class ParkingStrategy(SignStrategy):
                 elapsed = time.time() - start_t
 
                 if phase == "WAIT":
-                    # do not issue any commands; leave line-following in control
+                    # do not issue any commands; leave line-following in control (autopilot activo)
                     if elapsed >= self.wait_duration:
+                        # Pausar autopilot antes de iniciar la secuencia de parking
+                        if hasattr(self.controller, "autopilot_controller") and self.controller.autopilot_controller:
+                            self.controller.autopilot_controller.pause()
                         self._transition_to("BRAKE1")
 
                 elif phase == "BRAKE1":
@@ -274,6 +281,7 @@ class ParkingStrategy(SignStrategy):
 
                 elif phase == "STOP":
                     self._set_motion(0, "forward", _SERVO_CENTER)
+                    # Al finalizar la secuencia, autopilot sigue pausado y el auto queda en stop
                     with self.lock:
                         self.is_running = False
                         self.is_parked = True
