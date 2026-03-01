@@ -92,13 +92,15 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         self.GUIDED_SEARCH_MIN_POINTS = 3
 
         # --- Clasificación de tipo de línea (sobre mask_raw) ---
-        self.LANE_TYPE_BAND_HALF_WIDTH_PX = 4
-        self.LANE_TYPE_Y_MIN = 40
+        self.LANE_TYPE_BAND_HALF_WIDTH_PX = 7
+        self.LANE_TYPE_Y_MIN = 90
         self.LANE_TYPE_Y_MAX = 470
         self.LANE_TYPE_Y_STEP = 4
-        self.LANE_TYPE_SOLID_COVERAGE_MIN = 0.72
-        self.LANE_TYPE_DASHED_TRANSITIONS_MIN = 4
-        self.LANE_TYPE_DASHED_GAP_MIN = 5
+        self.LANE_TYPE_SOLID_COVERAGE_MIN = 0.58
+        self.LANE_TYPE_DASHED_TRANSITIONS_MIN = 6
+        self.LANE_TYPE_DASHED_GAP_MIN = 6
+        self.LANE_TYPE_CLASSIFY_CLOSING_KERNEL_W = 3
+        self.LANE_TYPE_CLASSIFY_CLOSING_KERNEL_H = 9
 
         # --- Threshold automático por múltiples ROIs + suavizado temporal ---
         self.AUTO_THR_REF_X_NORMS = [0.2, 0.5, 0.6]
@@ -518,7 +520,13 @@ class MarcosLaneDetector_Advanced(LaneDetector):
             if fit is None:
                 return "UNKNOWN", {'coverage': 0.0, 'transitions': 0, 'mean_gap': 0.0, 'samples': 0}
 
-            h, w = mask_for_type.shape[:2]
+            # Suavizado leve SOLO para clasificar tipo (no para detectar): evita cortes espurios en líneas sólidas.
+            k_w = int(max(1, self.LANE_TYPE_CLASSIFY_CLOSING_KERNEL_W))
+            k_h = int(max(1, self.LANE_TYPE_CLASSIFY_CLOSING_KERNEL_H))
+            classify_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (k_w, k_h))
+            classify_mask = cv2.morphologyEx(mask_for_type, cv2.MORPH_CLOSE, classify_kernel)
+
+            h, w = classify_mask.shape[:2]
             band_half = int(max(1, self.LANE_TYPE_BAND_HALF_WIDTH_PX))
             y_min = int(max(0, self.LANE_TYPE_Y_MIN))
             y_max = int(min(h - 1, self.LANE_TYPE_Y_MAX))
@@ -535,7 +543,7 @@ class MarcosLaneDetector_Advanced(LaneDetector):
                 if x1 <= x0:
                     presence.append(0)
                     continue
-                strip = mask_for_type[y_val:y_val + 1, x0:x1 + 1]
+                strip = classify_mask[y_val:y_val + 1, x0:x1 + 1]
                 presence.append(1 if np.any(strip > 0) else 0)
 
             if len(presence) == 0:
@@ -557,10 +565,16 @@ class MarcosLaneDetector_Advanced(LaneDetector):
                 gaps.append(run)
             mean_gap = float(np.mean(gaps)) if len(gaps) > 0 else 0.0
 
-            if coverage >= self.LANE_TYPE_SOLID_COVERAGE_MIN and mean_gap < self.LANE_TYPE_DASHED_GAP_MIN:
-                lane_type = "SOLID"
-            elif transitions >= self.LANE_TYPE_DASHED_TRANSITIONS_MIN and mean_gap >= self.LANE_TYPE_DASHED_GAP_MIN:
+            # Priorizamos SOLID porque el entorno esperado es mayoritariamente de líneas continuas.
+            # DASHED solo se asigna con evidencia fuerte de alternancia y gaps largos.
+            dashed_strong = transitions >= self.LANE_TYPE_DASHED_TRANSITIONS_MIN and mean_gap >= self.LANE_TYPE_DASHED_GAP_MIN and coverage <= 0.78
+            solid_strong = coverage >= self.LANE_TYPE_SOLID_COVERAGE_MIN and mean_gap < (self.LANE_TYPE_DASHED_GAP_MIN + 1)
+            solid_fallback = coverage >= 0.48 and transitions <= 4 and mean_gap < (self.LANE_TYPE_DASHED_GAP_MIN + 2)
+
+            if dashed_strong:
                 lane_type = "DASHED"
+            elif solid_strong or solid_fallback:
+                lane_type = "SOLID"
             else:
                 lane_type = "UNKNOWN"
 
