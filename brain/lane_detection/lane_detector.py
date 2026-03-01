@@ -71,6 +71,8 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         self.DBSCAN_EPS = 35
         self.DBSCAN_MIN_SAMPLES = 3
         self.MIN_CLUSTER_POINTS = 6
+        self.DBSCAN_X_SCALE = 1.0
+        self.DBSCAN_Y_SCALE = 4.0  # Distancia vertical "más barata" para unir punteadas
         self.USE_WORLD_COORDINATES_FOR_ORDERING = False
         self.DEBUG_LANE_CLUSTER_SELECTION = False
         self.ENABLE_TEMPORAL_CLUSTER_MATCHING = True
@@ -78,6 +80,16 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         self.CLUSTER_MATCH_MAX_COST = 180.0
         self.CLUSTER_SWAP_PENALTY = 40.0
         self.CLUSTER_CENTER_DEADBAND_PX = 15.0
+
+        # --- Máscaras separadas para detectar vs clasificar tipo de línea ---
+        self.DETECT_MASK_ENABLE_CLOSING = True
+        self.DETECT_MASK_CLOSING_KERNEL_W = 3
+        self.DETECT_MASK_CLOSING_KERNEL_H = 25
+
+        # --- Búsqueda guiada por fit previo cuando falta un lado ---
+        self.ENABLE_GUIDED_BAND_SEARCH = True
+        self.GUIDED_SEARCH_BAND_HALF_WIDTH_PX = 35
+        self.GUIDED_SEARCH_MIN_POINTS = 3
 
         # --- Threshold automático por múltiples ROIs + suavizado temporal ---
         self.AUTO_THR_REF_X_NORMS = [0.2, 0.5, 0.6]
@@ -198,20 +210,28 @@ class MarcosLaneDetector_Advanced(LaneDetector):
 
         auto_thr = int(_clamp(auto_thr, 0, 255))
         self.prev_auto_threshold = auto_thr
-        _, mask = cv2.threshold(gray_transformed_frame, auto_thr, 255, cv2.THRESH_BINARY)
+        _, mask_raw = cv2.threshold(gray_transformed_frame, auto_thr, 255, cv2.THRESH_BINARY)
+
+        # Máscara para detección/agrupación: puede conectar discontinuidades longitudinales
+        mask_detect = mask_raw.copy()
+        if self.DETECT_MASK_ENABLE_CLOSING:
+            k_w = int(max(1, self.DETECT_MASK_CLOSING_KERNEL_W))
+            k_h = int(max(1, self.DETECT_MASK_CLOSING_KERNEL_H))
+            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (k_w, k_h))
+            mask_detect = cv2.morphologyEx(mask_detect, cv2.MORPH_CLOSE, kernel)
 
         # --- Histograma (debug) ---
-        histogram = np.sum(mask[mask.shape[0]//2:, :], axis=0)
+        histogram = np.sum(mask_detect[mask_detect.shape[0]//2:, :], axis=0)
         midpoint = int(histogram.shape[0] / 2)
 
         # --- Slices por hemisferio con validación de coherencia ---
         y = self.SLIDING_WINDOW_START_Y
         lx, ly, rx, ry = [], [], [], []
-        msk = cv2.cvtColor(mask.copy(), cv2.COLOR_GRAY2BGR)
-        h, w = mask.shape[:2]
+        msk = cv2.cvtColor(mask_detect.copy(), cv2.COLOR_GRAY2BGR)
+        h, w = mask_detect.shape[:2]
 
         # Draw histogram visualization
-        histogram_viz = np.zeros((100, mask.shape[1], 3), dtype=np.uint8)
+        histogram_viz = np.zeros((100, mask_detect.shape[1], 3), dtype=np.uint8)
         histogram_normalized = (histogram / histogram.max() * 100).astype(int) if histogram.max() > 0 else histogram
         for i, hv in enumerate(histogram_normalized):
             if hv > 0:
@@ -244,7 +264,7 @@ class MarcosLaneDetector_Advanced(LaneDetector):
             y0 = max(0, y - self.SLIDING_WINDOW_HEIGHT)
             y1 = y
 
-            full_slice = mask[y0:y1, :]
+            full_slice = mask_detect[y0:y1, :]
             contours, _ = cv2.findContours(full_slice, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
             candidates = _extract_candidates(contours)
 
@@ -277,7 +297,12 @@ class MarcosLaneDetector_Advanced(LaneDetector):
 
         if len(all_points) >= self.DBSCAN_MIN_SAMPLES:
             X = np.array(all_points, dtype=np.float32)
-            labels = DBSCAN(eps=self.DBSCAN_EPS, min_samples=self.DBSCAN_MIN_SAMPLES).fit(X).labels_
+            X_scaled = X.copy()
+            x_scale = float(max(1e-6, self.DBSCAN_X_SCALE))
+            y_scale = float(max(1e-6, self.DBSCAN_Y_SCALE))
+            X_scaled[:, 0] = X_scaled[:, 0] / x_scale
+            X_scaled[:, 1] = X_scaled[:, 1] / y_scale
+            labels = DBSCAN(eps=self.DBSCAN_EPS, min_samples=self.DBSCAN_MIN_SAMPLES).fit(X_scaled).labels_
 
             clusters = []
             for label_id in np.unique(labels):
@@ -459,10 +484,52 @@ class MarcosLaneDetector_Advanced(LaneDetector):
             left_errors.append("ERR_NO_POINTS_FOR_DBSCAN")
             right_errors.append("ERR_NO_POINTS_FOR_DBSCAN")
 
+        def _guided_band_points(mask_for_detect, prev_fit):
+            if prev_fit is None:
+                return []
+            band_half_width = int(max(1, self.GUIDED_SEARCH_BAND_HALF_WIDTH_PX))
+            y_step = max(1, int(self.SLIDING_WINDOW_HEIGHT))
+            y_values = np.arange(mask_for_detect.shape[0] - 1, -1, -y_step)
+            guided_points = []
+            for y_val in y_values:
+                x_center = int(round(prev_fit[0] * y_val**2 + prev_fit[1] * y_val + prev_fit[2]))
+                x0 = max(0, x_center - band_half_width)
+                x1 = min(mask_for_detect.shape[1] - 1, x_center + band_half_width)
+                if x1 <= x0:
+                    continue
+                row = mask_for_detect[y_val:y_val + 1, x0:x1 + 1]
+                nonzero = np.where(row[0] > 0)[0]
+                if nonzero.size == 0:
+                    continue
+                point_x = int(x0 + np.mean(nonzero))
+                guided_points.append((point_x, int(y_val)))
+            return guided_points
+
         lx = [p[0] for p in selected_left_points]
         ly = [p[1] for p in selected_left_points]
         rx = [p[0] for p in selected_right_points]
         ry = [p[1] for p in selected_right_points]
+
+        if self.ENABLE_GUIDED_BAND_SEARCH:
+            if len(lx) < self.GUIDED_SEARCH_MIN_POINTS and self.prev_left_fit is not None:
+                guided_left = _guided_band_points(mask_detect, self.prev_left_fit)
+                if len(guided_left) >= self.GUIDED_SEARCH_MIN_POINTS:
+                    lx = [p[0] for p in guided_left]
+                    ly = [p[1] for p in guided_left]
+                    left_base = int(round(np.mean(lx)))
+                    left_errors.append("INFO_GUIDED_SEARCH_LEFT")
+                    for px, py in guided_left:
+                        cv2.circle(msk, (px, py), 1, (100, 200, 255), -1)
+
+            if len(rx) < self.GUIDED_SEARCH_MIN_POINTS and self.prev_right_fit is not None:
+                guided_right = _guided_band_points(mask_detect, self.prev_right_fit)
+                if len(guided_right) >= self.GUIDED_SEARCH_MIN_POINTS:
+                    rx = [p[0] for p in guided_right]
+                    ry = [p[1] for p in guided_right]
+                    right_base = int(round(np.mean(rx)))
+                    right_errors.append("INFO_GUIDED_SEARCH_RIGHT")
+                    for px, py in guided_right:
+                        cv2.circle(msk, (px, py), 1, (255, 200, 100), -1)
 
         raw_left_base = left_base
         raw_right_base = right_base
@@ -712,7 +779,8 @@ class MarcosLaneDetector_Advanced(LaneDetector):
                     "bird_view_raw": transformed_frame.copy(),
                     "bird_view_lines": bird_view_with_lines,
                     "cenital": transformed_frame,
-                    "mask": mask,
+                    "mask": mask_raw,
+                    "mask_detect": mask_detect,
                     "histogram": histogram_viz,
                     "sliding_windows": msk,
                     "final_result": original_frame
@@ -955,7 +1023,8 @@ class MarcosLaneDetector_Advanced(LaneDetector):
             "bird_view_raw": bird_view_raw,  # Vista aérea sin procesar
             "bird_view_lines": bird_view_with_lines,  # Vista aérea con líneas dibujadas
             "cenital": transformed_frame, # Muestra el overlay verde
-            "mask": mask,
+            "mask": mask_raw,
+            "mask_detect": mask_detect,
             "histogram": histogram_viz,  # Histogram visualization
             "sliding_windows": msk,
             "final_result": result
