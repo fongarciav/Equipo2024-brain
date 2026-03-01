@@ -77,6 +77,9 @@ class AutoPilotController:
         
         # Debug images storage
         self.last_debug_images = None
+        # Optional provider (SignController) for parking/mission arbitration flags
+        self.maneuver_flags_provider = None
+        self._mission_stop_latched = False
     
     def start(self):
         """Start the auto-pilot controller."""
@@ -132,6 +135,51 @@ class AutoPilotController:
             with self.lock:
                 if not self.is_running:
                     break
+
+            # Arbitration flags from SignController (Option A)
+            is_maneuvering = False
+            mission_complete = False
+            with self.lock:
+                flags_provider = self.maneuver_flags_provider
+            if flags_provider is not None:
+                try:
+                    if hasattr(flags_provider, "get_maneuver_flags"):
+                        is_maneuvering, mission_complete = flags_provider.get_maneuver_flags()
+                    else:
+                        is_maneuvering = bool(getattr(flags_provider, "is_maneuvering", False))
+                        mission_complete = bool(getattr(flags_provider, "mission_complete", False))
+                except Exception as flags_exc:
+                    print(f"[AutoPilotController] Warning: could not read maneuver flags: {flags_exc}")
+
+            # 1) Maneuver in progress: worker thread owns motor control.
+            if is_maneuvering:
+                with self.lock:
+                    self._mission_stop_latched = False
+                time.sleep(0.033)
+                continue
+
+            # 2) Mission complete: enforce full stop and skip lane following.
+            if mission_complete:
+                should_send_stop = False
+                with self.lock:
+                    if not self._mission_stop_latched:
+                        self._mission_stop_latched = True
+                        should_send_stop = True
+                if should_send_stop:
+                    speed_ok = self.command_sender.send_speed_command(0)
+                    steer_ok = self.command_sender.send_steering_command(105)
+                    with self.lock:
+                        self.last_steering_angle = 0.0
+                        self.last_servo_angle = 105
+                        if speed_ok and steer_ok:
+                            self.command_count += 2
+                        else:
+                            self.error_count += 1
+                time.sleep(0.033)
+                continue
+
+            with self.lock:
+                self._mission_stop_latched = False
             
             try:
                 # Get frame from video streamer

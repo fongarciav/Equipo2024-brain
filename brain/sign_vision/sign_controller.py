@@ -57,6 +57,9 @@ class SignController:
         self.last_speed_before_stop = 0 # Última velocidad no-cero antes de un stop/slowdown.
         self.pending_resume_at = None
         self.pending_resume_speed = None
+        # Shared maneuver flags used by long-running strategies (e.g. parking)
+        self.is_maneuvering = False
+        self.mission_complete = False
         
         # Cooldowns (to prevent spamming commands)
         self.last_stop_time = 0
@@ -83,6 +86,8 @@ class SignController:
             self.is_running = True
             self.pending_resume_at = None
             self.pending_resume_speed = None
+            self.is_maneuvering = False
+            self.mission_complete = False
             self.thread = threading.Thread(target=self._control_loop, daemon=True)
             self.thread.start()
             print("[SignController] Started")
@@ -97,6 +102,8 @@ class SignController:
             self.is_running = False
             self.pending_resume_at = None
             self.pending_resume_speed = None
+            self.is_maneuvering = False
+            self.mission_complete = False
             print("[SignController] Stopping...")
         
         if self.thread and self.thread.is_alive():
@@ -104,6 +111,21 @@ class SignController:
             print("[SignController] Stopped")
         
         return True
+
+    def set_maneuvering(self, value: bool) -> None:
+        """Set whether a long-running maneuver currently owns control."""
+        with self.lock:
+            self.is_maneuvering = bool(value)
+
+    def set_mission_complete(self, value: bool) -> None:
+        """Set mission completion flag (e.g. parking finished)."""
+        with self.lock:
+            self.mission_complete = bool(value)
+
+    def get_maneuver_flags(self) -> tuple[bool, bool]:
+        """Thread-safe read of (is_maneuvering, mission_complete)."""
+        with self.lock:
+            return bool(self.is_maneuvering), bool(self.mission_complete)
 
     def schedule_speed_resume(self, delay_seconds: float, override_speed: int = None) -> int:
         """

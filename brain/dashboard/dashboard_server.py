@@ -857,6 +857,7 @@ def initialize_autopilot_if_needed():
         global sign_detection_controller
         if sign_detection_controller is not None:
              sign_detection_controller.autopilot_controller = autopilot_controller
+             autopilot_controller.maneuver_flags_provider = sign_detection_controller
              print("[Dashboard] Linked AutopilotController to SignController")
              
         return True
@@ -947,6 +948,9 @@ def initialize_sign_detection_if_needed():
             event_callback=on_sign_controller_event,
             autopilot_controller=autopilot_controller
         )
+        if autopilot_controller is not None:
+            autopilot_controller.maneuver_flags_provider = sign_detection_controller
+            print("[Dashboard] Linked maneuver flags provider (SignController -> AutoPilotController)")
         
         return True
     else:

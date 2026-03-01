@@ -131,6 +131,8 @@ class ParkingStrategy(SignStrategy):
 
             self.is_running = True
             self.is_parked = False
+            self.controller.is_maneuvering = True
+            self.controller.mission_complete = False
             # start in the wait phase so line following remains active
             self.phase = "WAIT"
             self.phase_start_time = now
@@ -220,6 +222,7 @@ class ParkingStrategy(SignStrategy):
         """
         print("[ParkingStrategy] Worker thread started.")
 
+        completed_successfully = False
         try:
             while True:
                 with self.lock:
@@ -277,7 +280,9 @@ class ParkingStrategy(SignStrategy):
                     with self.lock:
                         self.is_running = False
                         self.is_parked = True
+                        self.controller.mission_complete = True
                         self.phase = "IDLE"
+                    completed_successfully = True
 
                     print("[ParkingStrategy] Maneuver complete. is_parked=True")
 
@@ -297,10 +302,16 @@ class ParkingStrategy(SignStrategy):
 
         except Exception as exc:
             print(f"[ParkingStrategy] Unexpected error in worker thread: {exc}")
+        finally:
+            # Last command from worker must be a full stop before releasing control.
             try:
                 self._set_motion(0, "forward", _SERVO_CENTER)
-            except Exception:
-                pass
+            except Exception as stop_exc:
+                print(f"[ParkingStrategy] Warning: failed to send final stop command: {stop_exc}")
+
             with self.lock:
                 self.is_running = False
                 self.phase = "IDLE"
+                if not completed_successfully:
+                    self.controller.mission_complete = False
+                self.controller.is_maneuvering = False
