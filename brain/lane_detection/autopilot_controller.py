@@ -151,14 +151,7 @@ class AutoPilotController:
                 except Exception as flags_exc:
                     print(f"[AutoPilotController] Warning: could not read maneuver flags: {flags_exc}")
 
-            # 1) Maneuver in progress: worker thread owns motor control.
-            if is_maneuvering:
-                with self.lock:
-                    self._mission_stop_latched = False
-                time.sleep(0.033)
-                continue
-
-            # 2) Mission complete: enforce full stop and skip lane following.
+            # 2) Mission complete: enforce full stop once and keep debug views running.
             if mission_complete:
                 should_send_stop = False
                 with self.lock:
@@ -175,34 +168,40 @@ class AutoPilotController:
                             self.command_count += 2
                         else:
                             self.error_count += 1
-                time.sleep(0.033)
-                continue
 
-            with self.lock:
-                self._mission_stop_latched = False
-            
+            if not mission_complete:
+                with self.lock:
+                    self._mission_stop_latched = False
+
             try:
-                # Get frame from video streamer
+                # Get frame from video streamer — always, to keep debug views alive.
                 frame = self.video_streamer.get_frame()
-                
+
                 # Check again after getting frame (stop might have been called)
                 with self.lock:
                     if not self.is_running:
                         break
-                
+
                 if frame is None:
                     time.sleep(0.033)  # Wait ~30ms if no frame
                     continue
 
-                # Get lane metrics from detector strategy
-                # We run this even if paused to keep debug images active
+                # Get lane metrics from detector strategy.
+                # We run this even when maneuvering or paused to keep debug images active.
                 angle_deviation_deg, debug_images = self.lane_detector.get_lane_metrics(frame)
-                
-                # Store debug images for streaming
+
+                # Store debug images for streaming — always update so views never freeze.
                 with self.lock:
                     if debug_images is not None:
                         self.last_debug_images = debug_images
-                
+
+                # Skip PID + command sending when worker owns control or mission is done.
+                if is_maneuvering or mission_complete:
+                    self.pid_controller.reset()
+                    self.filter_controller.reset()
+                    time.sleep(0.033)
+                    continue
+
                 # Check if paused
                 is_paused = False
                 with self.lock:
@@ -211,62 +210,57 @@ class AutoPilotController:
                 if is_paused:
                     time.sleep(0.033)
                     continue
-                
-                # Handle no lanes detected
-                
+
                 # Handle no lanes detected
                 if angle_deviation_deg is None:
                     self.pid_controller.reset()
                     self.filter_controller.reset()
                     time.sleep(0.033)
                     continue
-                
+
                 # Filter outliers
                 filtered_angle = self.filter_controller.filter(angle_deviation_deg)
                 if filtered_angle is None:
                     print(f"[Filter] Rejected outlier: {angle_deviation_deg}")
                     time.sleep(0.033)
                     continue
-                    
+
                 angle_deviation_deg = filtered_angle
-                
+
                 # Calculate dt for PID
                 current_time = time.time()
                 dt = current_time - self.last_time
                 if dt <= 0:
                     dt = 0.033  # Default to ~30 FPS if dt is invalid
                 self.last_time = current_time
-                
+
                 # Check if still running before processing and sending commands
                 with self.lock:
                     if not self.is_running:
                         break
-                
+
                 # Compute PID output (negate deviation for PID error)
                 # Positive deviation (lane to right) → positive steering (turn right)
                 pid_error = -angle_deviation_deg
-                #print(f"Original angle deviation: {angle_deviation_deg}")
                 steering_angle = self.pid_controller.compute(pid_error, dt)
-                #print(f"PID Controller: Steering angle: {steering_angle}")
-                
+
                 # Check again before sending command (stop might have been called)
                 with self.lock:
                     if not self.is_running:
                         break
-                
+
                 # Convert steering angle to servo angle
                 servo_angle = self.angle_converter.convert(steering_angle, inverted=True)
-                #print(f"Angle Converter: Servo angle: {servo_angle}")
-                
+
                 # Send command to ESP32 only if it changed (prevent UART spam)
                 should_send = False
                 with self.lock:
                     if self.last_servo_angle != servo_angle:
                         should_send = True
-                
+
                 if should_send:
                     success = self.command_sender.send_steering_command(servo_angle)
-                    
+
                     # Update statistics
                     with self.lock:
                         self.last_steering_angle = steering_angle
@@ -279,10 +273,10 @@ class AutoPilotController:
                     # Just update steering angle for dashboard, even if we didn't send command
                     with self.lock:
                         self.last_steering_angle = steering_angle
-                
+
                 # Control loop rate (~30 FPS)
                 time.sleep(0.033)
-                
+
             except Exception as e:
                 print(f"[AutoPilotController] Error in control loop: {e}")
                 self.error_count += 1

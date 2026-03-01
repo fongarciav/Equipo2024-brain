@@ -46,7 +46,7 @@ class ParkingStrategy(SignStrategy):
         back_right_speed: int = 60,
         forward_center_speed: int = 0,
         # configurable durations; most are fixed by the new procedure
-        wait_duration: float = 35.4,
+        wait_duration: float = 15.0,
         brake_duration: float = 0.5,
         back_right_duration1: float = 8.0,
         back_left_duration: float = 4.5,
