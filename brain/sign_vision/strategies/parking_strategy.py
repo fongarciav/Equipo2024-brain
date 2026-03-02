@@ -264,6 +264,7 @@ class ParkingStrategy(SignStrategy):
                     if elapsed >= self.brake_duration:
                         self._transition_to("FORWARD_RIGHT")
 
+                # FIX para que arranque
                 elif phase == "FORWARD_RIGHT":
                     self._set_motion(self.forward_approach_speed, "forward", _SERVO_RIGHT)
                     if elapsed >= self.forward_right_duration:
