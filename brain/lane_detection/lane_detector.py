@@ -71,6 +71,8 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         self.DBSCAN_EPS = 35
         self.DBSCAN_MIN_SAMPLES = 3
         self.MIN_CLUSTER_POINTS = 6
+        self.DBSCAN_X_SCALE = 1.0
+        self.DBSCAN_Y_SCALE = 4.0  # Distancia vertical "más barata" para unir punteadas
         self.USE_WORLD_COORDINATES_FOR_ORDERING = False
         self.DEBUG_LANE_CLUSTER_SELECTION = False
         self.ENABLE_TEMPORAL_CLUSTER_MATCHING = True
@@ -78,6 +80,27 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         self.CLUSTER_MATCH_MAX_COST = 180.0
         self.CLUSTER_SWAP_PENALTY = 40.0
         self.CLUSTER_CENTER_DEADBAND_PX = 15.0
+
+        # --- Máscaras separadas para detectar vs clasificar tipo de línea ---
+        self.DETECT_MASK_ENABLE_CLOSING = True
+        self.DETECT_MASK_CLOSING_KERNEL_W = 3
+        self.DETECT_MASK_CLOSING_KERNEL_H = 25
+
+        # --- Búsqueda guiada por fit previo cuando falta un lado ---
+        self.ENABLE_GUIDED_BAND_SEARCH = True
+        self.GUIDED_SEARCH_BAND_HALF_WIDTH_PX = 35
+        self.GUIDED_SEARCH_MIN_POINTS = 3
+
+        # --- Clasificación de tipo de línea (sobre mask_raw) ---
+        self.LANE_TYPE_BAND_HALF_WIDTH_PX = 7
+        self.LANE_TYPE_Y_MIN = 90
+        self.LANE_TYPE_Y_MAX = 470
+        self.LANE_TYPE_Y_STEP = 4
+        self.LANE_TYPE_SOLID_COVERAGE_MIN = 0.58
+        self.LANE_TYPE_DASHED_TRANSITIONS_MIN = 6
+        self.LANE_TYPE_DASHED_GAP_MIN = 6
+        self.LANE_TYPE_CLASSIFY_CLOSING_KERNEL_W = 3
+        self.LANE_TYPE_CLASSIFY_CLOSING_KERNEL_H = 9
 
         # --- Threshold automático por múltiples ROIs + suavizado temporal ---
         self.AUTO_THR_REF_X_NORMS = [0.2, 0.5, 0.6]
@@ -198,20 +221,28 @@ class MarcosLaneDetector_Advanced(LaneDetector):
 
         auto_thr = int(_clamp(auto_thr, 0, 255))
         self.prev_auto_threshold = auto_thr
-        _, mask = cv2.threshold(gray_transformed_frame, auto_thr, 255, cv2.THRESH_BINARY)
+        _, mask_raw = cv2.threshold(gray_transformed_frame, auto_thr, 255, cv2.THRESH_BINARY)
+
+        # Máscara para detección/agrupación: puede conectar discontinuidades longitudinales
+        mask_detect = mask_raw.copy()
+        if self.DETECT_MASK_ENABLE_CLOSING:
+            k_w = int(max(1, self.DETECT_MASK_CLOSING_KERNEL_W))
+            k_h = int(max(1, self.DETECT_MASK_CLOSING_KERNEL_H))
+            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (k_w, k_h))
+            mask_detect = cv2.morphologyEx(mask_detect, cv2.MORPH_CLOSE, kernel)
 
         # --- Histograma (debug) ---
-        histogram = np.sum(mask[mask.shape[0]//2:, :], axis=0)
+        histogram = np.sum(mask_detect[mask_detect.shape[0]//2:, :], axis=0)
         midpoint = int(histogram.shape[0] / 2)
 
         # --- Slices por hemisferio con validación de coherencia ---
         y = self.SLIDING_WINDOW_START_Y
         lx, ly, rx, ry = [], [], [], []
-        msk = cv2.cvtColor(mask.copy(), cv2.COLOR_GRAY2BGR)
-        h, w = mask.shape[:2]
+        msk = cv2.cvtColor(mask_detect.copy(), cv2.COLOR_GRAY2BGR)
+        h, w = mask_detect.shape[:2]
 
         # Draw histogram visualization
-        histogram_viz = np.zeros((100, mask.shape[1], 3), dtype=np.uint8)
+        histogram_viz = np.zeros((100, mask_detect.shape[1], 3), dtype=np.uint8)
         histogram_normalized = (histogram / histogram.max() * 100).astype(int) if histogram.max() > 0 else histogram
         for i, hv in enumerate(histogram_normalized):
             if hv > 0:
@@ -244,7 +275,7 @@ class MarcosLaneDetector_Advanced(LaneDetector):
             y0 = max(0, y - self.SLIDING_WINDOW_HEIGHT)
             y1 = y
 
-            full_slice = mask[y0:y1, :]
+            full_slice = mask_detect[y0:y1, :]
             contours, _ = cv2.findContours(full_slice, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
             candidates = _extract_candidates(contours)
 
@@ -277,7 +308,12 @@ class MarcosLaneDetector_Advanced(LaneDetector):
 
         if len(all_points) >= self.DBSCAN_MIN_SAMPLES:
             X = np.array(all_points, dtype=np.float32)
-            labels = DBSCAN(eps=self.DBSCAN_EPS, min_samples=self.DBSCAN_MIN_SAMPLES).fit(X).labels_
+            X_scaled = X.copy()
+            x_scale = float(max(1e-6, self.DBSCAN_X_SCALE))
+            y_scale = float(max(1e-6, self.DBSCAN_Y_SCALE))
+            X_scaled[:, 0] = X_scaled[:, 0] / x_scale
+            X_scaled[:, 1] = X_scaled[:, 1] / y_scale
+            labels = DBSCAN(eps=self.DBSCAN_EPS, min_samples=self.DBSCAN_MIN_SAMPLES).fit(X_scaled).labels_
 
             clusters = []
             for label_id in np.unique(labels):
@@ -459,10 +495,122 @@ class MarcosLaneDetector_Advanced(LaneDetector):
             left_errors.append("ERR_NO_POINTS_FOR_DBSCAN")
             right_errors.append("ERR_NO_POINTS_FOR_DBSCAN")
 
+        def _guided_band_points(mask_for_detect, prev_fit):
+            if prev_fit is None:
+                return []
+            band_half_width = int(max(1, self.GUIDED_SEARCH_BAND_HALF_WIDTH_PX))
+            y_step = max(1, int(self.SLIDING_WINDOW_HEIGHT))
+            y_values = np.arange(mask_for_detect.shape[0] - 1, -1, -y_step)
+            guided_points = []
+            for y_val in y_values:
+                x_center = int(round(prev_fit[0] * y_val**2 + prev_fit[1] * y_val + prev_fit[2]))
+                x0 = max(0, x_center - band_half_width)
+                x1 = min(mask_for_detect.shape[1] - 1, x_center + band_half_width)
+                if x1 <= x0:
+                    continue
+                row = mask_for_detect[y_val:y_val + 1, x0:x1 + 1]
+                nonzero = np.where(row[0] > 0)[0]
+                if nonzero.size == 0:
+                    continue
+                point_x = int(x0 + np.mean(nonzero))
+                guided_points.append((point_x, int(y_val)))
+            return guided_points
+
+        def _classify_lane_type(mask_for_type, fit):
+            if fit is None:
+                return "UNKNOWN", {'coverage': 0.0, 'transitions': 0, 'mean_gap': 0.0, 'samples': 0}
+
+            # Suavizado leve SOLO para clasificar tipo (no para detectar): evita cortes espurios en líneas sólidas.
+            k_w = int(max(1, self.LANE_TYPE_CLASSIFY_CLOSING_KERNEL_W))
+            k_h = int(max(1, self.LANE_TYPE_CLASSIFY_CLOSING_KERNEL_H))
+            classify_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (k_w, k_h))
+            classify_mask = cv2.morphologyEx(mask_for_type, cv2.MORPH_CLOSE, classify_kernel)
+
+            h, w = classify_mask.shape[:2]
+            band_half = int(max(1, self.LANE_TYPE_BAND_HALF_WIDTH_PX))
+            y_min = int(max(0, self.LANE_TYPE_Y_MIN))
+            y_max = int(min(h - 1, self.LANE_TYPE_Y_MAX))
+            y_step = int(max(1, self.LANE_TYPE_Y_STEP))
+            if y_max <= y_min:
+                return "UNKNOWN", {'coverage': 0.0, 'transitions': 0, 'mean_gap': 0.0, 'samples': 0}
+
+            ys = np.arange(y_max, y_min - 1, -y_step)
+            presence = []
+            for y_val in ys:
+                x_center = int(round(fit[0] * y_val**2 + fit[1] * y_val + fit[2]))
+                x0 = max(0, x_center - band_half)
+                x1 = min(w - 1, x_center + band_half)
+                if x1 <= x0:
+                    presence.append(0)
+                    continue
+                strip = classify_mask[y_val:y_val + 1, x0:x1 + 1]
+                presence.append(1 if np.any(strip > 0) else 0)
+
+            if len(presence) == 0:
+                return "UNKNOWN", {'coverage': 0.0, 'transitions': 0, 'mean_gap': 0.0, 'samples': 0}
+
+            coverage = float(np.mean(presence))
+            transitions = int(np.sum(np.abs(np.diff(presence)))) if len(presence) > 1 else 0
+
+            # Longitud promedio de gaps (corridas en 0)
+            gaps = []
+            run = 0
+            for pval in presence:
+                if pval == 0:
+                    run += 1
+                elif run > 0:
+                    gaps.append(run)
+                    run = 0
+            if run > 0:
+                gaps.append(run)
+            mean_gap = float(np.mean(gaps)) if len(gaps) > 0 else 0.0
+
+            # Priorizamos SOLID porque el entorno esperado es mayoritariamente de líneas continuas.
+            # DASHED solo se asigna con evidencia fuerte de alternancia y gaps largos.
+            dashed_strong = transitions >= self.LANE_TYPE_DASHED_TRANSITIONS_MIN and mean_gap >= self.LANE_TYPE_DASHED_GAP_MIN and coverage <= 0.78
+            solid_strong = coverage >= self.LANE_TYPE_SOLID_COVERAGE_MIN and mean_gap < (self.LANE_TYPE_DASHED_GAP_MIN + 1)
+            solid_fallback = coverage >= 0.48 and transitions <= 4 and mean_gap < (self.LANE_TYPE_DASHED_GAP_MIN + 2)
+
+            if dashed_strong:
+                lane_type = "DASHED"
+            elif solid_strong or solid_fallback:
+                lane_type = "SOLID"
+            else:
+                lane_type = "UNKNOWN"
+
+            metrics = {
+                'coverage': coverage,
+                'transitions': transitions,
+                'mean_gap': mean_gap,
+                'samples': len(presence)
+            }
+            return lane_type, metrics
+
         lx = [p[0] for p in selected_left_points]
         ly = [p[1] for p in selected_left_points]
         rx = [p[0] for p in selected_right_points]
         ry = [p[1] for p in selected_right_points]
+
+        if self.ENABLE_GUIDED_BAND_SEARCH:
+            if len(lx) < self.GUIDED_SEARCH_MIN_POINTS and self.prev_left_fit is not None:
+                guided_left = _guided_band_points(mask_detect, self.prev_left_fit)
+                if len(guided_left) >= self.GUIDED_SEARCH_MIN_POINTS:
+                    lx = [p[0] for p in guided_left]
+                    ly = [p[1] for p in guided_left]
+                    left_base = int(round(np.mean(lx)))
+                    left_errors.append("INFO_GUIDED_SEARCH_LEFT")
+                    for px, py in guided_left:
+                        cv2.circle(msk, (px, py), 1, (100, 200, 255), -1)
+
+            if len(rx) < self.GUIDED_SEARCH_MIN_POINTS and self.prev_right_fit is not None:
+                guided_right = _guided_band_points(mask_detect, self.prev_right_fit)
+                if len(guided_right) >= self.GUIDED_SEARCH_MIN_POINTS:
+                    rx = [p[0] for p in guided_right]
+                    ry = [p[1] for p in guided_right]
+                    right_base = int(round(np.mean(rx)))
+                    right_errors.append("INFO_GUIDED_SEARCH_RIGHT")
+                    for px, py in guided_right:
+                        cv2.circle(msk, (px, py), 1, (255, 200, 100), -1)
 
         raw_left_base = left_base
         raw_right_base = right_base
@@ -712,9 +860,11 @@ class MarcosLaneDetector_Advanced(LaneDetector):
                     "bird_view_raw": transformed_frame.copy(),
                     "bird_view_lines": bird_view_with_lines,
                     "cenital": transformed_frame,
-                    "mask": mask,
+                    "mask": mask_raw,
+                    "mask_detect": mask_detect,
                     "histogram": histogram_viz,
                     "sliding_windows": msk,
+                    "lane_types": {'left': 'UNKNOWN', 'right': 'UNKNOWN'},
                     "final_result": original_frame
                 }
                 return None, debug_images
@@ -722,6 +872,15 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         # Asignar los fits finales para el resto del cálculo
         left_fit = final_left_fit
         right_fit = final_right_fit
+
+        left_lane_type, left_type_metrics = _classify_lane_type(mask_raw, left_fit)
+        right_lane_type, right_type_metrics = _classify_lane_type(mask_raw, right_fit)
+        lane_types = {
+            'left': left_lane_type,
+            'right': right_lane_type,
+            'left_metrics': left_type_metrics,
+            'right_metrics': right_type_metrics
+        }
         
         # --- CÁLCULO DEL ÁNGULO DE DESVIACIÓN ---
         # Calculamos el centro del carril como la línea amarilla
@@ -824,6 +983,10 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         # Mostrar el MODO DE DETECCIÓN en la pantalla
         cv2.putText(bird_view_with_lines, f"MODE: {detection_mode}", (10, 260), 
                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+        cv2.putText(bird_view_with_lines, f"TYPE L: {left_lane_type}", (10, 290),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+        cv2.putText(bird_view_with_lines, f"TYPE R: {right_lane_type}", (10, 320),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
         
         # =========================================================
         
@@ -955,9 +1118,11 @@ class MarcosLaneDetector_Advanced(LaneDetector):
             "bird_view_raw": bird_view_raw,  # Vista aérea sin procesar
             "bird_view_lines": bird_view_with_lines,  # Vista aérea con líneas dibujadas
             "cenital": transformed_frame, # Muestra el overlay verde
-            "mask": mask,
+            "mask": mask_raw,
+            "mask_detect": mask_detect,
             "histogram": histogram_viz,  # Histogram visualization
             "sliding_windows": msk,
+            "lane_types": lane_types,
             "final_result": result
         }
 
