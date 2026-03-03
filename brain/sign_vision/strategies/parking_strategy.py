@@ -33,19 +33,19 @@ class ParkingStrategy(SignStrategy):
         speed_ui = 1, giving 450 / (80 × 1) = 5.625 cm/s per UI unit at
         low speed.  For maneuver speeds a factor of 0.3 is used.
 
-    ## Phase geometry  (R = assumed turning radius = 45 cm)
-        The classic two-arc parallel-parking maneuver is used:
+    ## Phase geometry
+        The classic three-arc parallel-parking maneuver is used:
 
-        BACK_RIGHT  — reverse with full-right steering for arc = 50 cm
-            θ = arc / R = 50 / 45 ≈ 1.11 rad ≈ 63.6°
-            ΔX = R(1 − cos θ) ≈ 25 cm  (into the space)
-            ΔY = R sin θ      ≈ 40 cm  (toward the back of the space)
+        FORWARD_LEFT — advance with full-left steering for forward_left_distance_cm
+            Angles the car toward the parking space entrance before reversing.
 
-        BACK_LEFT   — reverse with full-left steering for arc = 50 cm
-            Same arc/angle, mirrors the previous curve to straighten the car.
-            Additional ΔY ≈ 40 cm → total Y ≈ 80 cm (fills the space).
+        BACK_RIGHT  — reverse with full-right steering for back_right_distance_cm
+            Enters the space diagonally.
 
-        After these two arcs the vehicle is parallel to the space walls and
+        BACK_LEFT   — reverse with full-left steering for back_left_distance_cm
+            Mirrors BACK_RIGHT to straighten the car inside the space.
+
+        After these three arcs the vehicle is parallel to the space walls and
         fully inside the 80 × 35 cm rectangle.
 
     ## Phase sequence
@@ -53,6 +53,8 @@ class ParkingStrategy(SignStrategy):
                         current_speed_cm_per_s so the car travels exactly
                         wait_target_distance_cm before the maneuver starts.
         BRAKE1        → Hold stop for brake_duration s.
+        FORWARD_LEFT  → Advance full-left for forward_left_distance_cm to
+                        angle the car toward the space entrance.
         BACK_RIGHT    → Reverse full-right for back_right_distance_cm.
         BACK_LEFT     → Reverse full-left  for back_left_distance_cm.
         STOP          → Hold stop for stop_hold_duration s, then finish.
@@ -72,12 +74,13 @@ class ParkingStrategy(SignStrategy):
         # --- speed conversion factor ---
         ui_speed_to_cm_per_s: float = 0.3,
         # --- wait phase ---
-        wait_target_distance_cm: float = 190.0,
+        wait_target_distance_cm: float = 250.0,
         default_wait_duration: float = 8.0,
         wait_crawl_speed_cm_per_s: float = 6.0,
         # --- maneuver arc distances (cm) ---
-        back_right_distance_cm: float = 50.0,
-        back_left_distance_cm: float = 50.0,
+        forward_left_distance_cm: float = 30.0,
+        back_right_distance_cm: float = 70.0,
+        back_left_distance_cm: float = 70.0,
         # --- fixed durations (s) ---
         brake_duration: float = 0.5,
         stop_hold_duration: float = 1.0,
@@ -90,7 +93,7 @@ class ParkingStrategy(SignStrategy):
             min_confidence: Minimum detection confidence to react.
             activation_distance: Maximum distance (m) at which the sign triggers.
             maneuver_speed_cm_per_s: Speed in cm/s used for all active motion
-                phases (BACK_RIGHT, BACK_LEFT). Converted to UI internally.
+                phases. Converted to UI internally.
             ui_speed_to_cm_per_s: Calibration factor — how many cm/s correspond
                 to 1 UI speed unit. Default 0.3 (empirically measured).
             wait_target_distance_cm: Distance in cm the car should travel during
@@ -100,8 +103,11 @@ class ParkingStrategy(SignStrategy):
                 stopped at detection time.
             wait_crawl_speed_cm_per_s: Speed in cm/s sent to the car when it is
                 stopped at detection time so it advances to the maneuver position.
+            forward_left_distance_cm: Arc length (cm) for the FORWARD_LEFT phase.
+                The car advances with full-left steering to angle itself toward
+                the parking space before reversing.
             back_right_distance_cm: Arc length (cm) for the BACK_RIGHT phase.
-                Geometry: R=45 cm, arc=50 cm → ΔX≈25 cm, ΔY≈40 cm.
+                The car reverses with full-right steering to enter the space.
             back_left_distance_cm: Arc length (cm) for the BACK_LEFT phase.
                 Mirrors BACK_RIGHT to straighten the car inside the space.
             brake_duration: Duration (s) of the BRAKE1 full-stop phase.
@@ -116,13 +122,14 @@ class ParkingStrategy(SignStrategy):
         self.ui_speed_to_cm_per_s = float(ui_speed_to_cm_per_s)
 
         # Convert all speeds from cm/s to UI units
-        self.maneuver_speed_ui = max(1, round(maneuver_speed_cm_per_s / self.ui_speed_to_cm_per_s))
+        self.maneuver_speed_ui   = max(1, round(maneuver_speed_cm_per_s / self.ui_speed_to_cm_per_s))
         self.wait_crawl_speed_ui = max(1, round(wait_crawl_speed_cm_per_s / self.ui_speed_to_cm_per_s))
 
-        # Compute phase durations from distances and speed
-        maneuver_speed_cm_per_s = float(maneuver_speed_cm_per_s)
-        self.back_right_duration = float(back_right_distance_cm) / maneuver_speed_cm_per_s
-        self.back_left_duration  = float(back_left_distance_cm)  / maneuver_speed_cm_per_s
+        # Compute phase durations from arc distances and maneuver speed
+        maneuver_speed_cm_per_s    = float(maneuver_speed_cm_per_s)
+        self.forward_left_duration = float(forward_left_distance_cm) / maneuver_speed_cm_per_s
+        self.back_right_duration   = float(back_right_distance_cm)   / maneuver_speed_cm_per_s
+        self.back_left_duration    = float(back_left_distance_cm)    / maneuver_speed_cm_per_s
 
         # Fixed durations
         self.brake_duration     = float(brake_duration)
@@ -136,10 +143,10 @@ class ParkingStrategy(SignStrategy):
         self.wait_duration: float = self.default_wait_duration
 
         # State machine (protected by self.lock)
-        self.phase: str = "IDLE"
+        self.phase: str              = "IDLE"
         self.phase_start_time: float = 0.0
-        self.is_running: bool = False
-        self.is_parked: bool = False
+        self.is_running: bool        = False
+        self.is_parked: bool         = False
 
         self._worker_thread: threading.Thread | None = None
 
@@ -291,16 +298,22 @@ class ParkingStrategy(SignStrategy):
                 elif phase == "BRAKE1":
                     self._set_motion(0, "forward", _SERVO_CENTER)
                     if elapsed >= self.brake_duration:
+                        self._transition_to("FORWARD_LEFT")
+
+                elif phase == "FORWARD_LEFT":
+                    # Advance with full-left steering to angle the car toward the space
+                    self._set_motion(self.maneuver_speed_ui, "forward", _SERVO_LEFT)
+                    if elapsed >= self.forward_left_duration:
                         self._transition_to("BACK_RIGHT")
 
                 elif phase == "BACK_RIGHT":
-                    # Arc ~50 cm with full-right steering → ΔX≈25 cm, ΔY≈40 cm
+                    # Reverse with full-right steering to enter the space diagonally
                     self._set_motion(self.maneuver_speed_ui, "backward", _SERVO_RIGHT)
                     if elapsed >= self.back_right_duration:
                         self._transition_to("BACK_LEFT")
 
                 elif phase == "BACK_LEFT":
-                    # Arc ~50 cm with full-left steering → straightens car, ΔY≈40 cm more
+                    # Reverse with full-left steering to straighten inside the space
                     self._set_motion(self.maneuver_speed_ui, "backward", _SERVO_LEFT)
                     if elapsed >= self.back_left_duration:
                         self._transition_to("STOP")
