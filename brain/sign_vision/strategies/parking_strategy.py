@@ -74,13 +74,13 @@ class ParkingStrategy(SignStrategy):
         # --- speed conversion factor ---
         ui_speed_to_cm_per_s: float = 0.3,
         # --- wait phase ---
-        wait_target_distance_cm: float = 250.0,
+        wait_target_distance_cm: float = 220.0,
         default_wait_duration: float = 8.0,
         wait_crawl_speed_cm_per_s: float = 6.0,
         # --- maneuver arc distances (cm) ---
-        forward_left_distance_cm: float = 30.0,
-        back_right_distance_cm: float = 70.0,
-        back_left_distance_cm: float = 70.0,
+        forward_left_distance_cm: float = 20.0,
+        back_right_distance_cm: float = 95.0,
+        back_left_distance_cm: float = 80.0,
         # --- fixed durations (s) ---
         brake_duration: float = 0.5,
         stop_hold_duration: float = 1.0,
