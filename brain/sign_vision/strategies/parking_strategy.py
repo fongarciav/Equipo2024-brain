@@ -47,8 +47,8 @@ class ParkingStrategy(SignStrategy):
         back_right_speed: int = 60,
         forward_center_speed: int = 0,
         # wait phase: duration is computed dynamically from current speed
-        wait_target_distance_cm: float = 130.0,
-        ui_speed_to_cm_per_s: float = 5.6,
+        wait_target_distance_cm: float = 190.0,
+        ui_speed_to_cm_per_s: float = 0.3,
         default_wait_duration: float = 8.0,
         wait_crawl_speed: int = 20,
         # configurable durations for the motion phases
