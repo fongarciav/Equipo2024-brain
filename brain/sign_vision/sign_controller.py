@@ -67,7 +67,7 @@ class SignController:
             'stop': DefaultStopStrategy(self, self.lock),
             'roundabout': EnterIntersectionStrategy(self, self.lock),
            # 'one-way': IncreaseSpeedAndLaneWidthStrategy(self, self.lock),
-           # 'pedestrian': CrosswalkStrategy(self, self.lock),
+            'pedestrian': CrosswalkStrategy(self, self.lock),
             'park': ParkingStrategy(self, self.lock),
             'start-autobahn': ChangeSpeedStrategy(self, self.lock, target_speed=200),
             'end-autobahn': ChangeSpeedStrategy(self, self.lock, target_speed=50),
