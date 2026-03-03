@@ -18,11 +18,10 @@ from command_sender import CommandSender
 from sign_vision.sign_detector import SignDetector
 from .strategies import (
     DefaultStopStrategy,
-    EnterIntersectionStrategy,
-    IncreaseSpeedAndLaneWidthStrategy,
     CrosswalkStrategy,
     ParkingStrategy,
     ChangeSpeedStrategy,
+    RoundaboutStrategy,
 )
 
 
@@ -65,7 +64,8 @@ class SignController:
         # Strategies keyed by model class names (best.pt: end-autobahn, one-way, park, pedestrian, roundabout, start-autobahn, stop)
         self.strategies = {
             'stop': DefaultStopStrategy(self, self.lock),
-            'roundabout': EnterIntersectionStrategy(self, self.lock),
+            'roundabout': RoundaboutStrategy(self, self.lock),
+            
            # 'one-way': IncreaseSpeedAndLaneWidthStrategy(self, self.lock),
             'pedestrian': CrosswalkStrategy(self, self.lock),
             'park': ParkingStrategy(self, self.lock),
@@ -97,6 +97,14 @@ class SignController:
             self.pending_resume_at = None
             self.pending_resume_speed = None
             print("[SignController] Stopping...")
+
+        for strategy in self.strategies.values():
+            on_shutdown = getattr(strategy, "on_shutdown", None)
+            if callable(on_shutdown):
+                try:
+                    on_shutdown()
+                except Exception as hook_error:
+                    print(f"[SignController] Strategy on_shutdown error: {hook_error}")
         
         if self.thread and self.thread.is_alive():
             self.thread.join(timeout=1.0)
@@ -151,6 +159,15 @@ class SignController:
                         "speed": resume_speed_to_send,
                         "sent": bool(sent)
                     })
+
+            # Let strategies run lightweight per-loop housekeeping (timers, restorations, etc.).
+            for strategy in self.strategies.values():
+                on_loop = getattr(strategy, "on_loop", None)
+                if callable(on_loop):
+                    try:
+                        on_loop()
+                    except Exception as hook_error:
+                        print(f"[SignController] Strategy on_loop error: {hook_error}")
             
             try:
                 # 1. Get latest detections
