@@ -768,10 +768,6 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         if len(ry) >= self.MIN_POINTS_FOR_FIT:
             try: right_fit_current = np.polyfit(ry, rx, 2)
             except np.linalg.LinAlgError: pass
-        
-        if len(ry) >= self.MIN_POINTS_FOR_FIT:
-            try: right_fit_current = np.polyfit(ry, rx, 2)
-            except np.linalg.LinAlgError: pass
 
         # ==============================================================================
         # [NUEVO] FILTRO DE POSICIÓN (ZONA DE EXCLUSIÓN)
@@ -970,7 +966,7 @@ class MarcosLaneDetector_Advanced(LaneDetector):
             'horizontal_count': len(intersection_segments_horizontal),
             'raw_count': len(intersection_segments_raw)
         }
-        
+
         # --- CÁLCULO DEL ÁNGULO DE DESVIACIÓN ---
         # Calculamos el centro del carril como la línea amarilla
         center_fit = [(left_fit[0] + right_fit[0]) / 2, 
@@ -1080,7 +1076,7 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         inter_color = (0, 255, 255) if intersection_detected else (120, 120, 120)
         cv2.putText(bird_view_with_lines, f"INTERSECTION: {inter_text}", (10, 350),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, inter_color, 2)
-        
+
         # =========================================================
         
         # =========================================================

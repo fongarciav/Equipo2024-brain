@@ -86,10 +86,17 @@ except ImportError as e:
     print(f"Warning: Could not import SignController: {e}")
     SignController = None
     import_errors['SignController'] = str(e)
+
+try:
+    from safety.ultra_uart import ThreadUltraUART
+except ImportError as e:
+    print(f"Warning: Could not import ThreadUltraUART: {e}")
+    ThreadUltraUART = None
+    import_errors['ThreadUltraUART'] = str(e)
 except Exception as e:
-    print(f"Warning: Error importing SignController: {e}")
-    SignController = None
-    import_errors['SignController'] = str(e)
+    print(f"Warning: Error importing ThreadUltraUART: {e}")
+    ThreadUltraUART = None
+    import_errors['ThreadUltraUART'] = str(e)
 
 # Try to import serial
 try:
@@ -164,6 +171,23 @@ command_sender = None
 sign_detector = None
 sign_detection_controller = None
 sign_detection_initializing = False  # True while loading YOLO model in background
+
+# UltraSafety components (ESP32 ultrasonic reader + safety supervisor)
+ultra_thread = None
+ultra_safety_thread = None
+ultra_safety_running = False
+ultra_safety_enabled = True
+ultra_last_ui_speed = 0
+ultra_last_status = {
+    "ultra_blocking": False,
+    "saved_speed_ui": None,
+    "stale": True,
+    "valid": False,
+    "present": False,
+    "dist_cm": None,
+    "last_update_age_ms": None,
+}
+ultra_status_lock = threading.Lock()
 
 app = Flask(__name__, static_folder=SCRIPT_DIR)
 CORS(app)  # Enable CORS for all routes
@@ -527,7 +551,7 @@ def parse_system_events(line: str):
 
 def serial_reader_worker():
     """Background thread that reads from serial port."""
-    global serial_conn, serial_reader_running, event_clients, sign_detection_controller
+    global serial_conn, serial_reader_running, event_clients, sign_detection_controller, ultra_last_ui_speed
 
     while serial_reader_running:
         if serial_conn and serial_conn.is_open:
@@ -537,12 +561,14 @@ def serial_reader_worker():
                     if line:
                         # Parse system events for state tracking
                         parse_system_events(line)
-                        if line.startswith('@speed:') and sign_detection_controller is not None:
+                        if line.startswith('@speed:'):
                             raw_speed = line.replace('@speed:', '').replace(';;', '').strip()
                             try:
                                 speed_mm_s = int(raw_speed)
                                 ui_speed = int(round((abs(speed_mm_s) / 500) * 255))
-                                sign_detection_controller.update_current_speed(ui_speed)
+                                ultra_last_ui_speed = ui_speed
+                                if sign_detection_controller is not None:
+                                    sign_detection_controller.update_current_speed(ui_speed)
                             except ValueError:
                                 pass
 
@@ -630,6 +656,168 @@ def stop_heartbeat_sender():
     if heartbeat_sender_thread:
         heartbeat_sender_thread.join(timeout=1.0)
         heartbeat_sender_thread = None
+
+
+ULTRA_UART_PORT = "/dev/ttyTHS1"
+ULTRA_UART_BAUD = 115200
+ULTRA_STALE_SECONDS = 0.25
+ULTRA_CHECK_INTERVAL = 0.05
+ULTRA_CLEAR_DELAY = 0.2
+ULTRA_MIN_STOP_INTERVAL = 0.2
+
+
+def start_ultra_thread():
+    """Start ultrasonic UART reader thread (ESP32 -> Jetson)."""
+    global ultra_thread
+
+    if ThreadUltraUART is None:
+        print("[UltraUART] ThreadUltraUART unavailable; ultrasonic safety disabled.", file=sys.stderr)
+        return
+
+    if ultra_thread is None or not ultra_thread.is_alive():
+        ultra_thread = ThreadUltraUART(
+            port=ULTRA_UART_PORT,
+            baud=ULTRA_UART_BAUD,
+            stale_s=ULTRA_STALE_SECONDS,
+        )
+        ultra_thread.start()
+        print(f"[UltraUART] Start requested on {ULTRA_UART_PORT} @ {ULTRA_UART_BAUD}")
+
+
+def stop_ultra_thread():
+    """Stop ultrasonic UART reader thread."""
+    global ultra_thread
+
+    if ultra_thread is not None:
+        try:
+            ultra_thread.stop()
+            ultra_thread.join(timeout=1.0)
+        except Exception as e:
+            print(f"[UltraUART] Stop error: {e}", file=sys.stderr)
+        ultra_thread = None
+
+
+def ultra_safety_worker():
+    """Safety supervisor: obstacle => speed 0, clear => restore previous speed."""
+    global ultra_safety_running, command_sender, sign_detection_controller, ultra_last_ui_speed, ultra_last_status
+
+    ultra_blocking = False
+    saved_speed_ui = None
+    clear_since = None
+    last_cmd_time = 0.0
+
+    while ultra_safety_running:
+        time.sleep(ULTRA_CHECK_INTERVAL)
+
+        if not ultra_safety_enabled:
+            continue
+
+        if ultra_thread is None or not ultra_thread.is_alive():
+            continue
+
+        state = ultra_thread.get_state_copy()
+        stale = ultra_thread.is_stale()
+        now = time.time()
+        age_ms = int((now - state.t) * 1000) if state.t > 0 else None
+
+        with ultra_status_lock:
+            ultra_last_status = {
+                "ultra_blocking": ultra_blocking,
+                "saved_speed_ui": saved_speed_ui,
+                "stale": stale,
+                "valid": bool(state.valid),
+                "present": bool(state.present),
+                "dist_cm": state.dist_cm,
+                "last_update_age_ms": age_ms,
+            }
+
+        if not state.valid or stale:
+            clear_since = None
+            continue
+
+        # Obstacle present: enter/maintain blocking
+        if state.present:
+            clear_since = None
+
+            if not ultra_blocking:
+                current_speed_ui = ultra_last_ui_speed
+                if sign_detection_controller is not None:
+                    try:
+                        with sign_detection_controller.lock:
+                            current_speed_ui = int(sign_detection_controller.current_speed)
+                    except Exception:
+                        pass
+
+                # Save only non-zero speed, and only on block transition.
+                if current_speed_ui > 0 and saved_speed_ui is None:
+                    saved_speed_ui = current_speed_ui
+
+                if now - last_cmd_time >= ULTRA_MIN_STOP_INTERVAL and command_sender is not None:
+                    sent = command_sender.send_speed_command(0)
+                    if sent:
+                        ultra_blocking = True
+                        last_cmd_time = now
+                        print(
+                            f"[UltraSafety] Blocking - obstacle at {state.dist_cm} cm, "
+                            f"saved_speed={saved_speed_ui}"
+                        )
+            else:
+                # Maintain stop with rate limit to avoid command spam.
+                if now - last_cmd_time >= ULTRA_MIN_STOP_INTERVAL and command_sender is not None:
+                    sent = command_sender.send_speed_command(0)
+                    if sent:
+                        last_cmd_time = now
+            continue
+
+        # No obstacle present, while currently blocking -> restore after stable clear delay
+        if ultra_blocking:
+            if clear_since is None:
+                clear_since = now
+
+            if (now - clear_since) < ULTRA_CLEAR_DELAY:
+                continue
+
+            restored_speed = saved_speed_ui
+            if (
+                restored_speed is not None
+                and restored_speed > 0
+                and command_sender is not None
+                and (now - last_cmd_time) >= ULTRA_MIN_STOP_INTERVAL
+            ):
+                sent = command_sender.send_speed_command(int(restored_speed))
+                if sent:
+                    last_cmd_time = now
+                    print(f"[UltraSafety] Restored speed to {restored_speed}")
+                else:
+                    print("[UltraSafety] Failed to restore speed command", file=sys.stderr)
+            else:
+                print(f"[UltraSafety] Clear path - no speed restoration needed (saved_speed={restored_speed})")
+
+            ultra_blocking = False
+            saved_speed_ui = None
+            clear_since = None
+
+
+def start_ultra_safety():
+    """Start UltraSafety supervisor thread."""
+    global ultra_safety_thread, ultra_safety_running
+
+    if ultra_safety_thread is None or not ultra_safety_thread.is_alive():
+        ultra_safety_running = True
+        ultra_safety_thread = threading.Thread(target=ultra_safety_worker, daemon=True)
+        ultra_safety_thread.start()
+        print("[UltraSafety] Supervisor started")
+
+
+def stop_ultra_safety():
+    """Stop UltraSafety supervisor thread."""
+    global ultra_safety_running, ultra_safety_thread
+
+    ultra_safety_running = False
+    if ultra_safety_thread:
+        ultra_safety_thread.join(timeout=1.0)
+        ultra_safety_thread = None
+        print("[UltraSafety] Supervisor stopped")
 
 
 def autopilot_status_broadcast_worker():
@@ -1031,6 +1219,8 @@ def events_stream():
     start_serial_reader()
     start_autopilot_status_broadcast()
     start_sign_detection_status_broadcast()
+    start_ultra_thread()
+    start_ultra_safety()
     
     def generate():
         # Create a dedicated queue for this client
@@ -1569,7 +1759,7 @@ def debug_sign_detections():
 @app.route('/health')
 def health():
     """Health check endpoint."""
-    global serial_conn, serial_reader_running, video_streamer, autopilot_controller, sign_detection_controller
+    global serial_conn, serial_reader_running, video_streamer, autopilot_controller, sign_detection_controller, ultra_last_status
     port_name = None
     if serial_conn and serial_conn.is_open:
         port_name = serial_conn.port
@@ -1581,6 +1771,9 @@ def health():
     sign_detection_status_info = None
     if sign_detection_controller is not None:
         sign_detection_status_info = sign_detection_controller.get_status()
+
+    with ultra_status_lock:
+        ultra_status_info = dict(ultra_last_status)
     
     return jsonify({
         'status': 'ok',
@@ -1591,8 +1784,23 @@ def health():
         'serial_reader_running': serial_reader_running,
         'video_streamer_initialized': video_streamer is not None,
         'autopilot_status': autopilot_status_info,
-        'sign_detection_status': sign_detection_status_info
+        'sign_detection_status': sign_detection_status_info,
+        'ultra_safety_enabled': ultra_safety_enabled,
+        'ultra_uart_alive': ultra_thread is not None and ultra_thread.is_alive(),
+        'ultra_safety_alive': ultra_safety_thread is not None and ultra_safety_thread.is_alive(),
+        'ultra_status': ultra_status_info
     })
+
+
+def get_local_ip():
+    """Return the primary local IP address for display (e.g. in dashboard URL)."""
+    try:
+        import socket
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(('10.255.255.255', 1))
+            return s.getsockname()[0]
+    except Exception:
+        return '127.0.0.1'
 
 
 def select_port_interactive() -> str:
@@ -1627,23 +1835,135 @@ def select_port_interactive() -> str:
             print("Invalid input, please enter a number or press Enter to skip.")
 
 
-if __name__ == '__main__':
+def _main():
+    """Entry point for CLI: connect UART if requested, then run Flask."""
+    global serial_conn
     import argparse
 
-    # Parse command line arguments
     parser = argparse.ArgumentParser(description='Flask dashboard server')
     parser.add_argument('--host', default='0.0.0.0', help='Host to bind to (default: 0.0.0.0)')
     parser.add_argument('--port', type=int, default=5000, help='Port to bind to (default: 5000)')
     parser.add_argument('--debug', action='store_true', help='Run in debug mode')
+    parser.add_argument('--port-name', dest='port_name', default=None, help='Serial port to connect to (e.g. /dev/ttyACM0)')
+    parser.add_argument('--auto-connect', dest='auto_connect', action='store_true', help='Interactively select serial port on startup')
+    parser.add_argument('--lane-detection', dest='lane_detection', action='store_true', help='Start lane detection (autopilot) when UART connected')
+    parser.add_argument('--sign-detection', dest='sign_detection', action='store_true', help='Start sign detection when UART connected')
 
     args = parser.parse_args()
+    local_ip = get_local_ip()
 
+    print("=" * 70)
+    print(" " * 15 + "Car Control Dashboard (Nucleo/STM32)")
+    print("=" * 70)
+    print()
+
+    uart_connected = False
+    print("📡 Serial Port Connection")
+    print("-" * 70)
+    if args.port_name:
+        if SERIAL_AVAILABLE:
+            try:
+                print(f"   Connecting to {args.port_name}...", end=" ")
+                serial_conn = open_serial(args.port_name, UART_BAUD_RATE)
+                time.sleep(0.1)
+                start_serial_reader()
+                start_heartbeat_sender()
+                print(f"✓ Connected at {UART_BAUD_RATE} baud")
+                uart_connected = True
+            except Exception as e:
+                print(f"✗ Failed: {e}")
+                print("   You can connect manually from the dashboard.")
+        else:
+            print("   ✗ pyserial not installed. Cannot connect to serial port.")
+    elif args.auto_connect:
+        if SERIAL_AVAILABLE:
+            selected_port = select_port_interactive()
+            if selected_port:
+                try:
+                    print(f"   Connecting to {selected_port}...", end=" ")
+                    serial_conn = open_serial(selected_port, UART_BAUD_RATE)
+                    time.sleep(0.1)
+                    start_serial_reader()
+                    start_heartbeat_sender()
+                    print(f"✓ Connected at {UART_BAUD_RATE} baud")
+                    uart_connected = True
+                except Exception as e:
+                    print(f"✗ Failed: {e}")
+                    print("   You can connect manually from the dashboard.")
+            else:
+                print("   ⚠ No port selected. You can connect manually from the dashboard.")
+        else:
+            print("   ✗ pyserial not installed. Cannot connect to serial port.")
+    else:
+        print("   ⚠ Not connected. Use the dashboard to connect manually.")
+        print("   Tip: Use --auto-connect to select a port on startup, or --port-name to specify one.")
+    print()
+
+    print("🛰️  UltraSafety Initialization")
+    print("-" * 70)
+    start_ultra_thread()
+    start_ultra_safety()
+    print("   ℹ Ultra UART reader and safety supervisor requested.")
+    print()
+
+    if uart_connected:
+        print("🚗 Controller Initialization")
+        print("-" * 70)
+        if args.lane_detection:
+            print("   [1/2] Lane Detection (Autopilot)")
+            initialized = initialize_autopilot_if_needed()
+            if initialized:
+                success = autopilot_controller.start()
+                if success:
+                    print("      ✓ Autopilot controller initialized and started")
+                else:
+                    print("      ✗ Failed to start autopilot controller")
+            else:
+                print("      ✗ Autopilot initialization failed - check camera and modules")
+        if args.sign_detection:
+            print("   [2/2] Sign Detection")
+            initialized = initialize_sign_detection_if_needed()
+            if initialized:
+                detector_success = sign_detector.start()
+                controller_success = sign_detection_controller.start()
+                if detector_success and controller_success:
+                    print("      ✓ Sign detection controller initialized and started")
+                else:
+                    print("      ✗ Failed to start sign detection (detector: {}, controller: {})".format(
+                        "✓" if detector_success else "✗",
+                        "✓" if controller_success else "✗"
+                    ))
+            else:
+                print("      ✗ Sign detection initialization failed - check camera and modules")
+        if args.lane_detection or args.sign_detection:
+            print()
+    else:
+        print("🚗 Controller Initialization")
+        print("-" * 70)
+        if VideoStreamer is None:
+            print("   ⚠ Video streamer not available - autopilot modules not found")
+        else:
+            print("   ℹ Controllers will be initialized when started from the dashboard.")
+        print()
+
+    print("=" * 70)
+    print("🌐 Dashboard Server")
+    print("-" * 70)
+    print(f"   Local:   http://127.0.0.1:{args.port}")
+    print(f"   Network: http://{local_ip}:{args.port}")
+    print()
+    print("   Press Ctrl+C to stop the server")
+    print("=" * 70)
+    print()
     print(f"Starting Dashboard Server on {args.host}:{args.port}")
     print(f"Access the dashboard at: http://localhost:{args.port}")
     print("Press Ctrl+C to stop the server")
 
-    # Run the Flask app
     try:
         app.run(host=args.host, port=args.port, debug=args.debug, use_reloader=False)
     except KeyboardInterrupt:
         print("\nServer stopped by user")
+
+
+if __name__ == '__main__':
+    _main()
