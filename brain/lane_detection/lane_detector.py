@@ -102,6 +102,20 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         self.LANE_TYPE_CLASSIFY_CLOSING_KERNEL_W = 3
         self.LANE_TYPE_CLASSIFY_CLOSING_KERNEL_H = 9
 
+        # --- Detección de líneas de intersección (transversales en vista cenital) ---
+        self.ENABLE_INTERSECTION_DETECTION = True
+        self.INTERSECTION_CANNY_LOW = 50
+        self.INTERSECTION_CANNY_HIGH = 150
+        self.INTERSECTION_HOUGH_THRESHOLD = 60
+        self.INTERSECTION_HOUGH_MIN_LINE_LENGTH = 60
+        self.INTERSECTION_HOUGH_MAX_LINE_GAP = 20
+        self.INTERSECTION_ANGLE_MAX_DEG = 15.0  # Horizontal en BEV => |angle| cercano a 0°
+        self.INTERSECTION_MIN_LANE_CROSS_RATIO = 0.45
+        self.INTERSECTION_ROI_Y_MIN = 140
+        self.INTERSECTION_ROI_Y_MAX = 470
+        self.INTERSECTION_CLOSE_KERNEL_W = 21
+        self.INTERSECTION_CLOSE_KERNEL_H = 3
+
         # --- Threshold automático por múltiples ROIs + suavizado temporal ---
         self.AUTO_THR_REF_X_NORMS = [0.2, 0.5, 0.6]
         self.AUTO_THR_REF_Y_FROM_BOTTOM_PX = 8
@@ -230,6 +244,49 @@ class MarcosLaneDetector_Advanced(LaneDetector):
             k_h = int(max(1, self.DETECT_MASK_CLOSING_KERNEL_H))
             kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (k_w, k_h))
             mask_detect = cv2.morphologyEx(mask_detect, cv2.MORPH_CLOSE, kernel)
+
+        # --- Detección temprana de segmentos transversales (separada de carriles longitudinales) ---
+        intersection_segments_raw = []
+        intersection_segments_horizontal = []
+        intersection_edges = np.zeros_like(mask_raw)
+        intersection_mask = mask_raw.copy()
+        if self.ENABLE_INTERSECTION_DETECTION:
+            roi_y_min = int(max(0, min(mask_raw.shape[0] - 1, self.INTERSECTION_ROI_Y_MIN)))
+            roi_y_max = int(max(0, min(mask_raw.shape[0] - 1, self.INTERSECTION_ROI_Y_MAX)))
+            if roi_y_max > roi_y_min:
+                intersection_mask = np.zeros_like(mask_raw)
+                intersection_mask[roi_y_min:roi_y_max + 1, :] = mask_raw[roi_y_min:roi_y_max + 1, :]
+
+                # Conexión horizontal suave SOLO para intersecciones
+                k_w_i = int(max(1, self.INTERSECTION_CLOSE_KERNEL_W))
+                k_h_i = int(max(1, self.INTERSECTION_CLOSE_KERNEL_H))
+                inter_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (k_w_i, k_h_i))
+                intersection_mask = cv2.morphologyEx(intersection_mask, cv2.MORPH_CLOSE, inter_kernel)
+
+                intersection_edges = cv2.Canny(
+                    intersection_mask,
+                    int(max(0, self.INTERSECTION_CANNY_LOW)),
+                    int(max(0, self.INTERSECTION_CANNY_HIGH)),
+                    apertureSize=3
+                )
+
+                hough_lines = cv2.HoughLinesP(
+                    intersection_edges,
+                    rho=1,
+                    theta=np.pi / 180,
+                    threshold=int(max(1, self.INTERSECTION_HOUGH_THRESHOLD)),
+                    minLineLength=int(max(1, self.INTERSECTION_HOUGH_MIN_LINE_LENGTH)),
+                    maxLineGap=int(max(0, self.INTERSECTION_HOUGH_MAX_LINE_GAP))
+                )
+
+                if hough_lines is not None:
+                    for x1, y1, x2, y2 in hough_lines.reshape(-1, 4):
+                        intersection_segments_raw.append((int(x1), int(y1), int(x2), int(y2)))
+                        angle_deg = abs(math.degrees(math.atan2((y2 - y1), (x2 - x1))))
+                        # Horizontal en BEV: ángulo cercano a 0° (o 180° -> equivalente)
+                        angle_norm = min(angle_deg, abs(180.0 - angle_deg))
+                        if angle_norm <= float(max(0.0, self.INTERSECTION_ANGLE_MAX_DEG)):
+                            intersection_segments_horizontal.append((int(x1), int(y1), int(x2), int(y2)))
 
         # --- Histograma (debug) ---
         histogram = np.sum(mask_detect[mask_detect.shape[0]//2:, :], axis=0)
@@ -711,10 +768,6 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         if len(ry) >= self.MIN_POINTS_FOR_FIT:
             try: right_fit_current = np.polyfit(ry, rx, 2)
             except np.linalg.LinAlgError: pass
-        
-        if len(ry) >= self.MIN_POINTS_FOR_FIT:
-            try: right_fit_current = np.polyfit(ry, rx, 2)
-            except np.linalg.LinAlgError: pass
 
         # ==============================================================================
         # [NUEVO] FILTRO DE POSICIÓN (ZONA DE EXCLUSIÓN)
@@ -865,6 +918,10 @@ class MarcosLaneDetector_Advanced(LaneDetector):
                     "histogram": histogram_viz,
                     "sliding_windows": msk,
                     "lane_types": {'left': 'UNKNOWN', 'right': 'UNKNOWN'},
+                    "intersection_state": {'detected': False, 'valid_count': 0, 'horizontal_count': len(intersection_segments_horizontal), 'raw_count': len(intersection_segments_raw)},
+                    "intersection_lines_raw": cv2.cvtColor(intersection_mask.copy(), cv2.COLOR_GRAY2BGR),
+                    "intersection_lines": cv2.cvtColor(mask_raw.copy(), cv2.COLOR_GRAY2BGR),
+                    "intersection_edges": intersection_edges,
                     "final_result": original_frame
                 }
                 return None, debug_images
@@ -881,7 +938,35 @@ class MarcosLaneDetector_Advanced(LaneDetector):
             'left_metrics': left_type_metrics,
             'right_metrics': right_type_metrics
         }
-        
+
+        valid_intersections = []
+        if self.ENABLE_INTERSECTION_DETECTION and left_fit is not None and right_fit is not None:
+            for x1, y1, x2, y2 in intersection_segments_horizontal:
+                y_mid = float((y1 + y2) / 2.0)
+                if y_mid < 0 or y_mid > (mask_raw.shape[0] - 1):
+                    continue
+
+                left_x_at_y = float(left_fit[0] * y_mid**2 + left_fit[1] * y_mid + left_fit[2])
+                right_x_at_y = float(right_fit[0] * y_mid**2 + right_fit[1] * y_mid + right_fit[2])
+                lane_left = min(left_x_at_y, right_x_at_y)
+                lane_right = max(left_x_at_y, right_x_at_y)
+                lane_width = max(1.0, lane_right - lane_left)
+
+                seg_left = float(min(x1, x2))
+                seg_right = float(max(x1, x2))
+                overlap = max(0.0, min(seg_right, lane_right) - max(seg_left, lane_left))
+                cross_ratio = overlap / lane_width
+                if cross_ratio >= float(max(0.0, self.INTERSECTION_MIN_LANE_CROSS_RATIO)):
+                    valid_intersections.append((int(x1), int(y1), int(x2), int(y2), float(cross_ratio)))
+
+        intersection_detected = len(valid_intersections) > 0
+        intersection_state = {
+            'detected': intersection_detected,
+            'valid_count': len(valid_intersections),
+            'horizontal_count': len(intersection_segments_horizontal),
+            'raw_count': len(intersection_segments_raw)
+        }
+
         # --- CÁLCULO DEL ÁNGULO DE DESVIACIÓN ---
         # Calculamos el centro del carril como la línea amarilla
         center_fit = [(left_fit[0] + right_fit[0]) / 2, 
@@ -983,11 +1068,15 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         # Mostrar el MODO DE DETECCIÓN en la pantalla
         cv2.putText(bird_view_with_lines, f"MODE: {detection_mode}", (10, 260), 
                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
-        cv2.putText(bird_view_with_lines, f"TYPE L: {left_lane_type}", (10, 290),
+        cv2.putText(bird_view_with_lines, f"L: {left_lane_type}", (10, 290),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-        cv2.putText(bird_view_with_lines, f"TYPE R: {right_lane_type}", (10, 320),
+        cv2.putText(bird_view_with_lines, f"R: {right_lane_type}", (10, 320),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
-        
+        inter_text = "YES" if intersection_detected else "NO"
+        inter_color = (0, 255, 255) if intersection_detected else (120, 120, 120)
+        cv2.putText(bird_view_with_lines, f"INTERSECTION: {inter_text}", (10, 350),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, inter_color, 2)
+
         # =========================================================
         
         # =========================================================
@@ -1112,6 +1201,15 @@ class MarcosLaneDetector_Advanced(LaneDetector):
         y_offset += legend_spacing
         cv2.putText(bird_view_with_lines, f'Lane Width: {self.LANE_WIDTH_PX}px', (legend_x, y_offset), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (200, 200, 200), font_thickness)
 
+        # Visualización de intersecciones
+        intersection_lines_raw_viz = cv2.cvtColor(intersection_mask.copy(), cv2.COLOR_GRAY2BGR)
+        for (x1, y1, x2, y2) in intersection_segments_horizontal:
+            cv2.line(intersection_lines_raw_viz, (x1, y1), (x2, y2), (255, 200, 0), 1)
+
+        intersection_lines_viz = cv2.cvtColor(mask_raw.copy(), cv2.COLOR_GRAY2BGR)
+        for (x1, y1, x2, y2, _) in valid_intersections:
+            cv2.line(intersection_lines_viz, (x1, y1), (x2, y2), (0, 255, 255), 2)
+
         # Empaquetar imágenes de depuración para mostrarlas fuera
         debug_images = {
             "original": original_frame,
@@ -1123,6 +1221,10 @@ class MarcosLaneDetector_Advanced(LaneDetector):
             "histogram": histogram_viz,  # Histogram visualization
             "sliding_windows": msk,
             "lane_types": lane_types,
+            "intersection_state": intersection_state,
+            "intersection_lines_raw": intersection_lines_raw_viz,
+            "intersection_lines": intersection_lines_viz,
+            "intersection_edges": intersection_edges,
             "final_result": result
         }
 
