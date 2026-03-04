@@ -12,6 +12,8 @@ from .lane_detector import LaneDetector
 from .pid_controller import PIDController
 from .filter_controller import FilterController
 from .angle_converter import AngleConverter
+from .intersection_event_controller import IntersectionEventController
+from .intersection_strategies import FirstIntersectionLeftTurnStrategy
 # Import shared resources (absolute imports - parent dir is in sys.path)
 from command_sender import CommandSender
 from camera.video_streamer import VideoStreamer
@@ -24,7 +26,7 @@ class AutoPilotController:
                  lane_detector: LaneDetector,
                  pid_kp: float = 0.06, pid_ki: float = 0.002, 
                  pid_kd: float = 0.02, max_angle: float = 30.0, deadband: float = 6.0,
-                 max_change: float = 20.0):
+                 max_change: float = 20.0, intersection_event_callback=None):
         """
         Initialize the auto-pilot controller.
         
@@ -38,6 +40,7 @@ class AutoPilotController:
             max_angle: Maximum steering angle in degrees (default: 30.0)
             deadband: Deadband angle in degrees (default: 6.0)
             max_change: Maximum allowed change in angle deviation between frames (default: 20.0)
+            intersection_event_callback: Optional callback(event_type, data) for lane-based intersection events
         """
         self.video_streamer = video_streamer
         self.command_sender = command_sender
@@ -77,6 +80,23 @@ class AutoPilotController:
         
         # Debug images storage
         self.last_debug_images = None
+
+        # Lane-based intersection event handling (separate from sign_controller)
+        self.intersection_event_controller = IntersectionEventController(
+            strategy=FirstIntersectionLeftTurnStrategy(
+                autopilot_controller=self,
+                event_callback=intersection_event_callback,
+                duration_s=3.0,
+                max_angle_ratio=0.75,
+            ),
+            consecutive_frames=3,
+            cooldown_s=2.5,
+        )
+
+        # Timed steering override (used by lane-based intersection strategies)
+        self._manual_override_until = 0.0
+        self._manual_override_steering_angle = 0.0
+        self._manual_override_label = None
     
     def start(self):
         """Start the auto-pilot controller."""
@@ -125,6 +145,18 @@ class AutoPilotController:
             self.filter_controller.reset()
             print("[AutoPilotController] Resumed")
 
+    def start_timed_steering_override(self, steering_angle_deg: float, duration_s: float, label: str = 'manual_override'):
+        """Apply a temporary steering override without stopping the autopilot thread."""
+        duration_s = max(0.0, float(duration_s))
+        with self.lock:
+            self._manual_override_steering_angle = float(steering_angle_deg)
+            self._manual_override_until = time.time() + duration_s
+            self._manual_override_label = str(label)
+
+        # Reset controllers to avoid abrupt PID accumulation after override.
+        self.pid_controller.reset()
+        self.filter_controller.reset()
+
     def _control_loop(self):
         """Main control loop running in background thread."""
         while True:
@@ -154,6 +186,11 @@ class AutoPilotController:
                 with self.lock:
                     if debug_images is not None:
                         self.last_debug_images = debug_images
+
+                # Process lane-based intersection events via dedicated controller/strategy
+                if debug_images is not None:
+                    intersection_state = debug_images.get('intersection_state', {'detected': False})
+                    self.intersection_event_controller.process(intersection_state)
                 
                 # Check if paused
                 is_paused = False
@@ -161,6 +198,43 @@ class AutoPilotController:
                     is_paused = self.is_paused
 
                 if is_paused:
+                    time.sleep(0.033)
+                    continue
+
+                # Manual steering override (e.g., first intersection one-shot strategy)
+                override_active = False
+                override_angle = 0.0
+                with self.lock:
+                    now_ts = time.time()
+                    if now_ts < self._manual_override_until:
+                        override_active = True
+                        override_angle = float(self._manual_override_steering_angle)
+                    elif self._manual_override_until > 0:
+                        self._manual_override_until = 0.0
+                        self._manual_override_label = None
+
+                if override_active:
+                    steering_angle = override_angle
+                    servo_angle = self.angle_converter.convert(steering_angle, inverted=True)
+
+                    should_send = False
+                    with self.lock:
+                        if self.last_servo_angle != servo_angle:
+                            should_send = True
+
+                    if should_send:
+                        success = self.command_sender.send_steering_command(servo_angle)
+                        with self.lock:
+                            self.last_steering_angle = steering_angle
+                            self.last_servo_angle = servo_angle
+                            if success:
+                                self.command_count += 1
+                            else:
+                                self.error_count += 1
+                    else:
+                        with self.lock:
+                            self.last_steering_angle = steering_angle
+
                     time.sleep(0.033)
                     continue
                 
@@ -248,7 +322,13 @@ class AutoPilotController:
                 'last_steering_angle': self.last_steering_angle,
                 'last_servo_angle': self.last_servo_angle,
                 'command_count': self.command_count,
-                'error_count': self.error_count
+                'error_count': self.error_count,
+                'intersection': self.intersection_event_controller.last_state,
+                'manual_override': {
+                    'active': time.time() < self._manual_override_until,
+                    'label': self._manual_override_label,
+                    'remaining_s': max(0.0, self._manual_override_until - time.time())
+                }
             }
     
     def update_pid_parameters(self, kp: float = None, ki: float = None, kd: float = None, 
