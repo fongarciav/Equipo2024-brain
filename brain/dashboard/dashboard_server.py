@@ -1,4 +1,3 @@
-
 #!/usr/bin/env python3
 """
 Flask server for the car control dashboard (Nucleo/STM32 over UART).
@@ -95,9 +94,9 @@ except ImportError as e:
     ThreadUltraUART = None
     import_errors['ThreadUltraUART'] = str(e)
 except Exception as e:
-    print(f"Warning: Error importing SignController: {e}")
-    SignController = None
-    import_errors['SignController'] = str(e)
+    print(f"Warning: Error importing ThreadUltraUART: {e}")
+    ThreadUltraUART = None
+    import_errors['ThreadUltraUART'] = str(e)
 
 # Try to import serial
 try:
@@ -347,6 +346,22 @@ def handle_command(endpoint):
     cmd_success, cmd_message = write_uart_command(uart_cmd)
 
     if cmd_success:
+        # Mantener current_speed del SignController sincronizado con la velocidad
+        # que el dashboard manda, para que last_speed_before_stop sea siempre correcto.
+        if sign_detection_controller is not None:
+            if endpoint == 'forward':
+                sign_detection_controller.update_current_speed(220)
+            elif endpoint == 'changeSpeed':
+                try:
+                    speed_val = int(args.get('speed', 0))
+                    direction = args.get('direction', 'forward')
+                    if speed_val > 0 and direction.lower() == 'forward':
+                        sign_detection_controller.update_current_speed(speed_val)
+                except (ValueError, TypeError):
+                    pass
+            # driveStop y brake no actualizan current_speed: queremos conservar
+            # last_speed_before_stop como referencia para el resume.
+
         return jsonify({'status': 'ok', 'message': message, 'uart_command': uart_cmd}), 200
     else:
         return jsonify({'error': f'Failed to send UART command: {cmd_message}'}), 500
@@ -1777,6 +1792,17 @@ def health():
     })
 
 
+def get_local_ip():
+    """Return the primary local IP address for display (e.g. in dashboard URL)."""
+    try:
+        import socket
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(('10.255.255.255', 1))
+            return s.getsockname()[0]
+    except Exception:
+        return '127.0.0.1'
+
+
 def select_port_interactive() -> str:
     """Interactive port selection from available serial ports."""
     if not SERIAL_AVAILABLE:
@@ -1795,75 +1821,46 @@ def select_port_interactive() -> str:
     for idx, p in enumerate(ports):
         print(f"  [{idx}] {p.device} - {p.description}")
     while True:
-        sel = input("\nSelect port index (or press Enter to skip): ").strip()
-        if sel == "":
-            return None  # Skip selection
-        if sel.isdigit() and 0 <= int(sel) < len(ports):
-            return ports[int(sel)].device
-        print("Invalid selection. Try again.")
+        sel = input("\nSelect port index (or press Enter to skip): ")
+        try:
+            if sel.strip() == "":
+                return None  # Skip selection
+
+            index = int(sel)
+            if 0 <= index < len(ports):
+                return ports[index].device
+            else:
+                print("Invalid index, out of range. Please select a valid port index.")
+        except ValueError:
+            print("Invalid input, please enter a number or press Enter to skip.")
 
 
-def get_local_ip():
-    """Get the local IP address of this machine."""
-    import socket
-    try:
-        # Connect to a remote address to determine local IP
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
-        s.close()
-        return ip
-    except Exception:
-        return "127.0.0.1"
-
-
-if __name__ == '__main__':
+def _main():
+    """Entry point for CLI: connect UART if requested, then run Flask."""
+    global serial_conn
     import argparse
 
-    parser = argparse.ArgumentParser(
-        description='Car Control Dashboard Server (Nucleo/STM32 UART)')
-    parser.add_argument('--host', default='0.0.0.0',
-                        help='Host to bind to (default: 0.0.0.0 for all interfaces)')
-    parser.add_argument('--port', type=int, default=5000,
-                        help='Port to bind to (default: 5000)')
-    parser.add_argument('--debug', action='store_true',
-                        help='Enable debug mode')
-    parser.add_argument('--auto-connect', action='store_true',
-                        help='Automatically connect to a serial port on startup')
-    parser.add_argument('--port-name', type=str, default=None,
-                        help='Specific serial port to connect to (e.g., /dev/ttyUSB0)')
-    parser.add_argument('--lane-detection', action='store_true',
-                        help='Initialize lane detection (autopilot) controller on startup (requires --auto-connect or --port-name)')
-    parser.add_argument('--sign-detection', action='store_true',
-                        help='Initialize sign detection controller on startup (requires --auto-connect or --port-name)')
-    parser.add_argument('--threshold', type=int, default=180,
-                        help='Image processing threshold (default: 180)')
-    parser.add_argument('--pid-kp', type=float, default=0.8380,
-                        help='PID proportional gain (default: 0.8380)')
-    parser.add_argument('--pid-ki', type=float, default=0.0100,
-                        help='PID integral gain (default: 0.0100)')
-    parser.add_argument('--pid-kd', type=float, default=0.4300,
-                        help='PID derivative gain (default: 0.4300)')
-    parser.add_argument('--max-angle', type=float, default=30.0,
-                        help='Maximum steering angle in degrees (default: 30.0)')
-    parser.add_argument('--deadband', type=float, default=6.0,
-                        help='Deadband angle in degrees (default: 6.0)')
+    parser = argparse.ArgumentParser(description='Flask dashboard server')
+    parser.add_argument('--host', default='0.0.0.0', help='Host to bind to (default: 0.0.0.0)')
+    parser.add_argument('--port', type=int, default=5000, help='Port to bind to (default: 5000)')
+    parser.add_argument('--debug', action='store_true', help='Run in debug mode')
+    parser.add_argument('--port-name', dest='port_name', default=None, help='Serial port to connect to (e.g. /dev/ttyACM0)')
+    parser.add_argument('--auto-connect', dest='auto_connect', action='store_true', help='Interactively select serial port on startup')
+    parser.add_argument('--lane-detection', dest='lane_detection', action='store_true', help='Start lane detection (autopilot) when UART connected')
+    parser.add_argument('--sign-detection', dest='sign_detection', action='store_true', help='Start sign detection when UART connected')
 
     args = parser.parse_args()
-
     local_ip = get_local_ip()
 
     print("=" * 70)
     print(" " * 15 + "Car Control Dashboard (Nucleo/STM32)")
     print("=" * 70)
     print()
-    
-    # Handle serial port connection
+
     uart_connected = False
     print("📡 Serial Port Connection")
     print("-" * 70)
     if args.port_name:
-        # Connect to specific port
         if SERIAL_AVAILABLE:
             try:
                 print(f"   Connecting to {args.port_name}...", end=" ")
@@ -1879,7 +1876,6 @@ if __name__ == '__main__':
         else:
             print("   ✗ pyserial not installed. Cannot connect to serial port.")
     elif args.auto_connect:
-        # Interactive port selection
         if SERIAL_AVAILABLE:
             selected_port = select_port_interactive()
             if selected_port:
@@ -1909,12 +1905,10 @@ if __name__ == '__main__':
     start_ultra_safety()
     print("   ℹ Ultra UART reader and safety supervisor requested.")
     print()
-    
-    # Initialize controllers if requested and UART is connected
+
     if uart_connected:
         print("🚗 Controller Initialization")
         print("-" * 70)
-        
         if args.lane_detection:
             print("   [1/2] Lane Detection (Autopilot)")
             initialized = initialize_autopilot_if_needed()
@@ -1926,7 +1920,6 @@ if __name__ == '__main__':
                     print("      ✗ Failed to start autopilot controller")
             else:
                 print("      ✗ Autopilot initialization failed - check camera and modules")
-        
         if args.sign_detection:
             print("   [2/2] Sign Detection")
             initialized = initialize_sign_detection_if_needed()
@@ -1942,11 +1935,9 @@ if __name__ == '__main__':
                     ))
             else:
                 print("      ✗ Sign detection initialization failed - check camera and modules")
-        
         if args.lane_detection or args.sign_detection:
             print()
     else:
-        # No UART connected, controllers will be initialized when UART connects from dashboard
         print("🚗 Controller Initialization")
         print("-" * 70)
         if VideoStreamer is None:
@@ -1964,22 +1955,15 @@ if __name__ == '__main__':
     print("   Press Ctrl+C to stop the server")
     print("=" * 70)
     print()
+    print(f"Starting Dashboard Server on {args.host}:{args.port}")
+    print(f"Access the dashboard at: http://localhost:{args.port}")
+    print("Press Ctrl+C to stop the server")
 
     try:
-        # Use threaded=True to handle multiple requests concurrently
-        # This prevents blocking when video streamer is capturing frames
-        app.run(host=args.host, port=args.port, debug=args.debug, threaded=True)
-    finally:
-        # Cleanup on shutdown
-        stop_ultra_safety()
-        stop_ultra_thread()
-        stop_sign_detection_status_broadcast()
-        stop_autopilot_status_broadcast()
-        stop_serial_reader()
-        stop_heartbeat_sender()
-        if sign_detection_controller:
-            sign_detection_controller.stop()
-        if autopilot_controller:
-            autopilot_controller.stop()
-        if video_streamer:
-            video_streamer.stop()
+        app.run(host=args.host, port=args.port, debug=args.debug, use_reloader=False)
+    except KeyboardInterrupt:
+        print("\nServer stopped by user")
+
+
+if __name__ == '__main__':
+    _main()

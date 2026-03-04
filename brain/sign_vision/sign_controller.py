@@ -16,13 +16,20 @@ if str(brain_dir) not in sys.path:
 
 from command_sender import CommandSender
 from sign_vision.sign_detector import SignDetector
-from .strategies import DefaultStopStrategy, EnterIntersectionStrategy, IncreaseSpeedAndLaneWidthStrategy
+from .strategies import (
+    DefaultStopStrategy,
+    EnterIntersectionStrategy,
+    IncreaseSpeedAndLaneWidthStrategy,
+    CrosswalkStrategy,
+    ParkingStrategy,
+    ChangeSpeedStrategy,
+)
 
 
 class SignController:
     """Orchestrates sign detection and command sending."""
     DEFAULT_RESUME_SPEED = 120
-    
+
     def __init__(self, sign_detector: SignDetector, command_sender: CommandSender, event_callback=None, autopilot_controller=None):
         """
         Initialize the sign controller.
@@ -46,8 +53,8 @@ class SignController:
         self.last_command = None
         self.command_count = 0
         self.error_count = 0
-        self.current_speed = 0
-        self.last_speed_before_stop = 0  # Right now, default speed from esp32 at boot is zero, so if not last speed before stop is set, it will be zero
+        self.current_speed = 0          # Velocidad actual del carro. Se actualiza desde el dashboard y desde las estrategias.
+        self.last_speed_before_stop = 0 # Última velocidad no-cero antes de un stop/slowdown.
         self.pending_resume_at = None
         self.pending_resume_speed = None
         
@@ -60,7 +67,11 @@ class SignController:
             'stop': DefaultStopStrategy(self, self.lock),
             'no_entry': DefaultStopStrategy(self, self.lock, self.stop_cooldown),
             'priority': EnterIntersectionStrategy(self, self.lock),
-            'onewayroad': IncreaseSpeedAndLaneWidthStrategy(self, self.lock)
+            'onewayroad': IncreaseSpeedAndLaneWidthStrategy(self, self.lock),
+            'crosswalk': CrosswalkStrategy(self, self.lock),
+            'parking': ParkingStrategy(self, self.lock),
+            'highway_entry': ChangeSpeedStrategy(self, self.lock, target_speed=200),
+            'highway_exit': ChangeSpeedStrategy(self, self.lock, target_speed=50),
         }
         
     def start(self):
@@ -94,22 +105,22 @@ class SignController:
         
         return True
 
-    def schedule_speed_resume(self, delay_seconds: float) -> int:
+    def schedule_speed_resume(self, delay_seconds: float, override_speed: int = None) -> int:
         """
-        Schedule a speed restore after STOP without blocking the control loop.
+        Schedule a speed restore after a stop or slowdown.
 
         Args:
-            delay_seconds: Delay before restoring speed.
-
-        Returns:
-            The speed value that will be used for resume.
+            delay_seconds: Seconds to wait before restoring speed.
+            override_speed: If provided, resume at this exact speed instead of last_speed_before_stop.
         """
         delay_seconds = max(0.0, float(delay_seconds))
         with self.lock:
-            resume_speed = self.last_speed_before_stop
-            if resume_speed <= 0:
+            if override_speed is not None:
+                resume_speed = int(max(0, min(255, override_speed)))
+            elif self.last_speed_before_stop > 0:
+                resume_speed = self.last_speed_before_stop
+            else:
                 resume_speed = self.DEFAULT_RESUME_SPEED
-            resume_speed = int(max(0, min(255, resume_speed)))
             self.pending_resume_speed = resume_speed
             self.pending_resume_at = time.time() + delay_seconds
             return resume_speed
@@ -200,14 +211,9 @@ class SignController:
             }
 
     def update_current_speed(self, speed: int):
-        """
-        Update the current speed tracking from external events (e.g. dashboard, serial).
-        This allows the controller to know if the car is stopped or moving,
-        and what speed to resume to.
-        """
+        """Update current speed. Always reflects the real speed of the car.
+        Saves the last positive speed into last_speed_before_stop before setting to 0."""
         with self.lock:
+            if self.current_speed > 0 and speed == 0:
+                self.last_speed_before_stop = self.current_speed
             self.current_speed = speed
-            # If we are moving (speed > 0), remember it for resume
-            if speed > 0:
-                self.last_speed_before_stop = speed
-
