@@ -25,8 +25,8 @@ class RoundaboutStrategy(SignStrategy):
         pre_entry_duration: float = 2.0,
         lane_tuning_duration: float = 5.0,
         right_turn_duration: float = 2.0,
-        roundabout_lane_width_px: int = 560,
-        roundabout_straight_width_reduction: int = 20,
+        roundabout_lane_width_px: int = 400,
+        roundabout_straight_width_reduction: int = 0,
         right_turn_servo_angle: int = 50,
     ):
         super().__init__(controller, lock, min_confidence, activation_distance)
