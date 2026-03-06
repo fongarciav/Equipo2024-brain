@@ -64,7 +64,7 @@ class SignController:
         # Strategies keyed by model class names (best.pt: end-autobahn, one-way, park, pedestrian, roundabout, start-autobahn, stop)
         self.strategies = {
             'stop': DefaultStopStrategy(self, self.lock),
-            'roundabout': RoundaboutStrategy(self, self.lock),
+            'roundabout-mini': RoundaboutStrategy(self, self.lock),
             
            # 'one-way': IncreaseSpeedAndLaneWidthStrategy(self, self.lock),
             'pedestrian': CrosswalkStrategy(self, self.lock),
