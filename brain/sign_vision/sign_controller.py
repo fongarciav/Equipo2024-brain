@@ -68,8 +68,8 @@ class SignController:
         # Initialize strategies (keys must match detector class names)
         self.strategies = {
             'stop': DefaultStopStrategy(self, self.lock),
-            'end-autobahn': RelativeChangeSpeedStrategy(self, self.lock, delta_speed=-50),
-            'start-autobahn': RelativeChangeSpeedStrategy(self, self.lock, delta_speed=50),
+            'end-autobahn': RelativeChangeSpeedStrategy(self, self.lock, delta_speed=-100),
+            'start-autobahn': RelativeChangeSpeedStrategy(self, self.lock, delta_speed=100),
             'priority-road': EnterIntersectionStrategy(self, self.lock),
            # 'one-way': IncreaseSpeedAndLaneWidthStrategy(self, self.lock),
             'pedestrian': CrosswalkStrategy(self, self.lock),
