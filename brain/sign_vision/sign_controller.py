@@ -62,16 +62,16 @@ class SignController:
         self.last_stop_time = 0
         self.stop_cooldown = 5.0  # Seconds before stopping again
         
-        # Initialize strategies
+        # Initialize strategies (keys must match detector class names)
         self.strategies = {
-            # 'stop': DefaultStopStrategy(self, self.lock),
-            # 'no_entry': DefaultStopStrategy(self, self.lock, self.stop_cooldown),
-            # 'priority': EnterIntersectionStrategy(self, self.lock),
-             'onewayroad': IncreaseSpeedAndLaneWidthStrategy(self, self.lock),
-            # 'crosswalk': CrosswalkStrategy(self, self.lock),
-            # 'parking': ParkingStrategy(self, self.lock),
-            # 'highway_entry': ChangeSpeedStrategy(self, self.lock, target_speed=200),
-            # 'highway_exit': ChangeSpeedStrategy(self, self.lock, target_speed=50),
+            'stop': DefaultStopStrategy(self, self.lock),
+            'end-autobahn': ChangeSpeedStrategy(self, self.lock, target_speed=50),
+            'start-autobahn': ChangeSpeedStrategy(self, self.lock, target_speed=200),
+            'priority-road': EnterIntersectionStrategy(self, self.lock),
+            'one-way': IncreaseSpeedAndLaneWidthStrategy(self, self.lock),
+            'pedestrian': CrosswalkStrategy(self, self.lock),
+            'park': ParkingStrategy(self, self.lock),
+            'roundabout-mini': EnterIntersectionStrategy(self, self.lock),
         }
         
     def start(self):

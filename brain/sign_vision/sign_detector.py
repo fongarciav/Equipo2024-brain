@@ -44,7 +44,7 @@ class SignDetector:
         if model_path is None:
             script_dir = Path(__file__).parent
             #model_path = script_dir / "weights" / "best.pt"
-            model_path = script_dir / "nuevo_modelo" / "best.engine"
+            model_path = script_dir / "weights" / "best.engine"
         self.model_path = str(model_path)
         self.model = None
         self.device = None
