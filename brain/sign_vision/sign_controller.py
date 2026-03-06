@@ -132,7 +132,7 @@ class SignController:
         while True:
             resume_speed_to_send = None
             with self.lock:
-   codex/debate-proposed-lane-detection-changes             if not self.is_running:
+                if not self.is_running:
                     break
                 if (
                     self.pending_resume_at is not None
