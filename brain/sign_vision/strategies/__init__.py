@@ -5,3 +5,4 @@ from .increase_speed_and_lane_width_strategy import IncreaseSpeedAndLaneWidthStr
 from .crosswalk_strategy import CrosswalkStrategy
 from .parking_strategy import ParkingStrategy
 from .change_speed_strategy import ChangeSpeedStrategy
+from .roundabout_strategy import RoundaboutHandsFreeStrategy
