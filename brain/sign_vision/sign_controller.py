@@ -23,6 +23,7 @@ from .strategies import (
     CrosswalkStrategy,
     ParkingStrategy,
     ChangeSpeedStrategy,
+    RoundaboutWithTimersStrategy,
 )
 
 
@@ -72,7 +73,7 @@ class SignController:
            # 'one-way': IncreaseSpeedAndLaneWidthStrategy(self, self.lock),
             'pedestrian': CrosswalkStrategy(self, self.lock),
             'park': ParkingStrategy(self, self.lock),
-            'roundabout-mini': EnterIntersectionStrategy(self, self.lock),
+            'roundabout-mini': RoundaboutWithTimersStrategy(self, self.lock),
         }
         
     def start(self):
@@ -131,7 +132,7 @@ class SignController:
         while True:
             resume_speed_to_send = None
             with self.lock:
-                if not self.is_running:
+   codex/debate-proposed-lane-detection-changes             if not self.is_running:
                     break
                 if (
                     self.pending_resume_at is not None
