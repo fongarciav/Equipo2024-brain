@@ -62,15 +62,16 @@ class SignController:
         self.last_stop_time = 0
         self.stop_cooldown = 5.0  # Seconds before stopping again
         
-        # Strategies keyed by model class names (best.pt: end-autobahn, one-way, park, pedestrian, roundabout, start-autobahn, stop)
+        # Initialize strategies
         self.strategies = {
-            'stop': DefaultStopStrategy(self, self.lock),
-            'roundabout': EnterIntersectionStrategy(self, self.lock),
-           # 'one-way': IncreaseSpeedAndLaneWidthStrategy(self, self.lock),
-            'pedestrian': CrosswalkStrategy(self, self.lock),
-            'park': ParkingStrategy(self, self.lock),
-            'start-autobahn': ChangeSpeedStrategy(self, self.lock, target_speed=200),
-            'end-autobahn': ChangeSpeedStrategy(self, self.lock, target_speed=50),
+            # 'stop': DefaultStopStrategy(self, self.lock),
+            # 'no_entry': DefaultStopStrategy(self, self.lock, self.stop_cooldown),
+            # 'priority': EnterIntersectionStrategy(self, self.lock),
+             'onewayroad': IncreaseSpeedAndLaneWidthStrategy(self, self.lock),
+            # 'crosswalk': CrosswalkStrategy(self, self.lock),
+            # 'parking': ParkingStrategy(self, self.lock),
+            # 'highway_entry': ChangeSpeedStrategy(self, self.lock, target_speed=200),
+            # 'highway_exit': ChangeSpeedStrategy(self, self.lock, target_speed=50),
         }
         
     def start(self):

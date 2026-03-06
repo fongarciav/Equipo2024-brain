@@ -6,6 +6,7 @@ Following SRP: Each module has a single responsibility.
 
 from .lane_detector import LaneDetector, MarcosLaneDetector_Advanced
 from .autopilot_controller import AutoPilotController
+from .intersection_event_controller import IntersectionEventController
 
-__all__ = ['LaneDetector', 'MarcosLaneDetector_Advanced', 'AutoPilotController']
+__all__ = ['LaneDetector', 'MarcosLaneDetector_Advanced', 'AutoPilotController', 'IntersectionEventController']
 

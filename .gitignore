@@ -29,3 +29,4 @@ __pycache__/
 # Sign vision model weights (large binaries)
 brain/sign_vision/weights/best.engine
 brain/sign_vision/weights/best.onnx
+brain/sign_vision/nuevo_modelo/
