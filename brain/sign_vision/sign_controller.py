@@ -126,13 +126,33 @@ class SignController:
             self.pending_resume_speed = resume_speed
             self.pending_resume_at = time.time() + delay_seconds
             return resume_speed
+
+    def resume_speed_now(self) -> int:
+        """
+        Send resume speed immediately (e.g. after ultrasonic obstacle cleared).
+        Uses same logic as schedule_speed_resume: last_speed_before_stop or DEFAULT_RESUME_SPEED.
+        """
+        with self.lock:
+            if self.last_speed_before_stop > 0:
+                resume_speed = self.last_speed_before_stop
+            else:
+                resume_speed = self.DEFAULT_RESUME_SPEED
+            resume_speed = int(max(0, min(255, resume_speed)))
+        sent = self.command_sender.send_speed_command(resume_speed)
+        if sent:
+            with self.lock:
+                self.current_speed = resume_speed
+            self.last_command = f"speed:{resume_speed} (resume)"
+        if self.event_callback:
+            self.event_callback("speed_resumed", {"speed": resume_speed, "sent": bool(sent)})
+        return resume_speed
     
     def _control_loop(self):
         """Main control loop running in background thread."""
         while True:
             resume_speed_to_send = None
             with self.lock:
-   codex/debate-proposed-lane-detection-changes             if not self.is_running:
+                if not self.is_running:
                     break
                 if (
                     self.pending_resume_at is not None

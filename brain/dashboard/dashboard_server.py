@@ -128,6 +128,7 @@ serial_message_queue = queue.Queue()
 serial_reader_thread = None
 serial_reader_running = False
 serial_read_buffer = ""  # Buffer for incomplete serial lines
+ultra_obstacle_present = False  # True while ESP32 reports obstacle within threshold (ultrasonic)
 
 # Heartbeat sender thread
 heartbeat_sender_thread = None
@@ -527,7 +528,7 @@ def parse_system_events(line: str):
 
 def serial_reader_worker():
     """Background thread that reads from serial port."""
-    global serial_conn, serial_reader_running, event_clients, sign_detection_controller
+    global serial_conn, serial_reader_running, event_clients, sign_detection_controller, ultra_obstacle_present
 
     while serial_reader_running:
         if serial_conn and serial_conn.is_open:
@@ -544,6 +545,22 @@ def serial_reader_worker():
                                 ui_speed = int(round((abs(speed_mm_s) / 500) * 255))
                                 sign_detection_controller.update_current_speed(ui_speed)
                             except ValueError:
+                                pass
+
+                        # ESP32 ultra_box JSON: {"type":"ultra","present":true/false,...}
+                        # When present goes from true to false, resume previous speed.
+                        if sign_detection_controller is not None and '"type":"ultra"' in line:
+                            try:
+                                msg = json.loads(line.strip())
+                                if msg.get("type") == "ultra" and "present" in msg:
+                                    present = msg["present"] is True
+                                    if present:
+                                        ultra_obstacle_present = True
+                                    elif ultra_obstacle_present:
+                                        ultra_obstacle_present = False
+                                        sign_detection_controller.resume_speed_now()
+                                        print("[SerialReader] Ultrasonic obstacle cleared, resuming speed")
+                            except (json.JSONDecodeError, TypeError):
                                 pass
 
                         # Broadcast message to all connected SSE clients
