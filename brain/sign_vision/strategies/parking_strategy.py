@@ -1,5 +1,6 @@
 import threading
 import time
+import math
 
 from .base_strategy import SignStrategy
 
@@ -11,47 +12,79 @@ _SERVO_RIGHT = 50
 
 class ParkingStrategy(SignStrategy):
     """
-    Strategy for parallel parking to the left using a timed phase sequence.
+    Strategy for parallel parking to the right using a timed phase sequence.
 
-    The sequence was updated to include an initial delay and a multi‑step
-    backing maneuver to match the new requirements.  After the sign is
-    detected the strategy will continue to let the line‑following code run
-    while counting down a fixed wait period.  Once the wait expires the car
-    executes the following timed motions:
+    ## Parking space and vehicle dimensions
+        Vehicle:        38 cm long × 21 cm wide
+        Parking space:  80 cm long (Y) × 35 cm wide (X)
 
-        WAIT       → Countdown (35.4 s) while leaving control to the line
-                      detector; no speed commands are issued.
-        BRAKE1     → Stop for 0.5 s before beginning the parking moves.
-        BACK_RIGHT → Reverse for 8 s with full‑right steering.
-        BACK_LEFT  → Continue reversing for 4.5 s with full‑left steering.
-        BRAKE2     → Stop for 0.5 s then prepare for a forward shift.
-        FORWARD_RIGHT → Move forward for 4 s with full‑right steering.
-        BRAKE3     → Stop (0.5 s) and center the wheels.
-        BACK_CENTER → Reverse with wheels centered for 2.5 s.
-        STOP       → Halt, center wheels, and mark maneuver complete.
+    ## Coordinate system (origin = rear-right corner of vehicle at maneuver start)
+        +X  → into the parking space (lateral)
+        +Y  → into the parking space (longitudinal / depth)
 
-    A 30‑second cooldown still prevents re-triggering while the car is
-    executing the maneuver.
+    ## Speed conversion
+        All motion speeds are defined in cm/s and converted to UI units at
+        construction time using:
+
+            speed_ui = round(speed_cm_per_s / ui_speed_to_cm_per_s)
+
+        The default conversion factor (ui_speed_to_cm_per_s = 0.3) was
+        calibrated empirically: the car travelled ~450 cm in 80 s at
+        speed_ui = 1, giving 450 / (80 × 1) = 5.625 cm/s per UI unit at
+        low speed.  For maneuver speeds a factor of 0.3 is used.
+
+    ## Phase geometry
+        The classic three-arc parallel-parking maneuver is used:
+
+        FORWARD_LEFT — advance with full-left steering for forward_left_distance_cm
+            Angles the car toward the parking space entrance before reversing.
+
+        BACK_RIGHT  — reverse with full-right steering for back_right_distance_cm
+            Enters the space diagonally.
+
+        BACK_LEFT   — reverse with full-left steering for back_left_distance_cm
+            Mirrors BACK_RIGHT to straighten the car inside the space.
+
+        After these three arcs the vehicle is parallel to the space walls and
+        fully inside the 80 × 35 cm rectangle.
+
+    ## Phase sequence
+        WAIT          → Autopilot drives; duration = wait_target_distance_cm /
+                        current_speed_cm_per_s so the car travels exactly
+                        wait_target_distance_cm before the maneuver starts.
+        BRAKE1        → Hold stop for brake_duration s.
+        FORWARD_LEFT  → Advance full-left for forward_left_distance_cm to
+                        angle the car toward the space entrance.
+        BACK_RIGHT    → Reverse full-right for back_right_distance_cm.
+        BACK_LEFT     → Reverse full-left  for back_left_distance_cm.
+        STOP          → Hold stop for stop_hold_duration s, then finish.
+
+    A cooldown prevents re-triggering while the maneuver is in progress.
     """
+
     def __init__(
-        self,
-        controller,
-        lock,
-        cooldown: float = 30.0,
-        min_confidence: float = 0.7,
-        activation_distance: float = 3.0,
-        # speeds used during the various motion segments
-        forward_approach_speed: int = 0,
-        back_left_speed: int = 60,
-        back_right_speed: int = 60,
-        forward_center_speed: int = 0,
-        # configurable durations; most are fixed by the new procedure
-        wait_duration: float = 35.4,
-        brake_duration: float = 0.5,
-        back_right_duration1: float = 8.0,
-        back_left_duration: float = 4.5,
-        forward_right_duration: float = 4.0,
-        back_center_duration: float = 2.5,
+            self,
+            controller,
+            lock,
+            cooldown: float = 30.0,
+            min_confidence: float = 0.6,
+            activation_distance: float = 3.0,
+            # --- speed parameters (all in cm/s, converted to UI internally) ---
+            maneuver_speed_cm_per_s: float = 10.0,
+            # --- speed conversion factor ---
+            ui_speed_to_cm_per_s: float = 0.3,
+            # --- wait phase ---
+            wait_target_distance_cm: float = 210.0,
+            default_wait_duration: float = 8.0,
+            wait_crawl_speed_cm_per_s: float = 6.0,
+            # --- maneuver arc distances (cm) ---
+            forward_left_distance_cm: float = 20.0,
+            back_right_distance_cm: float = 75.0,
+            back_left_distance_cm: float = 85.0,
+            forward_straight_distance_cm: float = 30.0,
+            # --- fixed durations (s) ---
+            brake_duration: float = 0.5,
+            stop_hold_duration: float = 1.0,
     ):
         """
         Args:
@@ -60,44 +93,62 @@ class ParkingStrategy(SignStrategy):
             cooldown: Minimum seconds between activations.
             min_confidence: Minimum detection confidence to react.
             activation_distance: Maximum distance (m) at which the sign triggers.
-            forward_approach_speed: Forward speed (0–255 UI) used during the
-                forward‑right segment of the parking sequence.
-            back_left_speed: Reverse speed (0–255 UI) when steering full‑left.
-            back_right_speed: Reverse speed (0–255 UI) when steering full‑right.
-            forward_center_speed: Forward speed (0–255 UI) used if a centered
-                forward motion is required (not used in the current hardcoded
-                sequence but kept for compatibility).
-            wait_duration: Initial countdown duration (seconds) after sign
-                detection during which no commands are sent.
-            brake_duration: How long to hold a full stop between motion phases.
-            back_right_duration1: Time (s) to reverse with wheels full‑right.
-            back_left_duration: Time (s) to reverse with wheels full‑left.
-            forward_right_duration: Time (s) to drive forward with wheels full‑right.
-            back_center_duration: Time (s) to reverse with wheels centered.
+            maneuver_speed_cm_per_s: Speed in cm/s used for all active motion
+                phases. Converted to UI internally.
+            ui_speed_to_cm_per_s: Calibration factor — how many cm/s correspond
+                to 1 UI speed unit. Default 0.3 (empirically measured).
+            wait_target_distance_cm: Distance in cm the car should travel during
+                WAIT before the maneuver starts. Duration is computed as
+                wait_target_distance_cm / current_speed_cm_per_s.
+            default_wait_duration: Fallback WAIT duration (s) when the car is
+                stopped at detection time.
+            wait_crawl_speed_cm_per_s: Speed in cm/s sent to the car when it is
+                stopped at detection time so it advances to the maneuver position.
+            forward_left_distance_cm: Arc length (cm) for the FORWARD_LEFT phase.
+                The car advances with full-left steering to angle itself toward
+                the parking space before reversing.
+            back_right_distance_cm: Arc length (cm) for the BACK_RIGHT phase.
+                The car reverses with full-right steering to enter the space.
+            back_left_distance_cm: Arc length (cm) for the BACK_LEFT phase.
+                Mirrors BACK_RIGHT to straighten the car inside the space.
+            brake_duration: Duration (s) of the BRAKE1 full-stop phase.
+            stop_hold_duration: Duration (s) of the final STOP phase; ensures
+                the ESP32 receives the stop command before the thread exits.
         """
         super().__init__(controller, lock, min_confidence, activation_distance)
         self.cooldown = float(cooldown)
         self.last_activation_time: float = 0.0
 
-        # Tunable speeds for the various motion segments
-        self.forward_approach_speed = int(max(0, min(255, forward_approach_speed)))
-        self.back_left_speed = int(max(0, min(255, back_left_speed)))
-        self.back_right_speed = int(max(0, min(255, back_right_speed)))
-        self.forward_center_speed = int(max(0, min(255, forward_center_speed)))
+        # Speed conversion
+        self.ui_speed_to_cm_per_s = float(ui_speed_to_cm_per_s)
 
-        # Fixed durations used in the updated parking sequence
-        self.wait_duration = float(wait_duration)          # initial countdown
-        self.brake_duration = float(brake_duration)        # applied at three points
-        self.back_right_duration1 = float(back_right_duration1)  # 8 seconds
-        self.back_left_duration = float(back_left_duration)      # 4.5 seconds
-        self.forward_right_duration = float(forward_right_duration)  # 4 seconds
-        self.back_center_duration = float(back_center_duration)  # 2.5 seconds
+        # Convert all speeds from cm/s to UI units
+        self.maneuver_speed_ui   = max(1, round(maneuver_speed_cm_per_s / self.ui_speed_to_cm_per_s))
+        self.wait_crawl_speed_ui = max(1, round(wait_crawl_speed_cm_per_s / self.ui_speed_to_cm_per_s))
+
+        # Compute phase durations from arc distances and maneuver speed
+        maneuver_speed_cm_per_s    = float(maneuver_speed_cm_per_s)
+        self.forward_left_duration = float(forward_left_distance_cm) / maneuver_speed_cm_per_s
+        self.back_right_duration   = float(back_right_distance_cm)   / maneuver_speed_cm_per_s
+        self.back_left_duration    = float(back_left_distance_cm)    / maneuver_speed_cm_per_s
+        self.forward_straight_duration = float(forward_straight_distance_cm) / maneuver_speed_cm_per_s
+
+        # Fixed durations
+        self.brake_duration     = float(brake_duration)
+        self.stop_hold_duration = float(stop_hold_duration)
+
+        # Wait phase parameters
+        self.wait_target_distance_cm = float(wait_target_distance_cm)
+        self.default_wait_duration   = float(default_wait_duration)
+
+        # wait_duration is computed dynamically in execute()
+        self.wait_duration: float = self.default_wait_duration
 
         # State machine (protected by self.lock)
-        self.phase: str = "IDLE"
+        self.phase: str              = "IDLE"
         self.phase_start_time: float = 0.0
-        self.is_running: bool = False
-        self.is_parked: bool = False
+        self.is_running: bool        = False
+        self.is_parked: bool         = False
 
         self._worker_thread: threading.Thread | None = None
 
@@ -109,8 +160,7 @@ class ParkingStrategy(SignStrategy):
         """
         Start the parking maneuver if conditions are met.
 
-        This method is non-blocking: it launches a background thread that
-        drives the phase sequence and returns immediately.
+        Non-blocking: launches a background thread and returns immediately.
 
         Returns:
             True if the maneuver was started, False otherwise.
@@ -129,17 +179,33 @@ class ParkingStrategy(SignStrategy):
                 print("[ParkingStrategy] Maneuver already in progress — ignoring new trigger.")
                 return False
 
+            # Compute wait_duration so the car travels ~wait_target_distance_cm.
+            # Formula: t = d / v  where v is current speed converted to cm/s.
+            current_speed_ui = self.controller.current_speed
+            current_speed_cm_per_s = current_speed_ui * self.ui_speed_to_cm_per_s
+
+            if current_speed_cm_per_s > 0:
+                self.wait_duration = self.wait_target_distance_cm / current_speed_cm_per_s
+            else:
+                # Car is stopped: send crawl speed and compute duration from it.
+                self.controller.command_sender.send_speed_command(self.wait_crawl_speed_ui)
+                crawl_speed_cm_per_s = self.wait_crawl_speed_ui * self.ui_speed_to_cm_per_s
+                self.wait_duration = self.wait_target_distance_cm / crawl_speed_cm_per_s
+
             self.is_running = True
             self.is_parked = False
-            # start in the wait phase so line following remains active
             self.phase = "WAIT"
             self.phase_start_time = now
+
+        # Keep autopilot active during WAIT so lane-following continues
+        if hasattr(self.controller, "autopilot_controller") and self.controller.autopilot_controller:
+            self.controller.autopilot_controller.resume()
 
         label = detection["class"].lower()
         confidence = detection["confidence"]
         msg = (
             f"{label.upper()} DETECTED! ({confidence:.2f}) "
-            f"- Beginning parking countdown ({self.wait_duration}s)"
+            f"- Beginning parking countdown ({self.wait_duration:.1f}s)"
         )
         print(f"[ParkingStrategy] {msg}")
 
@@ -194,20 +260,12 @@ class ParkingStrategy(SignStrategy):
                 self.controller.last_speed_before_stop = speed_ui
 
         if not ok_speed:
-            print(
-                f"[ParkingStrategy] Warning: failed to send speed command "
-                f"(speed={speed_ui}, dir={direction})"
-            )
+            print(f"[ParkingStrategy] Warning: failed to send speed command (speed={speed_ui}, dir={direction})")
         if not ok_steer:
-            print(
-                f"[ParkingStrategy] Warning: failed to send steering command "
-                f"(servo={servo_angle})"
-            )
+            print(f"[ParkingStrategy] Warning: failed to send steering command (servo={servo_angle})")
 
     def _transition_to(self, phase: str) -> None:
-        """
-        Thread-safe phase transition; updates phase and resets the phase timer.
-        """
+        """Thread-safe phase transition; resets the phase timer."""
         with self.lock:
             self.phase = phase
             self.phase_start_time = time.time()
@@ -215,15 +273,15 @@ class ParkingStrategy(SignStrategy):
 
     def _run_parking_sequence(self) -> None:
         """
-        Background worker that drives the parking phase sequence.
-        Runs at ~20 Hz and transitions through phases based on elapsed time.
+        Background worker that drives the parking phase sequence at ~20 Hz.
+        Transitions between phases based on elapsed time vs computed durations.
         """
         print("[ParkingStrategy] Worker thread started.")
 
         try:
             while True:
                 with self.lock:
-                    phase = self.phase
+                    phase   = self.phase
                     start_t = self.phase_start_time
                     running = self.is_running
 
@@ -233,64 +291,63 @@ class ParkingStrategy(SignStrategy):
                 elapsed = time.time() - start_t
 
                 if phase == "WAIT":
-                    # do not issue any commands; leave line-following in control
+                    # Autopilot is in control — no commands issued here.
                     if elapsed >= self.wait_duration:
+                        if hasattr(self.controller, "autopilot_controller") and self.controller.autopilot_controller:
+                            self.controller.autopilot_controller.pause()
                         self._transition_to("BRAKE1")
 
                 elif phase == "BRAKE1":
                     self._set_motion(0, "forward", _SERVO_CENTER)
                     if elapsed >= self.brake_duration:
+                        self._transition_to("FORWARD_LEFT")
+
+                elif phase == "FORWARD_LEFT":
+                    # Advance with full-left steering to angle the car toward the space
+                    self._set_motion(self.maneuver_speed_ui, "forward", _SERVO_LEFT)
+                    if elapsed >= self.forward_left_duration:
                         self._transition_to("BACK_RIGHT")
 
                 elif phase == "BACK_RIGHT":
-                    self._set_motion(self.back_right_speed, "backward", _SERVO_RIGHT)
-                    if elapsed >= self.back_right_duration1:
+                    # Reverse with full-right steering to enter the space diagonally
+                    self._set_motion(self.maneuver_speed_ui, "backward", _SERVO_RIGHT)
+                    if elapsed >= self.back_right_duration:
                         self._transition_to("BACK_LEFT")
 
                 elif phase == "BACK_LEFT":
-                    self._set_motion(self.back_left_speed, "backward", _SERVO_LEFT)
+                    # Reverse with full-left steering to straighten inside the space
+                    self._set_motion(self.maneuver_speed_ui, "backward", _SERVO_LEFT)
                     if elapsed >= self.back_left_duration:
-                        self._transition_to("BRAKE2")
+                        self._transition_to("FORWARD_STRAIGHT")
 
-                elif phase == "BRAKE2":
-                    self._set_motion(0, "forward", _SERVO_CENTER)
-                    if elapsed >= self.brake_duration:
-                        self._transition_to("FORWARD_RIGHT")
-
-                elif phase == "FORWARD_RIGHT":
-                    self._set_motion(self.forward_approach_speed, "forward", _SERVO_RIGHT)
-                    if elapsed >= self.forward_right_duration:
-                        self._transition_to("BRAKE3")
-
-                elif phase == "BRAKE3":
-                    self._set_motion(0, "forward", _SERVO_CENTER)
-                    if elapsed >= self.brake_duration:
-                        self._transition_to("BACK_CENTER")
-
-                elif phase == "BACK_CENTER":
-                    self._set_motion(self.back_left_speed, "backward", _SERVO_CENTER)
-                    if elapsed >= self.back_center_duration:
+                elif phase == "FORWARD_STRAIGHT":
+                    # Advance straight ahead to center inside the space
+                    self._set_motion(self.maneuver_speed_ui, "forward", _SERVO_CENTER)
+                    if elapsed >= self.forward_straight_duration:
                         self._transition_to("STOP")
 
                 elif phase == "STOP":
+                    # Hold speed=0 for stop_hold_duration s so the ESP32 processes
+                    # the stop command before this thread exits.
                     self._set_motion(0, "forward", _SERVO_CENTER)
-                    with self.lock:
-                        self.is_running = False
-                        self.is_parked = True
-                        self.phase = "IDLE"
+                    if elapsed >= self.stop_hold_duration:
+                        with self.lock:
+                            self.is_running = False
+                            self.is_parked  = True
+                            self.phase      = "IDLE"
 
-                    print("[ParkingStrategy] Maneuver complete. is_parked=True")
+                        print("[ParkingStrategy] Maneuver complete. is_parked=True")
 
-                    if self.controller.event_callback:
-                        self.controller.event_callback("parking_completed", {"is_parked": True})
-                    break
+                        if self.controller.event_callback:
+                            self.controller.event_callback("parking_completed", {"is_parked": True})
+                        break
 
                 else:
                     print(f"[ParkingStrategy] Unknown phase '{phase}' — aborting safely.")
                     self._set_motion(0, "forward", _SERVO_CENTER)
                     with self.lock:
                         self.is_running = False
-                        self.phase = "IDLE"
+                        self.phase      = "IDLE"
                     break
 
                 time.sleep(0.05)  # ~20 Hz
@@ -303,4 +360,4 @@ class ParkingStrategy(SignStrategy):
                 pass
             with self.lock:
                 self.is_running = False
-                self.phase = "IDLE"
+                self.phase      = "IDLE"
