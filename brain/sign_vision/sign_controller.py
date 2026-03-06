@@ -213,9 +213,11 @@ class SignController:
             }
 
     def update_current_speed(self, speed: int):
-        """Update current speed. Always reflects the real speed of the car.
-        Saves the last positive speed into last_speed_before_stop before setting to 0."""
+        """Update current speed from external events (dashboard, serial).
+        Keeps last_speed_before_stop so resume (e.g. after ultrasonic clear) uses the right speed."""
         with self.lock:
             if self.current_speed > 0 and speed == 0:
                 self.last_speed_before_stop = self.current_speed
             self.current_speed = speed
+            if speed > 0:
+                self.last_speed_before_stop = speed
