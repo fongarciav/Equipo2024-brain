@@ -126,6 +126,26 @@ class SignController:
             self.pending_resume_speed = resume_speed
             self.pending_resume_at = time.time() + delay_seconds
             return resume_speed
+
+    def resume_speed_now(self) -> int:
+        """
+        Send resume speed immediately (e.g. after ultrasonic obstacle cleared).
+        Uses same logic as schedule_speed_resume: last_speed_before_stop or DEFAULT_RESUME_SPEED.
+        """
+        with self.lock:
+            if self.last_speed_before_stop > 0:
+                resume_speed = self.last_speed_before_stop
+            else:
+                resume_speed = self.DEFAULT_RESUME_SPEED
+            resume_speed = int(max(0, min(255, resume_speed)))
+        sent = self.command_sender.send_speed_command(resume_speed)
+        if sent:
+            with self.lock:
+                self.current_speed = resume_speed
+            self.last_command = f"speed:{resume_speed} (resume)"
+        if self.event_callback:
+            self.event_callback("speed_resumed", {"speed": resume_speed, "sent": bool(sent)})
+        return resume_speed
     
     def _control_loop(self):
         """Main control loop running in background thread."""
@@ -213,9 +233,11 @@ class SignController:
             }
 
     def update_current_speed(self, speed: int):
-        """Update current speed. Always reflects the real speed of the car.
-        Saves the last positive speed into last_speed_before_stop before setting to 0."""
+        """Update current speed from external events (dashboard, serial).
+        Keeps last_speed_before_stop so resume (e.g. after ultrasonic clear) uses the right speed."""
         with self.lock:
             if self.current_speed > 0 and speed == 0:
                 self.last_speed_before_stop = self.current_speed
             self.current_speed = speed
+            if speed > 0:
+                self.last_speed_before_stop = speed
