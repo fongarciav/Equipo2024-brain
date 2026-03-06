@@ -23,6 +23,7 @@ from .strategies import (
     CrosswalkStrategy,
     ParkingStrategy,
     ChangeSpeedStrategy,
+    RelativeChangeSpeedStrategy,
     RoundaboutWithTimersStrategy,
 )
 
@@ -67,8 +68,8 @@ class SignController:
         # Initialize strategies (keys must match detector class names)
         self.strategies = {
             'stop': DefaultStopStrategy(self, self.lock),
-            'end-autobahn': ChangeSpeedStrategy(self, self.lock, target_speed=50),
-            'start-autobahn': ChangeSpeedStrategy(self, self.lock, target_speed=200),
+            'end-autobahn': RelativeChangeSpeedStrategy(self, self.lock, delta_speed=-50),
+            'start-autobahn': RelativeChangeSpeedStrategy(self, self.lock, delta_speed=50),
             'priority-road': EnterIntersectionStrategy(self, self.lock),
            # 'one-way': IncreaseSpeedAndLaneWidthStrategy(self, self.lock),
             'pedestrian': CrosswalkStrategy(self, self.lock),
