@@ -9,7 +9,7 @@ class FirstIntersectionLeftTurnStrategy(IntersectionStrategy):
         self.autopilot_controller = autopilot_controller
         self.event_callback = event_callback
         self.duration_s = max(0.1, float(duration_s))
-        self.duration_straight = 2.3  # Duration to go straight before turning
+        self.duration_straight = 2.15  # Duration to go straight before turning
         self.max_angle_ratio = max(0.0, min(1.0, float(max_angle_ratio)))
         self._done = False
 

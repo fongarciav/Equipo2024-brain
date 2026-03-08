@@ -12,7 +12,7 @@ class CrosswalkStrategy(SignStrategy):
         cooldown: float = 10.0,
         min_confidence: float = 0.6,
         activation_distance: float = 3.0,
-        speed_reduction_percent: float = 25.0,
+        speed_reduction_percent: float = 15.0,
         slow_duration: float = 6.0,
     ):
         super().__init__(controller, lock, min_confidence, activation_distance)

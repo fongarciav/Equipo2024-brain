@@ -10,7 +10,7 @@ class DefaultStopStrategy(SignStrategy):
         lock,
         cooldown=5.0,
         min_confidence=0.6,
-        activation_distance=0.5,
+        activation_distance=0.4,
         stop_duration=3.0
     ):
         super().__init__(controller, lock, min_confidence, activation_distance)

@@ -79,9 +79,9 @@ class ParkingStrategy(SignStrategy):
             wait_crawl_speed_cm_per_s: float = 6.0,
             # --- maneuver arc distances (cm) ---
             forward_left_distance_cm: float = 20.0,
-            back_right_distance_cm: float = 75.0,
-            back_left_distance_cm: float = 85.0,
-            forward_straight_distance_cm: float = 30.0,
+            back_right_distance_cm: float = 90.0,
+            back_left_distance_cm: float = 94,
+            forward_straight_distance_cm: float = 0.0,
             # --- fixed durations (s) ---
             brake_duration: float = 0.5,
             stop_hold_duration: float = 1.0,
