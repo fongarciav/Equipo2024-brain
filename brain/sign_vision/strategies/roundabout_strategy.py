@@ -9,10 +9,9 @@ class RoundaboutStrategy(SignStrategy):
 
     Behavior:
     - Temporarily reduce speed to a fixed safe value.
-    - Temporarily tune lane-detector parameters so the reconstructed lane
-      tends to stay closer to the inner curve of the roundabout.
+    - Run a staged maneuver with independent timers.
     - Automatically restore original lane-detector parameters and speed
-      after a short duration.
+      when all stages are completed.
     """
 
     def __init__(
@@ -22,24 +21,39 @@ class RoundaboutStrategy(SignStrategy):
         cooldown: float = 10.0,
         min_confidence: float = 0.6,
         activation_distance: float = 3.0,
-        roundabout_speed: int = 90,
-        roundabout_duration: float = 4.0,
-        roundabout_lane_width_px: int = 560,
-        roundabout_straight_width_reduction: int = 20,
+        roundabout_speed: int = 60,
+        pre_entry_duration: float = 5.0,
+        lane_tuning_duration: float = 15.0,
+        right_turn_duration: float = 3.0,
+        roundabout_lane_width_px: int = 400,
+        roundabout_straight_width_reduction: int = 0,
+        right_turn_servo_angle: int = 50,
     ):
         super().__init__(controller, lock, min_confidence, activation_distance)
         self.cooldown = float(cooldown)
         self.roundabout_speed = int(max(0, min(255, roundabout_speed)))
-        self.roundabout_duration = float(max(0.1, roundabout_duration))
+        self.pre_entry_duration = float(max(0.1, pre_entry_duration))
+        self.lane_tuning_duration = float(max(0.1, lane_tuning_duration))
+        self.right_turn_duration = float(max(0.1, right_turn_duration))
         self.roundabout_lane_width_px = int(max(100, roundabout_lane_width_px))
         self.roundabout_straight_width_reduction = int(
             max(0, roundabout_straight_width_reduction)
         )
+        self.right_turn_servo_angle = int(max(0, min(180, right_turn_servo_angle)))
 
         self.last_activation_time: float = 0.0
-        self.active_until: float = 0.0
         self.is_active: bool = False
         self._saved_lane_params: dict | None = None
+        self._entry_started_at: float = 0.0
+        self._saved_speed_before_roundabout: int | None = None
+
+    @property
+    def total_duration(self) -> float:
+        return (
+            self.pre_entry_duration
+            + self.lane_tuning_duration
+            + self.right_turn_duration
+        )
 
     def _get_lane_detector(self):
         autopilot = getattr(self.controller, "autopilot_controller", None)
@@ -90,16 +104,49 @@ class RoundaboutStrategy(SignStrategy):
     def _deactivate_if_expired(self) -> None:
         if not self.is_active:
             return
-        if time.time() < self.active_until:
+
+        now = time.time()
+        elapsed = now - self._entry_started_at
+        phase_1_end = self.pre_entry_duration
+        phase_2_end = self.pre_entry_duration + self.lane_tuning_duration
+        phase_3_end = self.total_duration
+
+        if elapsed < phase_1_end:
+            return
+
+        if elapsed < phase_2_end:
+            self._apply_lane_tuning()
+            return
+
+        if elapsed < phase_3_end:
+            self._restore_lane_tuning()
+            sent = self.controller.command_sender.send_steering_command(
+                self.right_turn_servo_angle
+            )
+            if not sent:
+                print("[RoundaboutStrategy] Warning: failed to send right turn steer.")
             return
 
         self._restore_lane_tuning()
+        speed_to_restore = self._saved_speed_before_roundabout
+        if speed_to_restore is not None:
+            sent = self.controller.command_sender.send_speed_command(speed_to_restore)
+            if sent:
+                with self.lock:
+                    self.controller.current_speed = speed_to_restore
+                    self.controller.last_command = (
+                        f"speed:{speed_to_restore} (roundabout_resume)"
+                    )
+            else:
+                print("[RoundaboutStrategy] Warning: failed to restore speed.")
+
+        self._saved_speed_before_roundabout = None
         self.is_active = False
 
         if self.controller.event_callback:
             self.controller.event_callback(
                 "roundabout_mode_ended",
-                {"duration_seconds": float(self.roundabout_duration)},
+                {"duration_seconds": float(self.total_duration)},
             )
 
     def on_loop(self) -> None:
@@ -116,6 +163,7 @@ class RoundaboutStrategy(SignStrategy):
         if self.is_active:
             self._restore_lane_tuning()
             self.is_active = False
+            self._saved_speed_before_roundabout = None
 
     def execute(self, detection: dict) -> bool:
         if not self.validate_detection(detection):
@@ -138,7 +186,7 @@ class RoundaboutStrategy(SignStrategy):
 
         msg = (
             f"{label.upper()} DETECTED! ({confidence:.2f}) "
-            f"- roundabout mode for {self.roundabout_duration:.1f}s "
+            f"- roundabout mode for {self.total_duration:.1f}s "
             f"(speed={self.roundabout_speed}, resume={speed_before_roundabout})"
         )
         print(f"[RoundaboutStrategy] {msg}")
@@ -164,27 +212,26 @@ class RoundaboutStrategy(SignStrategy):
                 f"speed:{self.roundabout_speed} (roundabout)"
             )
 
-        # Restore cruise speed after the roundabout window.
-        self.controller.schedule_speed_resume(
-            self.roundabout_duration, override_speed=speed_before_roundabout
-        )
-
-        self._apply_lane_tuning()
         self.is_active = True
-        self.active_until = now + self.roundabout_duration
+        self._entry_started_at = now
+        self._saved_speed_before_roundabout = speed_before_roundabout
         self.last_activation_time = now
 
         if self.controller.event_callback:
             self.controller.event_callback(
                 "roundabout_mode_started",
                 {
-                    "duration_seconds": float(self.roundabout_duration),
+                    "duration_seconds": float(self.total_duration),
+                    "pre_entry_seconds": float(self.pre_entry_duration),
+                    "lane_tuning_seconds": float(self.lane_tuning_duration),
+                    "right_turn_seconds": float(self.right_turn_duration),
                     "roundabout_speed": int(self.roundabout_speed),
                     "resume_speed": int(speed_before_roundabout),
                     "lane_width_px": int(self.roundabout_lane_width_px),
                     "straight_width_reduction": int(
                         self.roundabout_straight_width_reduction
                     ),
+                    "right_turn_servo_angle": int(self.right_turn_servo_angle),
                 },
             )
 
